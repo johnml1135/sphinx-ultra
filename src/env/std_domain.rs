@@ -706,6 +706,7 @@ mod tests {
                 docname: docname.to_string(),
                 found_docs: None,
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
             },
         )
     }

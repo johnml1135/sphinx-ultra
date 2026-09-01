@@ -589,6 +589,7 @@ mod tests {
                     sphinx: true,
                     docname: (*docname).to_string(),
                     exclude_patterns: Vec::new(),
+                    py: Default::default(),
                     found_docs: Some(std::sync::Arc::clone(&found)),
                 },
             );

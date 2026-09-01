@@ -11,6 +11,7 @@ fn opts() -> ParseOptions {
         sphinx: true,
         docname: "index".into(),
         exclude_patterns: Vec::new(),
+        py: Default::default(),
         found_docs: None,
     }
 }

@@ -205,6 +205,9 @@ pub(crate) struct BlockParser {
     pub(crate) found_docs: Option<std::sync::Arc<std::collections::BTreeSet<String>>>,
     /// `exclude_patterns` (see [`super::ParseOptions::exclude_patterns`]).
     pub(crate) exclude_patterns: Vec<String>,
+    /// The py-domain configuration the read phase consumes (see
+    /// [`super::ParseOptions::py`]).
+    pub(crate) py: crate::py::PySigConfig,
     /// `.. highlight::` state consumed by later code-blocks in the same
     /// document (sphinx env.temp_data\['highlight_language'\]).
     highlight_language: Option<String>,
@@ -275,6 +278,7 @@ impl BlockParser {
             docname: "index".to_string(),
             found_docs: None,
             exclude_patterns: Vec::new(),
+            py: crate::py::PySigConfig::default(),
             highlight_language: None,
             program: None,
             pending_classes: None,
@@ -400,6 +404,7 @@ impl BlockParser {
             self.sphinx,
             &self.docname,
             self.program.as_deref(),
+            &self.py,
         );
         self.role_records.append(&mut result.roles);
         result
@@ -445,6 +450,7 @@ impl BlockParser {
         sub.docname = self.docname.clone();
         sub.found_docs = self.found_docs.clone();
         sub.exclude_patterns = self.exclude_patterns.clone();
+        sub.py = self.py.clone();
         sub.highlight_language = self.highlight_language.clone();
         sub.program = self.program.clone();
         let top = std::mem::take(&mut sub.top);
@@ -8673,6 +8679,7 @@ mod tests {
                 sphinx: false,
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
                 found_docs: None,
             },
         );
@@ -8711,6 +8718,7 @@ mod tests {
                 sphinx: false,
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
                 found_docs: None,
             },
         );
@@ -8740,6 +8748,7 @@ mod tests {
                 sphinx: false,
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
                 found_docs: None,
             },
         )
@@ -8756,6 +8765,7 @@ mod tests {
                 sphinx: true,
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
                 found_docs: None,
             },
         )
@@ -8880,6 +8890,7 @@ mod tests {
                 sphinx: false,
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
                 found_docs: None,
             },
         );

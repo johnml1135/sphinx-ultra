@@ -48,6 +48,7 @@ fn matches_docutils_parser_pformat() {
                     sphinx: false,
                     docname: "index".into(),
                     exclude_patterns: Vec::new(),
+                    py: Default::default(),
                     found_docs: None,
                 },
             )

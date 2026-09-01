@@ -41,6 +41,12 @@ pub struct ParseOptions {
     /// *excluded* toctree target from a *nonexisting* one. Empty for a parse
     /// without an environment, where no entry resolves anyway.
     pub exclude_patterns: Vec<String>,
+    /// The object-signature / py-domain configuration the read phase
+    /// consumes ([`crate::py::PySigConfig`]): today the `fix_parens` roles'
+    /// `add_function_parentheses`, and from the py directives onward the
+    /// signature-wrapping and TOC-entry keys too. Defaults to sphinx's own
+    /// defaults, so a parse without a project behaves like a default one.
+    pub py: crate::py::PySigConfig,
 }
 
 impl Default for ParseOptions {
@@ -51,6 +57,7 @@ impl Default for ParseOptions {
             docname: "index".to_string(),
             found_docs: None,
             exclude_patterns: Vec::new(),
+            py: crate::py::PySigConfig::default(),
         }
     }
 }
@@ -230,6 +237,7 @@ pub fn parse_rst_full(source: &str, opts: &ParseOptions) -> ParseOutput {
     parser.docname = opts.docname.clone();
     parser.found_docs = opts.found_docs.clone();
     parser.exclude_patterns = opts.exclude_patterns.clone();
+    parser.py = opts.py.clone();
     parser.parse_document_full()
 }
 

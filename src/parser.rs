@@ -29,6 +29,10 @@ pub struct Parser {
     /// directive consults to tell an excluded target from a nonexisting one
     /// (sphinx `TocTree.parse_content` reads `self.config.exclude_patterns`).
     exclude_patterns: Vec<String>,
+    /// The object-signature / py-domain configuration the read phase
+    /// consumes (see [`crate::rst::ParseOptions::py`]), projected out of the
+    /// build configuration once instead of per document.
+    py: crate::py::PySigConfig,
 }
 
 /// Everything one source file's parse produces: the pipeline's [`Document`]
@@ -44,6 +48,7 @@ impl Parser {
     pub fn new(config: &BuildConfig) -> Result<Self> {
         Ok(Self {
             exclude_patterns: config.exclude_patterns.clone(),
+            py: crate::py::PySigConfig::from(config),
         })
     }
 
@@ -117,6 +122,7 @@ impl Parser {
                 docname: docname.to_string(),
                 found_docs,
                 exclude_patterns: self.exclude_patterns.clone(),
+                py: self.py.clone(),
             },
         );
         {
@@ -386,6 +392,7 @@ mod tests {
                 sphinx: true,
                 docname: "index".to_string(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
                 found_docs: None,
             },
         );

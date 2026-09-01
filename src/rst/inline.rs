@@ -218,6 +218,9 @@ struct Inliner<'a> {
     /// `OptionXRefRole.process_link` stamps on every `:option:` reference
     /// (`domains/std/__init__.py:351-364`).
     program: Option<&'a str>,
+    /// The py-domain configuration the roles read; today only
+    /// `add_function_parentheses`, in [`Self::emit_xref_node`].
+    py: &'a crate::py::PySigConfig,
     roles: Vec<super::RoleRecord>,
     nodes: Vec<Node>,
     messages: Vec<Node>,
@@ -926,6 +929,49 @@ impl<'a> Inliner<'a> {
         }
     }
 
+    /// `XRefRole.update_title_and_target` (`roles.py:87-98`), run for the
+    /// roles constructed with `fix_parens=True`:
+    ///
+    /// ```python
+    /// if not self.has_explicit_title:
+    ///     if self.config.add_function_parentheses:
+    ///         if not title.endswith('()'):
+    ///             title += '()'
+    ///     else:
+    ///         title = title.removesuffix('()')
+    /// target = target.removesuffix('()')
+    /// ```
+    ///
+    /// So: an IMPLICIT title ends with exactly one `()` when the config is
+    /// on and with none when it is off — either way the parens the author
+    /// wrote are normalised away first, which is why an already
+    /// parenthesized title is not doubled (probe P3). An EXPLICIT title is
+    /// untouched (P5). The TARGET loses one trailing pair unconditionally,
+    /// explicit titles included and under both settings (P3/P4, Q4/Q5) —
+    /// one pair only, never more (Q10/Q11).
+    fn update_title_and_target(
+        target: String,
+        title: String,
+        explicit: bool,
+        add_function_parentheses: bool,
+    ) -> (String, String) {
+        let mut title = title;
+        if !explicit {
+            if add_function_parentheses {
+                if !title.ends_with("()") {
+                    title.push_str("()");
+                }
+            } else if let Some(stripped) = title.strip_suffix("()") {
+                title = stripped.to_string();
+            }
+        }
+        let target = match target.strip_suffix("()") {
+            Some(stripped) => stripped.to_string(),
+            None => target,
+        };
+        (target, title)
+    }
+
     /// The body of [`Self::emit_sphinx_xref`], with the domain and role
     /// already decided. `external` is `Some(inventory)` for a node the
     /// `:external:` role produced — `Some(None)` when that role named no
@@ -948,6 +994,26 @@ impl<'a> Inliner<'a> {
             ),
             _ => (text.clone(), text.clone(), false),
         };
+        // `XRefRole.update_title_and_target` (`roles.py:87-98`), which
+        // `create_xref_node` runs on a `fix_parens` role BEFORE
+        // `process_link` (`roles.py:127-140`) — the ordering probes Q2/Q3
+        // of the task-2 brief pin the consequence: the target loses its
+        // `()` before the `~` shortening below splits it.
+        //
+        // Only `:py:func:` and `:py:meth:` are constructed with
+        // `fix_parens=True` (`domains/python/__init__.py:758,764`);
+        // `:py:deco:`, `:py:obj:` and the rest are not (probes Q8/Q9).
+        let py = domain == "py";
+        let (target, display) = if py && matches!(reftype.as_str(), "func" | "meth") {
+            Self::update_title_and_target(
+                target,
+                display,
+                explicit,
+                self.py.add_function_parentheses,
+            )
+        } else {
+            (target, display)
+        };
         // `XRefRole.lowercase` (`roles.py:122-124`): the target — never the
         // title — is lowercased, for `:ref:` *and* `:numref:`
         // (`domains/std/__init__.py:752-760`, both `lowercase=True`).
@@ -965,13 +1031,16 @@ impl<'a> Inliner<'a> {
             }
             ("py", _) if target.starts_with('~') && !explicit => {
                 let full = target[1..].to_string();
-                let short = full.rsplit('.').next().unwrap_or(&full).to_string();
+                // The shortening runs on the TITLE, not on the target: for a
+                // `fix_parens` role the title is the half that already
+                // carries the `()` decision (probes Q2/Q3).
+                let title = display.strip_prefix('~').unwrap_or(&display);
+                let short = title.rsplit('.').next().unwrap_or(title).to_string();
                 (full, short)
             }
             _ => (target, display),
         };
         let mut node = Node::elem("pending_xref", self.span);
-        let py = domain == "py";
         if py {
             // Context attrs (current class/module) are None outside a py
             // scope; pformat renders None as "True".
@@ -1020,12 +1089,6 @@ impl<'a> Inliner<'a> {
                 "std:program",
                 AttrValue::Str(self.program.unwrap_or("True").to_string()),
             );
-        }
-        // py xrefs wrap in a literal (code-styled); callables display
-        // with parens.
-        let mut display = display;
-        if py && matches!(reftype.as_str(), "func" | "meth") && !explicit {
-            display.push_str("()");
         }
         // `XRefRole.innernodeclass` (`roles.py:67`): `literal` unless the
         // role overrides it, which in the std domain only `ref`, `term` and
@@ -1663,6 +1726,9 @@ pub fn parse_inline(
     registry: &mut IdRegistry,
     source_path: &str,
 ) -> InlineResult {
+    // Docutils mode: no sphinx role reads the py configuration, so the
+    // defaults are as good as any.
+    let py = crate::py::PySigConfig::default();
     parse_inline_ext(
         text,
         span,
@@ -1672,6 +1738,7 @@ pub fn parse_inline(
         false,
         "index",
         None,
+        &py,
     )
 }
 
@@ -1685,6 +1752,7 @@ pub fn parse_inline_ext(
     sphinx: bool,
     docname: &str,
     program: Option<&str>,
+    py: &crate::py::PySigConfig,
 ) -> InlineResult {
     let escaped = escape2null(text);
     let mut inliner = Inliner {
@@ -1696,6 +1764,7 @@ pub fn parse_inline_ext(
         sphinx,
         docname,
         program,
+        py,
         roles: Vec::new(),
         nodes: Vec::new(),
         messages: Vec::new(),
@@ -1817,6 +1886,11 @@ mod tests {
 
     /// Sphinx-mode inline parse, for the roles that only exist there.
     fn sphinx_nodes(text: &str) -> Vec<Node> {
+        sphinx_nodes_with(text, &crate::py::PySigConfig::default())
+    }
+
+    /// The same, under a chosen py-domain configuration.
+    fn sphinx_nodes_with(text: &str, py: &crate::py::PySigConfig) -> Vec<Node> {
         let mut reg = IdRegistry::new();
         parse_inline_ext(
             text,
@@ -1827,6 +1901,7 @@ mod tests {
             true,
             "index",
             None,
+            py,
         )
         .nodes
     }
@@ -1916,5 +1991,167 @@ mod tests {
             Some(&AttrValue::Str("externally".into()))
         );
         assert_eq!(attr(&nodes[0], "intersphinx"), None);
+    }
+
+    // --- XRefRole.update_title_and_target (`roles.py:87-98`) ---------------
+    //
+    // Expected shapes below are the probe-verified pformat of the research
+    // spec §3.2 (probes P1-P7, full outputs in its appendix A.3) plus the
+    // ordering probes Q1-Q11 recorded in the task-2 brief's "Probe
+    // outcomes". `add_function_parentheses` is the ONLY config value these
+    // read; everything else in the bundle stays at its default.
+
+    fn with_parens(add_function_parentheses: bool) -> crate::py::PySigConfig {
+        crate::py::PySigConfig {
+            add_function_parentheses,
+            ..crate::py::PySigConfig::default()
+        }
+    }
+
+    /// `(literal text, reftarget)` of the single xref one snippet produces.
+    fn xref_title_and_target(text: &str, add_function_parentheses: bool) -> (String, String) {
+        let nodes = sphinx_nodes_with(text, &with_parens(add_function_parentheses));
+        assert_eq!(nodes.len(), 1, "{text}");
+        let xref = &nodes[0];
+        let target = match attr(xref, "reftarget") {
+            Some(AttrValue::Str(target)) => target.clone(),
+            other => panic!("reftarget on {text}: {other:?}"),
+        };
+        (xref.astext(), target)
+    }
+
+    /// P1/P6: an implicit `:py:func:`/`:py:meth:` title gains `()` under the
+    /// default config. P7: `:py:class:` has no `fix_parens` and never does.
+    #[test]
+    fn an_implicit_fix_parens_title_gains_parens_by_default() {
+        assert_eq!(
+            xref_title_and_target(":py:func:`mymod.myfunc`", true),
+            ("mymod.myfunc()".to_string(), "mymod.myfunc".to_string()),
+            "P1"
+        );
+        assert_eq!(
+            xref_title_and_target(":py:meth:`Obj.method`", true),
+            ("Obj.method()".to_string(), "Obj.method".to_string()),
+            "P6"
+        );
+        assert_eq!(
+            xref_title_and_target(":py:class:`mymod.MyClass`", true),
+            ("mymod.MyClass".to_string(), "mymod.MyClass".to_string()),
+            "P7: no fix_parens on the class role"
+        );
+    }
+
+    /// P3: the parens the author wrote are not doubled — sphinx strips a
+    /// trailing `()` before deciding whether to append one.
+    #[test]
+    fn an_already_parenthesized_implicit_title_is_not_doubled() {
+        assert_eq!(
+            xref_title_and_target(":py:func:`mymod.myfunc()`", true),
+            ("mymod.myfunc()".to_string(), "mymod.myfunc".to_string()),
+            "P3"
+        );
+    }
+
+    /// P2/P4: with `add_function_parentheses = False` an implicit title
+    /// loses its parens — including parens the author wrote themselves.
+    #[test]
+    fn add_function_parentheses_false_removes_the_parens_the_author_wrote() {
+        assert_eq!(
+            xref_title_and_target(":py:func:`mymod.myfunc`", false),
+            ("mymod.myfunc".to_string(), "mymod.myfunc".to_string()),
+            "P2"
+        );
+        assert_eq!(
+            xref_title_and_target(":py:func:`mymod.myfunc()`", false),
+            ("mymod.myfunc".to_string(), "mymod.myfunc".to_string()),
+            "P4"
+        );
+        assert_eq!(
+            xref_title_and_target(":py:meth:`Obj.method()`", false),
+            ("Obj.method".to_string(), "Obj.method".to_string()),
+            "Q7"
+        );
+    }
+
+    /// P5/Q6: an explicit title is never touched, under either setting —
+    /// the guard is `if not self.has_explicit_title` (`roles.py:88`).
+    #[test]
+    fn an_explicit_title_is_untouched_under_both_settings() {
+        for add_parens in [true, false] {
+            assert_eq!(
+                xref_title_and_target(":py:func:`custom title <mymod.myfunc>`", add_parens),
+                ("custom title".to_string(), "mymod.myfunc".to_string()),
+                "P5, add_function_parentheses={add_parens}"
+            );
+            assert_eq!(
+                xref_title_and_target(":py:func:`other() <mymod.myfunc>`", add_parens),
+                ("other()".to_string(), "mymod.myfunc".to_string()),
+                "Q6: an explicit title keeps parens it wrote itself"
+            );
+        }
+    }
+
+    /// The target strip sits OUTSIDE the explicit-title guard
+    /// (`roles.py:97`), so it happens under both settings and for explicit
+    /// titles too (Q4/Q5) — and it removes exactly one pair (Q10/Q11).
+    #[test]
+    fn the_target_always_loses_one_trailing_paren_pair() {
+        for add_parens in [true, false] {
+            assert_eq!(
+                xref_title_and_target(":py:func:`custom title <mymod.myfunc()>`", add_parens).1,
+                "mymod.myfunc",
+                "Q4/Q5, add_function_parentheses={add_parens}"
+            );
+        }
+        assert_eq!(
+            xref_title_and_target(":py:func:`mymod.myfunc()()`", true),
+            ("mymod.myfunc()()".to_string(), "mymod.myfunc()".to_string()),
+            "Q10: one pair off the target, and a title already ending in \
+             `()` gains nothing"
+        );
+        assert_eq!(
+            xref_title_and_target(":py:func:`mymod.myfunc()()`", false),
+            ("mymod.myfunc()".to_string(), "mymod.myfunc()".to_string()),
+            "Q11: one pair off each"
+        );
+    }
+
+    /// Q8/Q9: a py role without `fix_parens` keeps its parens in BOTH the
+    /// title and the target — the strip is not a py-domain-wide rule.
+    #[test]
+    fn a_py_role_without_fix_parens_keeps_its_parens() {
+        for (text, expected) in [
+            (":py:obj:`mymod.thing()`", "mymod.thing()"),
+            (":py:data:`mymod.thing()`", "mymod.thing()"),
+        ] {
+            assert_eq!(
+                xref_title_and_target(text, true),
+                (expected.to_string(), expected.to_string()),
+                "{text}"
+            );
+        }
+    }
+
+    /// Q2/Q3: `update_title_and_target` runs BEFORE
+    /// `PyXRefRole.process_link`, so the target loses its `()` before the
+    /// `~` shortening splits it — and the shortening runs on the title,
+    /// which by then carries the decided parens.
+    #[test]
+    fn the_tilde_shortening_sees_the_title_fix_parens_already_produced() {
+        assert_eq!(
+            xref_title_and_target(":py:func:`~mymod.myfunc`", true),
+            ("myfunc()".to_string(), "mymod.myfunc".to_string()),
+            "Q1"
+        );
+        assert_eq!(
+            xref_title_and_target(":py:func:`~mymod.myfunc()`", true),
+            ("myfunc()".to_string(), "mymod.myfunc".to_string()),
+            "Q2"
+        );
+        assert_eq!(
+            xref_title_and_target(":py:func:`~mymod.myfunc()`", false),
+            ("myfunc".to_string(), "mymod.myfunc".to_string()),
+            "Q3"
+        );
     }
 }
