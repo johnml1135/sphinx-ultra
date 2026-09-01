@@ -141,6 +141,22 @@ pub struct ConfPyConfig {
     pub tls_cacerts: Option<crate::intersphinx::TlsCacerts>,
     pub user_agent: Option<String>,
 
+    // Object-signature / py-domain family. `None` means "conf.py did not
+    // mention it", which is what keeps sphinx's own default in place —
+    // notably distinct from `Some(0)` for the two line-length keys, where
+    // the difference decides `PySigConfig::max_len`.
+    pub maximum_signature_line_length: Option<i64>,
+    pub python_maximum_signature_line_length: Option<i64>,
+    pub python_trailing_comma_in_multi_line_signatures: Option<bool>,
+    pub python_display_short_literal_types: Option<bool>,
+    pub python_use_unqualified_type_names: Option<bool>,
+    pub toc_object_entries: Option<bool>,
+    pub toc_object_entries_show_parents: Option<String>,
+    pub add_function_parentheses: Option<bool>,
+    pub add_module_names: Option<bool>,
+    pub strip_signature_backslash: Option<bool>,
+    pub modindex_common_prefix: Vec<String>,
+
     // intersphinx
     /// The raw `intersphinx_mapping` value, exactly as `conf.py` wrote it.
     /// Normalisation and validation happen in [`ConfPyConfig::to_build_config`],
@@ -382,6 +398,31 @@ impl PythonConfigParser {
             });
         config.user_agent = extract_string("user_agent");
 
+        // Object-signature / py-domain family. The two line-length keys are
+        // `int | None`, so they read through `as_i64` rather than
+        // `extract_int`: `x = None` in conf.py is a JSON null, which lands
+        // as `None` exactly like an absent key, and `x = 0` stays `Some(0)`.
+        config.maximum_signature_line_length = self
+            .conf_namespace
+            .get("maximum_signature_line_length")
+            .and_then(serde_json::Value::as_i64);
+        config.python_maximum_signature_line_length = self
+            .conf_namespace
+            .get("python_maximum_signature_line_length")
+            .and_then(serde_json::Value::as_i64);
+        config.python_trailing_comma_in_multi_line_signatures =
+            extract_bool("python_trailing_comma_in_multi_line_signatures");
+        config.python_display_short_literal_types =
+            extract_bool("python_display_short_literal_types");
+        config.python_use_unqualified_type_names =
+            extract_bool("python_use_unqualified_type_names");
+        config.toc_object_entries = extract_bool("toc_object_entries");
+        config.toc_object_entries_show_parents = extract_string("toc_object_entries_show_parents");
+        config.add_function_parentheses = extract_bool("add_function_parentheses");
+        config.add_module_names = extract_bool("add_module_names");
+        config.strip_signature_backslash = extract_bool("strip_signature_backslash");
+        config.modindex_common_prefix = extract_string_list("modindex_common_prefix");
+
         // Extract intersphinx configuration. The mapping is carried raw:
         // validating it is `to_build_config`'s job, because that is where a
         // failure can be reported as a configuration error.
@@ -473,6 +514,19 @@ impl PythonConfigParser {
                 | "html_math_renderer_options"
                 | "needs_sphinx"
                 | "nitpicky"
+                | "nitpick_ignore"
+                | "nitpick_ignore_regex"
+                | "maximum_signature_line_length"
+                | "python_maximum_signature_line_length"
+                | "python_trailing_comma_in_multi_line_signatures"
+                | "python_display_short_literal_types"
+                | "python_use_unqualified_type_names"
+                | "toc_object_entries"
+                | "toc_object_entries_show_parents"
+                | "add_function_parentheses"
+                | "add_module_names"
+                | "strip_signature_backslash"
+                | "modindex_common_prefix"
                 | "numfig"
                 | "numfig_format"
                 | "numfig_secnum_depth"
@@ -1039,6 +1093,19 @@ impl Default for ConfPyConfig {
             tls_verify: Some(true),
             tls_cacerts: None,
             user_agent: None,
+            // `None` = "conf.py said nothing", which leaves
+            // `BuildConfig::default()`'s sphinx defaults untouched.
+            maximum_signature_line_length: None,
+            python_maximum_signature_line_length: None,
+            python_trailing_comma_in_multi_line_signatures: None,
+            python_display_short_literal_types: None,
+            python_use_unqualified_type_names: None,
+            toc_object_entries: None,
+            toc_object_entries_show_parents: None,
+            add_function_parentheses: None,
+            add_module_names: None,
+            strip_signature_backslash: None,
+            modindex_common_prefix: Vec::new(),
             intersphinx_mapping: serde_json::Value::Null,
             intersphinx_disabled_reftypes: None,
             intersphinx_resolve_self: None,
@@ -1171,6 +1238,40 @@ impl ConfPyConfig {
         if let Some(depth) = self.numfig_secnum_depth {
             config.numfig_secnum_depth = depth.max(0) as u32;
         }
+
+        // Object-signature / py-domain family: every key that `conf.py`
+        // actually named overrides the sphinx default, and nothing else does.
+        // The two `Option<i64>` keys assign straight through, because for
+        // them "unset" and "set to None" are the same thing in sphinx too.
+        config.maximum_signature_line_length = self.maximum_signature_line_length;
+        config.python_maximum_signature_line_length = self.python_maximum_signature_line_length;
+        if let Some(trailing_comma) = self.python_trailing_comma_in_multi_line_signatures {
+            config.python_trailing_comma_in_multi_line_signatures = trailing_comma;
+        }
+        if let Some(short_literals) = self.python_display_short_literal_types {
+            config.python_display_short_literal_types = short_literals;
+        }
+        if let Some(unqualified) = self.python_use_unqualified_type_names {
+            config.python_use_unqualified_type_names = unqualified;
+        }
+        if let Some(toc_object_entries) = self.toc_object_entries {
+            config.toc_object_entries = toc_object_entries;
+        }
+        if let Some(show_parents) = &self.toc_object_entries_show_parents {
+            // Carried through even when it is outside the ENUM: sphinx only
+            // warns (`BuildConfig::validate`).
+            config.toc_object_entries_show_parents = show_parents.clone();
+        }
+        if let Some(add_parens) = self.add_function_parentheses {
+            config.add_function_parentheses = add_parens;
+        }
+        if let Some(add_module_names) = self.add_module_names {
+            config.add_module_names = add_module_names;
+        }
+        if let Some(strip_backslash) = self.strip_signature_backslash {
+            config.strip_signature_backslash = strip_backslash;
+        }
+        config.modindex_common_prefix = self.modindex_common_prefix.clone();
 
         // intersphinx + the shared HTTP configuration group.
         let (mapping, errors) = crate::intersphinx::validate_mapping(&self.intersphinx_mapping);
@@ -1358,6 +1459,93 @@ mod tests {
         assert_eq!(
             config.nitpick_ignore_regex,
             vec![("std:.*".to_string(), "legacy-.*".to_string())]
+        );
+    }
+
+    /// The eleven object-signature / py-domain keys must reach `BuildConfig`
+    /// from `conf.py`, with the defaults surviving for anything the file
+    /// does not mention.
+    #[test]
+    fn the_object_signature_family_reaches_the_build_config() {
+        let p = parse(
+            "maximum_signature_line_length = 88\n\
+             python_maximum_signature_line_length = 0\n\
+             python_trailing_comma_in_multi_line_signatures = False\n\
+             python_display_short_literal_types = True\n\
+             python_use_unqualified_type_names = True\n\
+             toc_object_entries = False\n\
+             toc_object_entries_show_parents = 'all'\n\
+             add_function_parentheses = False\n\
+             add_module_names = False\n\
+             strip_signature_backslash = True\n\
+             modindex_common_prefix = ['mypkg.', 'other.']\n",
+        );
+        let config = p
+            .extract_configuration()
+            .unwrap()
+            .to_build_config()
+            .unwrap();
+
+        assert_eq!(config.maximum_signature_line_length, Some(88));
+        assert_eq!(
+            config.python_maximum_signature_line_length,
+            Some(0),
+            "an explicit 0 is NOT the same as unset — max_len()'s truthiness \
+             fall-through depends on carrying it through unchanged"
+        );
+        assert!(!config.python_trailing_comma_in_multi_line_signatures);
+        assert!(config.python_display_short_literal_types);
+        assert!(config.python_use_unqualified_type_names);
+        assert!(!config.toc_object_entries);
+        assert_eq!(config.toc_object_entries_show_parents, "all");
+        assert!(!config.add_function_parentheses);
+        assert!(!config.add_module_names);
+        assert!(config.strip_signature_backslash);
+        assert_eq!(
+            config.modindex_common_prefix,
+            vec!["mypkg.".to_string(), "other.".to_string()]
+        );
+
+        // A conf.py that mentions none of them keeps sphinx's defaults.
+        let untouched = parse("project = 'x'\n")
+            .extract_configuration()
+            .unwrap()
+            .to_build_config()
+            .unwrap();
+        assert_eq!(untouched.maximum_signature_line_length, None);
+        assert!(untouched.add_function_parentheses);
+        assert!(untouched.toc_object_entries);
+        assert_eq!(untouched.toc_object_entries_show_parents, "domain");
+    }
+
+    /// A key this crate maps is a *standard* key: it must not also be
+    /// dumped into `custom_configs`, which is the catch-all for settings
+    /// only an extension understands.
+    #[test]
+    fn the_object_signature_family_is_not_treated_as_custom_config() {
+        let p = parse(
+            "maximum_signature_line_length = 88\n\
+             python_maximum_signature_line_length = 40\n\
+             python_trailing_comma_in_multi_line_signatures = False\n\
+             python_display_short_literal_types = True\n\
+             python_use_unqualified_type_names = True\n\
+             toc_object_entries = False\n\
+             toc_object_entries_show_parents = 'all'\n\
+             add_function_parentheses = False\n\
+             add_module_names = False\n\
+             strip_signature_backslash = True\n\
+             modindex_common_prefix = ['mypkg.']\n\
+             nitpick_ignore = [('py:func', 'nope')]\n\
+             nitpick_ignore_regex = [('py:.*', 'nope.*')]\n\
+             my_extension_knob = 3\n",
+        );
+        let config = p.extract_configuration().unwrap();
+
+        assert_eq!(
+            config.custom_configs.keys().collect::<Vec<_>>(),
+            vec!["my_extension_knob"],
+            "only the genuinely unknown key is custom: {:?}",
+            config.custom_configs
         );
     }
 

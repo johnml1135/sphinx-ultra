@@ -16,6 +16,7 @@ pub mod intersphinx;
 pub mod inventory;
 pub mod matching;
 pub mod parser;
+pub mod py;
 pub mod python_config;
 pub mod rst;
 pub mod search;

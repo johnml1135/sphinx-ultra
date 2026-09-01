@@ -170,6 +170,67 @@ pub struct BuildConfig {
     /// top-level section (1.1, 1.2, 2.1...).
     pub numfig_secnum_depth: u32,
 
+    // --- Object-signature / py-domain family (research spec §1-5, §7) ---
+    //
+    // The first ten keys below are rebuild category `'env'` in sphinx, i.e.
+    // read-phase inputs: a change to any of them invalidates every parsed
+    // document. `modindex_common_prefix` alone is `'html'` (`config.py:264`),
+    // a write-phase key. All eleven still enter the build-cache fingerprint,
+    // which hashes this whole struct minus
+    // `builder::EXCLUDED_FROM_FINGERPRINT`: over-invalidating on the one
+    // write-only key costs a rebuild, while under-invalidating on any of the
+    // other ten would serve stale doctrees.
+    /// `maximum_signature_line_length`, default `None` (`config.py:279-281`):
+    /// the wrap threshold shared by the py/js/c/cpp object domains, behind
+    /// each domain's own override. See [`crate::py::PySigConfig::max_len`]
+    /// for how the two py keys combine.
+    pub maximum_signature_line_length: Option<i64>,
+
+    /// `python_maximum_signature_line_length`, default `None`
+    /// (`domains/python/__init__.py:1108-1113`). An explicit `0` is *not*
+    /// the same as unset: see [`crate::py::PySigConfig::max_len`].
+    pub python_maximum_signature_line_length: Option<i64>,
+
+    /// `python_trailing_comma_in_multi_line_signatures`, default `True`
+    /// (`domains/python/__init__.py:1114-1119`).
+    pub python_trailing_comma_in_multi_line_signatures: bool,
+
+    /// `python_display_short_literal_types`, default `False`
+    /// (`domains/python/__init__.py:1120-1122`).
+    pub python_display_short_literal_types: bool,
+
+    /// `python_use_unqualified_type_names`, default `False`
+    /// (`domains/python/__init__.py:1105-1107`).
+    pub python_use_unqualified_type_names: bool,
+
+    /// `toc_object_entries`, default `True` (`config.py:250`).
+    pub toc_object_entries: bool,
+
+    /// `toc_object_entries_show_parents`, default `'domain'`, an
+    /// `ENUM('domain', 'all', 'hide')` (`config.py:251-253`). Stored as the
+    /// raw string because sphinx only *warns* about a value outside the
+    /// enum and keeps it — see [`BuildConfig::validate`].
+    pub toc_object_entries_show_parents: String,
+
+    /// `add_function_parentheses`, default `True` (`config.py:248`) — the
+    /// `fix_parens` roles (`:py:func:`, `:py:meth:`) append `()` to an
+    /// implicit title, and object descriptions do the same for `_toc_name`.
+    pub add_function_parentheses: bool,
+
+    /// `add_module_names`, default `True` (`config.py:249`): whether a
+    /// signature renders its module prefix.
+    pub add_module_names: bool,
+
+    /// `strip_signature_backslash`, default `False`
+    /// (`directives/__init__.py:370-372`): strip backslashes out of a
+    /// signature before it is measured and parsed.
+    pub strip_signature_backslash: bool,
+
+    /// `modindex_common_prefix`, default `[]` (`config.py:264`): module-name
+    /// prefixes the python module index ignores when sorting. The one
+    /// `'html'`-rebuild key in this family.
+    pub modindex_common_prefix: Vec<String>,
+
     /// `intersphinx_mapping`, already normalised and validated
     /// (`ext/intersphinx/_load.py:38-136`): project name -> (target URI,
     /// inventory locations). Loading a `conf.py` whose mapping fails
@@ -207,6 +268,11 @@ pub struct BuildConfig {
     /// [`crate::intersphinx::DEFAULT_USER_AGENT`].
     pub user_agent: Option<String>,
 }
+
+/// The three values `toc_object_entries_show_parents` accepts —
+/// `ENUM('domain', 'all', 'hide')` (`config.py:251-253`), in sphinx's own
+/// registration order.
+pub const TOC_OBJECT_ENTRIES_SHOW_PARENTS: [&str; 3] = ["domain", "all", "hide"];
 
 /// Sphinx's `numfig_format` defaults (`config.py:682-693`), which user
 /// entries merge over.
@@ -340,6 +406,20 @@ impl Default for BuildConfig {
             numfig_format: default_numfig_format(),
             numfig_secnum_depth: 1,
 
+            // Object-signature / py-domain family, probe-verified against
+            // sphinx 9.1.0 (task-2 brief, "Probe outcomes").
+            maximum_signature_line_length: None,
+            python_maximum_signature_line_length: None,
+            python_trailing_comma_in_multi_line_signatures: true,
+            python_display_short_literal_types: false,
+            python_use_unqualified_type_names: false,
+            toc_object_entries: true,
+            toc_object_entries_show_parents: "domain".to_string(),
+            add_function_parentheses: true,
+            add_module_names: true,
+            strip_signature_backslash: false,
+            modindex_common_prefix: Vec::new(),
+
             intersphinx_mapping: Default::default(),
             intersphinx_disabled_reftypes: vec!["std:doc".to_string()],
             intersphinx_resolve_self: String::new(),
@@ -462,6 +542,39 @@ impl BuildConfig {
 
         // Return default configuration
         Ok(Self::default())
+    }
+
+    /// Sphinx's `check_confval_types` pass, which runs once at
+    /// `config-inited` — after `conf.py` *and* after every `-D` override —
+    /// and reports values outside a setting's declared type or enum.
+    ///
+    /// It **warns**; it does not fail. A rejected value is left in place and
+    /// the build carries on with it (probe E of the task-2 brief:
+    /// `-D toc_object_entries_show_parents=bogus` builds successfully with
+    /// `config.toc_object_entries_show_parents == 'bogus'`). Returns the
+    /// warning texts so the caller can log them, write them to `-w`, and
+    /// count them toward `-W`, like every other config-time warning.
+    ///
+    /// Sphinx renders the candidate set as a python `frozenset` repr, whose
+    /// element order is hash-order and therefore varies between processes
+    /// (verified: three runs, three orders). The registration order is used
+    /// here instead, which is the only deterministic choice.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !TOC_OBJECT_ENTRIES_SHOW_PARENTS.contains(&self.toc_object_entries_show_parents.as_str())
+        {
+            let candidates = TOC_OBJECT_ENTRIES_SHOW_PARENTS
+                .iter()
+                .map(|value| format!("'{value}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            warnings.push(format!(
+                "The config value `toc_object_entries_show_parents` has to be a one of \
+                 frozenset({{{candidates}}}), but `{}` is given.",
+                self.toc_object_entries_show_parents
+            ));
+        }
+        warnings
     }
 
     /// Apply a `-D key=value` override (sphinx-build semantics): the value is
@@ -891,6 +1004,122 @@ output:
         assert_eq!(config.numfig_format["figure"], "Fig. %s");
         assert_eq!(config.numfig_format["table"], "Table %s");
         assert_eq!(config.numfig_format["code-block"], "Listing %s");
+    }
+
+    /// Probe D of the task-2 brief dumped `app.config` for all eleven keys
+    /// under sphinx 9.1.0; these are those values.
+    #[test]
+    fn object_signature_and_py_domain_defaults_match_sphinx() {
+        let config = BuildConfig::default();
+        assert_eq!(config.maximum_signature_line_length, None);
+        assert_eq!(config.python_maximum_signature_line_length, None);
+        assert!(config.python_trailing_comma_in_multi_line_signatures);
+        assert!(!config.python_display_short_literal_types);
+        assert!(!config.python_use_unqualified_type_names);
+        assert!(config.toc_object_entries);
+        assert_eq!(config.toc_object_entries_show_parents, "domain");
+        assert!(config.add_function_parentheses);
+        assert!(config.add_module_names);
+        assert!(!config.strip_signature_backslash);
+        assert!(config.modindex_common_prefix.is_empty());
+    }
+
+    #[test]
+    fn object_signature_family_is_overridable_from_the_command_line() {
+        let mut config = BuildConfig::default();
+
+        // `Option<i64>` lands in the Null-guessing branch of
+        // `coerce_override_value`, which must produce a number, not a string.
+        assert!(config
+            .apply_override("maximum_signature_line_length", "20")
+            .unwrap()
+            .is_none());
+        assert_eq!(config.maximum_signature_line_length, Some(20));
+        assert!(config
+            .apply_override("python_maximum_signature_line_length", "0")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            config.python_maximum_signature_line_length,
+            Some(0),
+            "an explicit 0 must survive as Some(0) — the truthiness \
+             fall-through is max_len()'s job, not the override's"
+        );
+
+        for key in [
+            "python_trailing_comma_in_multi_line_signatures",
+            "python_display_short_literal_types",
+            "python_use_unqualified_type_names",
+            "toc_object_entries",
+            "add_function_parentheses",
+            "add_module_names",
+            "strip_signature_backslash",
+        ] {
+            assert!(config.apply_override(key, "0").unwrap().is_none(), "{key}");
+            assert!(config.apply_override(key, "1").unwrap().is_none(), "{key}");
+        }
+        assert!(config.python_trailing_comma_in_multi_line_signatures);
+        assert!(config.add_function_parentheses);
+        assert!(config.strip_signature_backslash);
+
+        assert!(config
+            .apply_override("toc_object_entries_show_parents", "hide")
+            .unwrap()
+            .is_none());
+        assert_eq!(config.toc_object_entries_show_parents, "hide");
+
+        assert!(config
+            .apply_override("modindex_common_prefix", "mypkg.,other.")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            config.modindex_common_prefix,
+            vec!["mypkg.".to_string(), "other.".to_string()]
+        );
+    }
+
+    /// `toc_object_entries_show_parents` is `ENUM('domain', 'all', 'hide')`
+    /// (`config.py:251-253`), and sphinx's `check_confval_types` only
+    /// **warns** about a value outside it — the build continues with the
+    /// offending value untouched (probe E, recorded in the task-2 brief).
+    /// So `validate` returns warnings and never fails.
+    #[test]
+    fn an_out_of_enum_toc_show_parents_warns_and_is_kept() {
+        for accepted in ["domain", "all", "hide"] {
+            let mut config = BuildConfig::default();
+            config
+                .apply_override("toc_object_entries_show_parents", accepted)
+                .unwrap();
+            assert!(
+                config.validate().is_empty(),
+                "{accepted} is one of the three ENUM values"
+            );
+        }
+
+        let mut config = BuildConfig::default();
+        config
+            .apply_override("toc_object_entries_show_parents", "bogus")
+            .unwrap();
+        let warnings = config.validate();
+        assert_eq!(
+            warnings,
+            vec![
+                "The config value `toc_object_entries_show_parents` has to be a one of \
+                 frozenset({'domain', 'all', 'hide'}), but `bogus` is given."
+                    .to_string()
+            ]
+        );
+        assert_eq!(
+            config.toc_object_entries_show_parents, "bogus",
+            "sphinx keeps the rejected value rather than resetting it"
+        );
+
+        // The comparison is case-sensitive, exactly like a python set test.
+        let mut config = BuildConfig::default();
+        config
+            .apply_override("toc_object_entries_show_parents", "Domain")
+            .unwrap();
+        assert_eq!(config.validate().len(), 1);
     }
 
     #[test]

@@ -875,6 +875,72 @@ fn sphinx_build_d_unknown_key_warns_and_continues() {
     );
 }
 
+/// The object-signature / py-domain config family is reachable from `-D`:
+/// the `Option<i64>` keys land in the Null-guessing coercion branch, the
+/// booleans in the bool branch, and the ENUM key keeps whatever string it is
+/// given while warning — which is exactly what sphinx's `check_confval_types`
+/// does (probe E, task-2 brief).
+#[test]
+fn sphinx_build_d_reaches_the_object_signature_config_family() {
+    let out = out_dir("sb-D-py-config");
+    let src = fixture("basic");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        out.to_str().unwrap(),
+        "-D",
+        "maximum_signature_line_length=88",
+        "-D",
+        "python_maximum_signature_line_length=0",
+        "-D",
+        "add_function_parentheses=0",
+        "-D",
+        "toc_object_entries_show_parents=hide",
+        "-D",
+        "modindex_common_prefix=mypkg.",
+    ]);
+
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    assert!(
+        !stderr_of(&result).contains("unknown config value"),
+        "every key in the family must be a known setting, stderr: {}",
+        stderr_of(&result)
+    );
+
+    // An out-of-ENUM value warns and the build carries on with it.
+    let bad = out_dir("sb-D-py-config-enum");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        bad.to_str().unwrap(),
+        "-D",
+        "toc_object_entries_show_parents=bogus",
+    ]);
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    assert!(
+        stderr_of(&result).contains(
+            "The config value `toc_object_entries_show_parents` has to be a one of \
+             frozenset({'domain', 'all', 'hide'}), but `bogus` is given."
+        ),
+        "sphinx's ENUM rejection text, stderr: {}",
+        stderr_of(&result)
+    );
+
+    // ...and, being a config-time warning, it counts toward -W.
+    let bad_w = out_dir("sb-D-py-config-enum-W");
+    let result_w = sphinx_build(&[
+        src.to_str().unwrap(),
+        bad_w.to_str().unwrap(),
+        "-D",
+        "toc_object_entries_show_parents=bogus",
+        "-W",
+    ]);
+    assert_eq!(
+        result_w.status.code(),
+        Some(1),
+        "-W must see the ENUM warning, stderr: {}",
+        stderr_of(&result_w)
+    );
+}
+
 #[test]
 fn sphinx_build_w_exits_one_with_sphinx_message() {
     let out = out_dir("sb-W");

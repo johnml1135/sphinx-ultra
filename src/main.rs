@@ -315,6 +315,14 @@ async fn run_build(args: RunArgs) -> Result<i32> {
         config.fail_on_warning = true;
     }
 
+    // Sphinx type-checks the finished configuration once at `config-inited`,
+    // i.e. after conf.py AND after every override — a rejected value only
+    // warns, and the build continues with it.
+    for message in config.validate() {
+        warn!("{}", message);
+        config_warnings.push(message);
+    }
+
     // Save the fail_on_warning flag before moving config
     let should_fail_on_warning = config.fail_on_warning;
 
