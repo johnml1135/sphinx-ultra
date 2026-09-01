@@ -106,6 +106,11 @@ pub struct ToctreeEntryRecord {
 /// (`sphinx/domains/std/__init__.py:308-315`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProgramOptionRecord {
+    /// Source-table index of the registering signature (an option inside
+    /// an included file must attribute to that file). Deliberately not
+    /// `#[serde(default)]` — the cache-shape rule
+    /// [`RegistryExport::program_options`] explains.
+    pub source: u16,
     /// The `.. program::` in scope, `None` outside one.
     pub program: Option<String>,
     /// One `desc_signature['allnames']` spelling (`--file`, `-f`, ...).
@@ -119,6 +124,11 @@ pub struct ProgramOptionRecord {
 /// (`GenericObject`/`ConfigurationValue.add_target_and_index`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ObjectRegistration {
+    /// Source-table index of the registering signature; the duplicate
+    /// warning names this source's path. Deliberately not
+    /// `#[serde(default)]` (cache-shape rule, see
+    /// [`RegistryExport::program_options`]).
+    pub source: u16,
     /// `self.objtype` — `envvar`, `confval`, ... `describe`/`object` never
     /// reach here: the base `add_target_and_index` is a no-op.
     pub objtype: String,
@@ -187,6 +197,11 @@ pub struct RegistryExport {
 /// with no `type`/`subtype` and so renders with no `[category]` suffix.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParseLogWarning {
+    /// Source-table index of the `location=` node's line: the replay
+    /// renders this source's path, not the document's. Deliberately not
+    /// `#[serde(default)]` (cache-shape rule, see
+    /// [`RegistryExport::program_options`]).
+    pub source: u16,
     /// The warning text, already formatted exactly as Sphinx renders it.
     pub message: String,
     /// 1-based line of the `location=` node Sphinx passes.
@@ -210,8 +225,7 @@ pub fn parse_rst(source: &str, opts: &ParseOptions) -> Doctree {
 }
 
 pub fn parse_rst_full(source: &str, opts: &ParseOptions) -> ParseOutput {
-    let lines = lines::Lines::new(source);
-    let mut parser = block::BlockParser::new(&lines, &opts.source_path, source.len());
+    let mut parser = block::BlockParser::new(source, &opts.source_path);
     parser.sphinx = opts.sphinx;
     parser.docname = opts.docname.clone();
     parser.found_docs = opts.found_docs.clone();
@@ -245,6 +259,35 @@ mod tests {
             assert!(
                 serde_json::from_str::<RegistryExport>(missing).is_err(),
                 "a registry missing a std-record field must fail to decode: {missing}"
+            );
+        }
+    }
+
+    /// The per-record `source` fields added by the provenance wave follow
+    /// the same rule: a cache entry whose records predate them must FAIL to
+    /// decode (a defaulted 0 would silently mis-attribute nothing today,
+    /// but would decode a stale record stream as current).
+    #[test]
+    fn records_written_before_the_source_field_existed_fail_to_decode() {
+        let with_source = r#"{"nameids":[],"index_serial":0,
+            "program_options":[{"source":0,"program":null,"name":"-f","node_id":"a"}],
+            "std_objects":[{"source":0,"objtype":"envvar","name":"P","node_id":"b","line":1}],
+            "log_warnings":[{"source":0,"message":"m","line":2}]}"#;
+        serde_json::from_str::<RegistryExport>(with_source).expect("the current shape decodes");
+
+        for stale in [
+            r#"{"nameids":[],"index_serial":0,
+                "program_options":[{"program":null,"name":"-f","node_id":"a"}],
+                "std_objects":[],"log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],
+                "std_objects":[{"objtype":"envvar","name":"P","node_id":"b","line":1}],
+                "log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "log_warnings":[{"message":"m","line":2}]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<RegistryExport>(stale).is_err(),
+                "a record missing its source field must fail to decode: {stale}"
             );
         }
     }

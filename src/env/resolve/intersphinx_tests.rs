@@ -57,8 +57,16 @@ fn loaded_intersphinx() -> Intersphinx {
 }
 
 /// One document holding a single `pending_xref` with the given attributes.
+/// The xref's span carries line 1, the way every parser-built span carries
+/// its real stamped line (resolution warnings read `span.line` directly).
 fn document(attrs: &[(&'static str, AttrValue)], contnode_text: &str) -> Doctree {
-    let mut xref = Node::elem(kinds::PENDING_XREF, Span::ZERO);
+    let xref_span = Span {
+        source: 0,
+        line: 1,
+        start: 0,
+        end: 0,
+    };
+    let mut xref = Node::elem(kinds::PENDING_XREF, xref_span);
     for (key, value) in attrs {
         xref.set(key, value.clone());
     }
@@ -136,7 +144,6 @@ fn resolve(isx: &Intersphinx, mut doctree: Doctree) -> Resolved {
         &nitpick,
         "index",
         &mut doctree,
-        "",
         Path::new("index.rst"),
     );
     Resolved {

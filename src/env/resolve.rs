@@ -11,11 +11,11 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::doctree::{kinds, AttrValue, Doctree, Node};
 use crate::env::numbers::clean_astext;
-use crate::env::std_domain::{node_line, DocumentIds, PropagatedIds};
+use crate::env::std_domain::{DocumentIds, PropagatedIds};
 use crate::env::toctree::{docname_join, py_repr_str};
 use crate::env::BuildEnvironment;
 use crate::error::{BuildWarning, WarningType};
@@ -626,16 +626,19 @@ pub fn resolve_document(
     nitpick: &NitpickConfig<'_>,
     docname: &str,
     doctree: &mut Doctree,
-    text: &str,
     path: &Path,
 ) -> DocumentResolution {
     let mut out = DocumentResolution::default();
+    // The walk mutates `root` while warnings read the source table for
+    // each node's `(source, line)`; the table is tiny, so a clone is the
+    // simplest split.
+    let sources = doctree.sources.clone();
     resolve_children(
         resolver,
         nitpick,
         docname,
         &mut doctree.root,
-        text,
+        &sources,
         path,
         &mut out,
     );
@@ -671,12 +674,12 @@ fn resolve_children(
     nitpick: &NitpickConfig<'_>,
     docname: &str,
     node: &mut Node,
-    text: &str,
+    sources: &[String],
     path: &Path,
     out: &mut DocumentResolution,
 ) {
     for child in &mut node.children {
-        resolve_children(resolver, nitpick, docname, child, text, path, out);
+        resolve_children(resolver, nitpick, docname, child, sources, path, out);
     }
     if !node
         .children
@@ -692,7 +695,7 @@ fn resolve_children(
             continue;
         }
         node.children.extend(resolve_one(
-            resolver, nitpick, docname, child, text, path, out,
+            resolver, nitpick, docname, child, sources, path, out,
         ));
     }
 }
@@ -704,12 +707,19 @@ fn resolve_one(
     nitpick: &NitpickConfig<'_>,
     docname: &str,
     node: Node,
-    text: &str,
-    path: &Path,
+    sources: &[String],
+    doc_path: &Path,
     out: &mut DocumentResolution,
 ) -> Vec<Node> {
     let span = node.span;
-    let line = node_line(&node, text);
+    // Warnings locate at the node's own source and stamped line (docutils'
+    // `(node.source, node.line)`), not the enclosing document's path.
+    let source_path = sources
+        .get(span.source as usize)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| doc_path.to_path_buf());
+    let path = source_path.as_path();
+    let line = span.line as usize;
     let refdomain = attr_str(&node, "refdomain").unwrap_or_default().to_string();
     let reftype = attr_str(&node, "reftype").unwrap_or_default().to_string();
     let reftarget = attr_str(&node, "reftarget").unwrap_or_default().to_string();

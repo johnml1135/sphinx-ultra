@@ -62,7 +62,10 @@ use crate::doctree::Node;
 /// stored `version` doesn't match current — mirroring Sphinx's own
 /// `ENV_VERSION` check, where a stale environment is simply rebuilt from
 /// scratch rather than partially trusted.
-pub const ENV_VERSION: u32 = 2;
+///
+/// Version 3: wave 4.5's `Span` change (a `line` provenance field) alters
+/// the shape of every serialized `Node` tree in `tocs`/`titles`.
+pub const ENV_VERSION: u32 = 3;
 
 /// The `env.bin` filename inside a build's cache directory.
 const ENV_FILENAME: &str = "env.bin";

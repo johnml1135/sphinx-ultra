@@ -1,10 +1,12 @@
 //! The block-level recursive-descent parser (M2 wave 1).
 //!
 //! Model: docutils' `RSTStateMachine` re-expressed as recursive descent over
-//! dedented line views. Every nested construct materializes a `Vec<LineRef>`
+//! dedented line views. Every nested construct materializes a `Vec<LineRec>`
 //! dedented to its own base column (docutils `get_indented` does the same),
-//! so all productions parse "at column 0". Line numbers and byte spans ride
-//! along on each `LineRef`.
+//! so all productions parse "at column 0". Each `LineRec` carries `(source,
+//! lineno)` provenance and a byte range into the parser-owned source-text
+//! table — indices, not borrows, so a directive can splice an included
+//! file's lines into the running stream (see [`SpliceRequest`]).
 //!
 //! Dispatch order matches docutils `Body.initial_transitions`: bullet,
 //! enumerator, doctest, line_block, explicit markup, anonymous target,
@@ -15,72 +17,119 @@
 use crate::doctree::ids::{self, IdRegistry};
 use crate::doctree::{kinds, messages, AttrValue, Node, Span};
 
-use super::lines::Lines;
+use std::sync::Arc;
+
+use super::lines::{LineRec, Lines};
 
 const ADORNMENT_CHARS: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 const BULLET_CHARS: [char; 6] = ['*', '+', '-', '\u{2022}', '\u{2023}', '\u{2043}'];
 
 /// A pending block-quote segment: accumulated body lines plus an optional
 /// (attribution node, marker lineno) that closed it.
-type QuoteSegment<'a> = (Vec<LineRef<'a>>, Option<(Node, u32)>);
+type QuoteSegment = (Vec<LineRec>, Option<(Node, u32)>);
 
-#[derive(Copy, Clone, Debug)]
-struct LineRef<'a> {
-    text: &'a str,
-    lineno: u32,
-    src_start: u32,
-    src_end: u32,
-    /// Cached leading-space count. Computed once at view construction and
-    /// derived arithmetically on dedent — re-scanning per nesting level made
-    /// deep nesting O(depth^3) (measured: 800-level nest took ~0.5s).
-    indent: u32,
+/// The parser-owned source table `LineRec::source` and `Span::source`
+/// index: per source, its path (what messages stamp and
+/// `Doctree::sources` publishes) and its *processed* text (what every
+/// `LineRec` byte range slices).
+///
+/// Texts are `Arc<str>` so a caller that must hold line text across an
+/// `&mut self` call can clone the handle ([`SourceTable::arc`]) and slice
+/// a local instead of borrowing the parser — which is also what keeps a
+/// mid-parse push (an included file arriving) free of self-reference.
+#[derive(Debug, Default)]
+pub(crate) struct SourceTable {
+    paths: Vec<Arc<str>>,
+    texts: Vec<Arc<str>>,
 }
 
-impl<'a> LineRef<'a> {
-    fn new(text: &'a str, lineno: u32, src_start: u32, src_end: u32) -> LineRef<'a> {
-        let indent = (text.len() - text.trim_start_matches(' ').len()) as u32;
-        LineRef {
-            text,
-            lineno,
-            src_start,
-            src_end,
-            indent,
-        }
+impl SourceTable {
+    /// Append a source; returns its id, or `None` once the u16 id space is
+    /// exhausted (a totality guard, like `MAX_NEST_DEPTH` — real documents
+    /// never approach 65k sources).
+    fn push(&mut self, path: Arc<str>, text: Arc<str>) -> Option<u16> {
+        let id = u16::try_from(self.paths.len()).ok()?;
+        self.paths.push(path);
+        self.texts.push(text);
+        Some(id)
     }
 
-    fn is_blank(&self) -> bool {
-        self.text.is_empty()
+    fn path(&self, source: u16) -> &str {
+        &self.paths[source as usize]
     }
 
-    fn indent(&self) -> usize {
-        self.indent as usize
+    /// Shared handle on a path, for passing while `self` is mutably
+    /// borrowed elsewhere.
+    fn arc_path(&self, source: u16) -> Arc<str> {
+        Arc::clone(&self.paths[source as usize])
     }
 
-    /// Dedent by `n` columns (leading columns are spaces by construction;
-    /// marker lines are re-wrapped with [`LineRef::new`] instead).
-    fn dedented(&self, n: usize) -> LineRef<'a> {
-        let n = n.min(self.indent());
-        LineRef {
-            text: &self.text[n..],
-            indent: self.indent - n as u32,
-            ..*self
-        }
+    fn text(&self, source: u16) -> &str {
+        &self.texts[source as usize]
     }
+
+    /// Shared handle on a source's processed text: slice a local clone
+    /// instead of borrowing the parser when the text must stay usable
+    /// across an `&mut self` call.
+    fn arc(&self, source: u16) -> Arc<str> {
+        Arc::clone(&self.texts[source as usize])
+    }
+
+    /// The current view of `rec` — valid until the next dedent/re-wrap of
+    /// the record, unaffected by table growth.
+    fn line_text(&self, rec: LineRec) -> &str {
+        rec.slice(self.text(rec.source))
+    }
+
+    fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    fn into_paths(self) -> Vec<String> {
+        self.paths.iter().map(|p| p.to_string()).collect()
+    }
+}
+
+/// What a directive hands back besides the nodes it pushed: lines of a new
+/// source to insert into the running line stream right after the directive
+/// (T12's `include` is the intended producer; only a test directive
+/// returns it this wave). Plain data — a directive builds one from its
+/// input alone, with no access to parser internals.
+#[derive(Debug)]
+pub(crate) struct SpliceRequest {
+    /// Raw lines of the new source, exactly as read (they are processed —
+    /// tab expansion, trailing-whitespace strip — on insertion).
+    pub lines: Vec<String>,
+    /// The path messages and spans attribute the lines to.
+    pub source_path: String,
+    /// First line number of the spliced lines; `None` numbers from 1 (an
+    /// included file), `Some(n)` keeps a caller-chosen base.
+    pub base_lineno_override: Option<u32>,
+}
+
+/// What running a directive produced beyond its nodes.
+// Only the test directive produces a splice until T12's include lands, so
+// outside test builds the channel is currently unconsumed.
+#[allow(dead_code)]
+enum DirectiveOutcome {
+    Done,
+    Splice(SpliceRequest),
 }
 
 /// A glossary comment line: unindented and opening with `.. `
 /// (`domains/std/__init__.py:452`, `line.startswith('.. ')` — the trailing
 /// space is part of the test, so a bare `..` is still a term).
-fn is_glossary_comment(line: &LineRef<'_>) -> bool {
-    line.indent() == 0 && line.text.starts_with(".. ")
+fn is_glossary_comment(line: &LineRec, line_text: &str) -> bool {
+    line.indent() == 0 && line_text.starts_with(".. ")
 }
 
-/// Slice a marker line after `n_chars` characters (char-aware: unicode
-/// bullets are multi-byte).
-fn rest_after(text: &str, n_chars: usize) -> &str {
+/// Byte offset of the character `n_chars` into `text` (its length when
+/// the text is shorter) — for re-wrapping a `LineRec` view past a marker
+/// (char-aware: unicode bullets are multi-byte).
+fn rest_after_offset(text: &str, n_chars: usize) -> usize {
     match text.char_indices().nth(n_chars) {
-        Some((i, _)) => &text[i..],
-        None => "",
+        Some((i, _)) => i,
+        None => text.len(),
     }
 }
 
@@ -130,10 +179,11 @@ struct SectionStart {
 /// total: content beyond this depth is dropped with an ERROR message.
 const MAX_NEST_DEPTH: usize = 200;
 
-pub(crate) struct BlockParser<'a> {
-    top: Vec<LineRef<'a>>,
-    pub(crate) source_path: &'a str,
-    source_len: usize,
+pub(crate) struct BlockParser {
+    top: Vec<LineRec>,
+    /// Source table (paths + processed texts). Entry 0 is the document;
+    /// sub-parses over lifted text and spliced sources push.
+    sources: SourceTable,
     pub(crate) registry: IdRegistry,
     styles: Vec<(char, bool)>,
     depth: usize,
@@ -189,6 +239,9 @@ pub(crate) struct BlockParser<'a> {
     /// Names defined more than once: earlier nodes get names -> dupnames
     /// in a post-parse walk (docutils mutates the old node in place).
     substitution_dupnames: Vec<String>,
+    /// A [`SpliceRequest`] a directive just returned, waiting for the
+    /// enclosing block-parse loop to insert it at its cursor.
+    pending_splice: Option<SpliceRequest>,
 }
 
 #[derive(Debug, Default)]
@@ -197,17 +250,22 @@ struct SubstCtx {
     rtrim: bool,
 }
 
-impl<'a> BlockParser<'a> {
-    pub(crate) fn new(lines: &'a Lines, source_path: &'a str, source_len: usize) -> Self {
-        let top = lines
-            .iter()
-            .enumerate()
-            .map(|(i, l)| LineRef::new(&l.text, (i + 1) as u32, l.src_start, l.src_end))
-            .collect();
+impl BlockParser {
+    /// Parser over one document: the single-source form (entry 0 = the
+    /// document, linenos `1..=n`).
+    pub(crate) fn new(source: &str, source_path: &str) -> Self {
+        let (text, top) = Lines::new(source).into_parts();
+        let mut sources = SourceTable::default();
+        sources
+            .push(Arc::from(source_path), Arc::from(text))
+            .expect("a fresh table accepts entry 0");
+        BlockParser::from_parts(top, sources)
+    }
+
+    fn from_parts(top: Vec<LineRec>, sources: SourceTable) -> Self {
         BlockParser {
             top,
-            source_path,
-            source_len,
+            sources,
             registry: IdRegistry::new(),
             styles: Vec::new(),
             depth: 0,
@@ -230,6 +288,7 @@ impl<'a> BlockParser<'a> {
             substitution_ctx: None,
             substitution_names_seen: Vec::new(),
             substitution_dupnames: Vec::new(),
+            pending_splice: None,
         }
     }
 
@@ -249,7 +308,7 @@ impl<'a> BlockParser<'a> {
         super::ParseOutput {
             doctree: crate::doctree::Doctree {
                 root,
-                sources: vec![self.source_path.to_string()],
+                sources: self.sources.into_paths(),
             },
             directive_records: std::mem::take(&mut self.directive_records),
             role_records: std::mem::take(&mut self.role_records),
@@ -265,8 +324,8 @@ impl<'a> BlockParser<'a> {
     fn capture_directive_record(
         &mut self,
         name: &str,
-        first_line: &LineRef<'a>,
-        block: &[LineRef<'a>],
+        first_line: &LineRec,
+        block: &[LineRec],
         lineno: u32,
     ) {
         const INLINE_ADMONITIONS: &[&str] = &[
@@ -283,7 +342,7 @@ impl<'a> BlockParser<'a> {
         ];
         let mut options: Vec<(String, String)> = Vec::new();
         let mut content_lines: Vec<String> = Vec::new();
-        let marker_text = first_line.text.trim();
+        let marker_text = self.sources.line_text(*first_line).trim();
         let lower = name.to_lowercase();
         let is_admonition = INLINE_ADMONITIONS.contains(&lower.as_str());
         if is_admonition && !marker_text.is_empty() {
@@ -298,16 +357,17 @@ impl<'a> BlockParser<'a> {
                 }
                 continue;
             }
+            let text = self.sources.line_text(*l);
             if in_options {
-                if let Some((oname, body_start)) = field_marker(l.text.trim_start()) {
-                    let base = l.text.len() - l.text.trim_start().len();
-                    let val = l.text[base + body_start..].trim().to_string();
+                if let Some((oname, body_start)) = field_marker(text.trim_start()) {
+                    let base = text.len() - text.trim_start().len();
+                    let val = text[base + body_start..].trim().to_string();
                     options.push((oname, val));
                     continue;
                 }
                 in_options = false;
             }
-            content_lines.push(l.text.to_string());
+            content_lines.push(text.to_string());
         }
         while content_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
             content_lines.pop();
@@ -327,14 +387,16 @@ impl<'a> BlockParser<'a> {
     }
 
     /// Inline parse through the parser's own registry/mode; collects role
-    /// records emitted by the inliner.
+    /// records emitted by the inliner. Messages the inliner raises stamp
+    /// the span's own source path.
     fn inline(&mut self, text: &str, span: Span, lineno: u32) -> super::inline::InlineResult {
+        let source_path = self.sources.arc_path(span.source);
         let mut result = super::inline::parse_inline_ext(
             text,
             span,
             lineno,
             &mut self.registry,
-            self.source_path,
+            &source_path,
             self.sphinx,
             &self.docname,
             self.program.as_deref(),
@@ -345,7 +407,7 @@ impl<'a> BlockParser<'a> {
 
     /// parse_elements with the containing node kind recorded (docutils
     /// nested_parse: `state_machine.node` = the container element).
-    fn parse_nested(&mut self, lines: &[LineRef<'a>], kind: &'static str) -> Vec<Node> {
+    fn parse_nested(&mut self, lines: &[LineRec], kind: &'static str) -> Vec<Node> {
         let saved = self.nested_node_kind.replace(kind);
         let nodes = self.parse_elements(lines);
         self.nested_node_kind = saved;
@@ -353,15 +415,25 @@ impl<'a> BlockParser<'a> {
     }
 
     /// Nested parse over OWNED text (csv-table cells and, later,
-    /// rst_prolog/include): a sub-parser over a locally built `Lines`,
-    /// sharing this parser's id registry, with linenos offset so absolute
-    /// line numbers keep working.
-    fn parse_detached(&mut self, text: &str, first_lineno: u32, kind: &'static str) -> Vec<Node> {
-        let lines = Lines::new(text);
-        let mut sub = BlockParser::new(&lines, self.source_path, text.len());
-        for l in &mut sub.top {
-            l.lineno += first_lineno.saturating_sub(1);
-        }
+    /// rst_prolog): a sub-parser over a new source-table entry, sharing
+    /// this parser's table and id registry, with linenos starting at
+    /// `first_lineno` so absolute line numbers keep working. The entry's
+    /// path copies `attribute_to`'s — the source the text was lifted from
+    /// — so messages and spans keep attributing to it.
+    fn parse_detached(
+        &mut self,
+        text: &str,
+        first_lineno: u32,
+        attribute_to: u16,
+        kind: &'static str,
+    ) -> Vec<Node> {
+        let path = self.sources.arc_path(attribute_to);
+        let Some((_id, top)) = self.push_source(path, text, first_lineno) else {
+            // Source-id space exhausted (totality guard): drop the nested
+            // content rather than mis-attribute it.
+            return Vec::new();
+        };
+        let mut sub = BlockParser::from_parts(top, std::mem::take(&mut self.sources));
         sub.registry = std::mem::replace(&mut self.registry, IdRegistry::new());
         sub.nested_node_kind = Some(kind);
         sub.line_bias = self.line_bias;
@@ -377,6 +449,7 @@ impl<'a> BlockParser<'a> {
         sub.program = self.program.clone();
         let top = std::mem::take(&mut sub.top);
         let nodes = sub.parse_elements(&top);
+        self.sources = sub.sources;
         self.registry = sub.registry;
         self.directive_records.append(&mut sub.directive_records);
         self.role_records.append(&mut sub.role_records);
@@ -388,39 +461,126 @@ impl<'a> BlockParser<'a> {
         nodes
     }
 
-    fn span_of(&self, lines: &[LineRef<'_>], first: usize, last: usize) -> Span {
-        let start = lines.get(first).map(|l| l.src_start).unwrap_or(0);
+    /// Process `text` into a new source-table entry named `path`; returns
+    /// the entry's id and record stream (`None` when the id space is
+    /// exhausted).
+    fn push_source(
+        &mut self,
+        path: Arc<str>,
+        text: &str,
+        first_lineno: u32,
+    ) -> Option<(u16, Vec<LineRec>)> {
+        // The id is only known after the push, but the recs need it up
+        // front — take it from the table length the push will use.
+        let id = u16::try_from(self.sources.len()).ok()?;
+        let (processed, recs) = Lines::for_source(text, id, first_lineno).into_parts();
+        self.sources.push(path, Arc::from(processed))?;
+        Some((id, recs))
+    }
+
+    /// Insert a [`SpliceRequest`]'s lines into `lines` at `at` (the
+    /// block-parse loop's cursor, right past the directive that returned
+    /// it): the request's text becomes a new source-table entry and its
+    /// records join the running stream. On id-space exhaustion the request
+    /// is dropped (same totality guard as [`Self::push_source`]).
+    fn apply_splice(&mut self, lines: &mut Vec<LineRec>, at: usize, request: SpliceRequest) {
+        let SpliceRequest {
+            lines: raw_lines,
+            source_path,
+            base_lineno_override,
+        } = request;
+        let text = raw_lines.join("\n");
+        let first_lineno = base_lineno_override.unwrap_or(1);
+        let Some((_id, recs)) = self.push_source(Arc::from(source_path), &text, first_lineno)
+        else {
+            return;
+        };
+        let at = at.min(lines.len());
+        lines.splice(at..at, recs);
+    }
+
+    /// Re-wrap `rec` to the `from..to` byte sub-range of its current view
+    /// (a marker consumed, a table-cell column carved): the leading-space
+    /// cache is recomputed for the shrunk view.
+    fn rewrap_range(&self, rec: LineRec, from: usize, to: usize) -> LineRec {
+        let start = rec.start + from as u32;
+        let end = rec.start + to as u32;
+        debug_assert!(from <= to && end <= rec.end);
+        LineRec::new(
+            rec.source,
+            rec.lineno,
+            start,
+            end,
+            &self.sources.text(rec.source)[start as usize..end as usize],
+        )
+    }
+
+    /// Re-wrap `rec` past the first `byte_off` bytes of its current view.
+    fn rewrap_from(&self, rec: LineRec, byte_off: usize) -> LineRec {
+        self.rewrap_range(rec, byte_off, (rec.end - rec.start) as usize)
+    }
+
+    /// A zero-width (blank) view at the start of `rec`'s line, keeping its
+    /// provenance — the shape table cells use for their blank rows.
+    fn blank_at(&self, rec: LineRec) -> LineRec {
+        self.rewrap_range(rec, 0, 0)
+    }
+
+    /// The lines' current views joined with `\n`.
+    fn join_lines(&self, lines: &[LineRec]) -> String {
+        let mut joined = String::new();
+        for (i, l) in lines.iter().enumerate() {
+            if i > 0 {
+                joined.push('\n');
+            }
+            joined.push_str(self.sources.line_text(*l));
+        }
+        joined
+    }
+
+    fn span_of(&self, lines: &[LineRec], first: usize, last: usize) -> Span {
+        let first_rec = lines.get(first);
+        let start = first_rec.map(|l| l.start).unwrap_or(0);
         let end = lines
             .get(last.min(lines.len().saturating_sub(1)))
-            .map(|l| l.src_end)
+            .map(|l| l.end)
             .unwrap_or(start);
         Span {
-            source: 0,
+            source: first_rec.map(|l| l.source).unwrap_or(0),
+            line: first_rec.map(|l| l.lineno).unwrap_or(0),
             start,
             end,
         }
     }
 
-    fn msg(&self, level: u8, text: &str, lineno: u32) -> Node {
-        messages::system_message(level, text, lineno, self.source_path)
+    /// A `system_message` anchored at `lineno` of `source` — the message
+    /// stamps that source's table path.
+    fn msg(&self, level: u8, text: &str, source: u16, lineno: u32) -> Node {
+        messages::system_message(level, text, lineno, self.sources.path(source))
     }
 
     /// For state-machine-position-derived messages (see `line_bias`).
-    fn msg_sm(&self, level: u8, text: &str, lineno: u32) -> Node {
-        messages::system_message(level, text, lineno + self.line_bias, self.source_path)
+    fn msg_sm(&self, level: u8, text: &str, source: u16, lineno: u32) -> Node {
+        messages::system_message(
+            level,
+            text,
+            lineno + self.line_bias,
+            self.sources.path(source),
+        )
     }
 
     /// Probe-verified: an explicit-markup element (comment/target) followed
     /// by an ADJACENT non-blank column-0 line that is not itself explicit
     /// markup warns. Consecutive `..`/`__ ` items chain without warning.
-    fn warn_explicit_markup_end(&self, lines: &[LineRef<'a>], pos: usize, out: &mut Vec<Node>) {
+    fn warn_explicit_markup_end(&self, lines: &[LineRec], pos: usize, out: &mut Vec<Node>) {
         if let Some(l) = lines.get(pos) {
-            let explicit_ish =
-                l.text == ".." || l.text.starts_with(".. ") || l.text.starts_with("__ ");
+            let text = self.sources.line_text(*l);
+            let explicit_ish = text == ".." || text.starts_with(".. ") || text.starts_with("__ ");
             if !l.is_blank() && l.indent() == 0 && !explicit_ish {
                 out.push(self.msg(
                     messages::WARNING,
                     "Explicit markup ends without a blank line; unexpected unindent.",
+                    l.source,
                     l.lineno,
                 ));
             }
@@ -436,15 +596,16 @@ impl<'a> BlockParser<'a> {
             kinds::DOCUMENT,
             Span {
                 source: 0,
+                line: 1,
                 start: 0,
-                end: self.source_len as u32,
+                end: self.sources.text(0).len() as u32,
             },
         );
-        root.set("source", AttrValue::Str(self.source_path.to_string()));
+        root.set("source", AttrValue::Str(self.sources.path(0).to_string()));
 
         // Open sections, deepest last; nodes attach on close.
         let mut stack: Vec<Node> = Vec::new();
-        let lines = std::mem::take(&mut self.top);
+        let mut lines = std::mem::take(&mut self.top);
         let mut pos = 0usize;
         while pos < lines.len() {
             if lines[pos].is_blank() {
@@ -459,6 +620,11 @@ impl<'a> BlockParser<'a> {
             }
             if let Some(start) = section {
                 self.open_section(start, &mut root, &mut stack);
+            }
+            // A directive just asked for new lines at the cursor (T12's
+            // include; only a test directive this wave).
+            if let Some(request) = self.pending_splice.take() {
+                self.apply_splice(&mut lines, pos, request);
             }
         }
         while !stack.is_empty() {
@@ -509,7 +675,12 @@ impl<'a> BlockParser<'a> {
                 stack.len(),
                 level
             );
-            let mut msg = self.msg(messages::ERROR, &text, start.title_lineno);
+            let mut msg = self.msg(
+                messages::ERROR,
+                &text,
+                start.span.source,
+                start.title_lineno,
+            );
             msg = messages::with_literal(msg, &start.raw_lines);
             let established: Vec<String> = self
                 .styles
@@ -540,14 +711,21 @@ impl<'a> BlockParser<'a> {
         let mut title = Node::elem(kinds::TITLE, start.span);
         title.children = inline.nodes;
         // Section name from the title's TEXT content (markup stripped).
-        let mut section = Node::elem(kinds::SECTION, start.span);
+        // The section's stamped line is one past its span's first line —
+        // docutils creates the section only once the state machine has
+        // consumed the underline, so it reports the underline line for the
+        // plain form and the title line for the overline form.
+        let mut section_span = start.span;
+        section_span.line += 1;
+        let mut section = Node::elem(kinds::SECTION, section_span);
         section
             .attrs
             .names
             .push(ids::fully_normalize_name(&title.astext()));
+        let source_path = self.sources.arc_path(start.span.source);
         let dup_info =
             self.registry
-                .set_id_implicit(&mut section, start.underline_lineno, self.source_path);
+                .set_id_implicit(&mut section, start.underline_lineno, &source_path);
         section.children.push(title);
         for m in start.messages {
             section.children.push(m);
@@ -565,14 +743,18 @@ impl<'a> BlockParser<'a> {
     // element dispatch
     // ------------------------------------------------------------------
 
-    fn parse_elements(&mut self, lines: &[LineRef<'a>]) -> Vec<Node> {
+    fn parse_elements(&mut self, lines: &[LineRec]) -> Vec<Node> {
         if self.depth >= MAX_NEST_DEPTH {
             // sphinx-ultra-specific totality guard (docutils crashes here).
-            let lineno = lines.first().map(|l| l.lineno).unwrap_or(1);
+            let anchor = lines
+                .first()
+                .map(|l| (l.source, l.lineno))
+                .unwrap_or((0, 1));
             return vec![self.msg(
                 messages::ERROR,
                 "Maximum nesting depth exceeded; deeper content skipped.",
-                lineno,
+                anchor.0,
+                anchor.1,
             )];
         }
         self.depth += 1;
@@ -581,18 +763,31 @@ impl<'a> BlockParser<'a> {
         out
     }
 
-    fn parse_elements_inner(&mut self, lines: &[LineRef<'a>]) -> Vec<Node> {
+    fn parse_elements_inner(&mut self, lines: &[LineRec]) -> Vec<Node> {
         let mut out = Vec::new();
         let mut pos = 0usize;
-        while pos < lines.len() {
-            if lines[pos].is_blank() {
+        // Once a directive splices new lines in, the loop continues over an
+        // owned copy of the stream; until then the borrowed slice serves
+        // (records are Copy, so the one-time copy is cheap and rare).
+        let mut owned: Option<Vec<LineRec>> = None;
+        loop {
+            let cur: &[LineRec] = owned.as_deref().unwrap_or(lines);
+            if pos >= cur.len() {
+                break;
+            }
+            if cur[pos].is_blank() {
                 pos += 1;
                 continue;
             }
             let before = out.len();
-            let section = self.parse_element(lines, &mut pos, false, &mut out);
+            let section = self.parse_element(cur, &mut pos, false, &mut out);
             debug_assert!(section.is_none(), "titles never match in nested contexts");
             self.apply_pending_classes(&mut out, before);
+            if let Some(request) = self.pending_splice.take() {
+                let mut stream = owned.take().unwrap_or_else(|| lines.to_vec());
+                self.apply_splice(&mut stream, pos, request);
+                owned = Some(stream);
+            }
         }
         out
     }
@@ -622,7 +817,7 @@ impl<'a> BlockParser<'a> {
     /// pending section start when `match_titles` and a title was found.
     fn parse_element(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         match_titles: bool,
         out: &mut Vec<Node>,
@@ -632,7 +827,10 @@ impl<'a> BlockParser<'a> {
             self.parse_block_quote(lines, pos, out);
             return None;
         }
-        let text = line.text;
+        // Local handle: the text must stay readable across the `&mut self`
+        // dispatch calls below.
+        let src = self.sources.arc(line.source);
+        let text = line.slice(&src);
 
         if let Some(bullet) = Self::bullet_marker(text) {
             self.parse_bullet_list(lines, pos, bullet, out);
@@ -706,14 +904,14 @@ impl<'a> BlockParser<'a> {
 
     fn handle_adornment(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         ch: char,
         match_titles: bool,
         out: &mut Vec<Node>,
     ) -> Option<SectionStart> {
         let line = lines[*pos];
-        let len = char_len(line.text);
+        let len = char_len(self.sources.line_text(line));
         let next = lines.get(*pos + 1).copied();
         let next_is_text = next.map(|n| !n.is_blank()).unwrap_or(false);
 
@@ -723,9 +921,10 @@ impl<'a> BlockParser<'a> {
                     self.msg(
                         messages::ERROR,
                         "Unexpected section title or transition.",
+                        line.source,
                         line.lineno,
                     ),
-                    line.text,
+                    self.sources.line_text(line),
                 );
                 out.push(msg);
                 *pos += 1;
@@ -735,6 +934,7 @@ impl<'a> BlockParser<'a> {
                 out.push(self.msg(
                     messages::INFO,
                     "Unexpected possible title overline or transition.\nTreating it as ordinary text because it's so short.",
+                    line.source,
                     line.lineno,
                 ));
                 return self.handle_text(lines, pos, match_titles, out);
@@ -764,18 +964,25 @@ impl<'a> BlockParser<'a> {
             out.push(self.msg(
                 messages::INFO,
                 "Possible incomplete section title.\nTreating the overline as ordinary text because it's so short.",
+                line.source,
                 line.lineno,
             ));
             return self.handle_text(lines, pos, match_titles, out);
         }
-        if adornment_char(title_line.text).is_some() {
+        if adornment_char(self.sources.line_text(title_line)).is_some() {
+            let literal = format!(
+                "{}\n{}",
+                self.sources.line_text(line),
+                self.sources.line_text(title_line)
+            );
             let msg = messages::with_literal(
                 self.msg(
                     messages::ERROR,
                     "Invalid section title or transition marker.",
+                    line.source,
                     line.lineno,
                 ),
-                &format!("{}\n{}", line.text, title_line.text),
+                &literal,
             );
             out.push(msg);
             *pos += 2;
@@ -791,7 +998,7 @@ impl<'a> BlockParser<'a> {
                 2,
                 false,
             )),
-            Some(u) if adornment_char(u.text).is_none() => Some((
+            Some(u) if adornment_char(self.sources.line_text(u)).is_none() => Some((
                 "Missing matching underline for section title overline.",
                 3,
                 true,
@@ -802,29 +1009,43 @@ impl<'a> BlockParser<'a> {
             let literal = if third_in_literal {
                 format!(
                     "{}\n{}\n{}",
-                    line.text,
-                    title_line.text,
-                    lines[*pos + 2].text
+                    self.sources.line_text(line),
+                    self.sources.line_text(title_line),
+                    self.sources.line_text(lines[*pos + 2])
                 )
             } else {
-                format!("{}\n{}", line.text, title_line.text)
+                format!(
+                    "{}\n{}",
+                    self.sources.line_text(line),
+                    self.sources.line_text(title_line)
+                )
             };
-            let msg =
-                messages::with_literal(self.msg(messages::ERROR, text, line.lineno), &literal);
+            let msg = messages::with_literal(
+                self.msg(messages::ERROR, text, line.source, line.lineno),
+                &literal,
+            );
             out.push(msg);
             *pos += consume;
             return None;
         }
         let under = under.unwrap();
-        if adornment_char(under.text) != Some(ch) || char_len(under.text) != len {
+        let under_text = self.sources.line_text(under);
+        if adornment_char(under_text) != Some(ch) || char_len(under_text) != len {
             // Different char or different length: both are a mismatch.
+            let literal = format!(
+                "{}\n{}\n{}",
+                self.sources.line_text(line),
+                self.sources.line_text(title_line),
+                self.sources.line_text(under)
+            );
             let msg = messages::with_literal(
                 self.msg(
                     messages::ERROR,
                     "Title overline & underline mismatch.",
+                    line.source,
                     line.lineno,
                 ),
-                &format!("{}\n{}\n{}", line.text, title_line.text, under.text),
+                &literal,
             );
             out.push(msg);
             *pos += 3;
@@ -833,17 +1054,27 @@ impl<'a> BlockParser<'a> {
         // Title column width (leading spaces included) wider than the
         // adornment: section is still created, WARNING inside.
         let mut msgs = Vec::new();
-        if column_width(title_line.text) > len {
+        let raw = format!(
+            "{}\n{}\n{}",
+            self.sources.line_text(line),
+            self.sources.line_text(title_line),
+            self.sources.line_text(under)
+        );
+        if column_width(self.sources.line_text(title_line)) > len {
             msgs.push(messages::with_literal(
-                self.msg(messages::WARNING, "Title overline too short.", line.lineno),
-                &format!("{}\n{}\n{}", line.text, title_line.text, under.text),
+                self.msg(
+                    messages::WARNING,
+                    "Title overline too short.",
+                    line.source,
+                    line.lineno,
+                ),
+                &raw,
             ));
         }
         let span = self.span_of(lines, *pos, *pos + 2);
-        let raw = format!("{}\n{}\n{}", line.text, title_line.text, under.text);
         let title_lineno = title_line.lineno;
         let underline_lineno = under.lineno;
-        let title_text = title_line.text.trim().to_string();
+        let title_text = self.sources.line_text(title_line).trim().to_string();
         *pos += 3;
         Some(SectionStart {
             title: title_text,
@@ -862,7 +1093,7 @@ impl<'a> BlockParser<'a> {
 
     fn handle_text(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         match_titles: bool,
         out: &mut Vec<Node>,
@@ -872,14 +1103,24 @@ impl<'a> BlockParser<'a> {
 
         if let Some(next) = next {
             if !next.is_blank() && next.indent() == 0 {
-                if let Some(ch) = adornment_char(next.text) {
-                    let title_len = column_width(line.text);
-                    let ul_len = char_len(next.text);
+                if let Some(ch) = adornment_char(self.sources.line_text(next)) {
+                    let title_len = column_width(self.sources.line_text(line));
+                    let ul_len = char_len(self.sources.line_text(next));
                     if ul_len >= title_len || ul_len >= 4 {
+                        let raw = format!(
+                            "{}\n{}",
+                            self.sources.line_text(line),
+                            self.sources.line_text(next)
+                        );
                         if !match_titles {
                             let msg = messages::with_literal(
-                                self.msg(messages::ERROR, "Unexpected section title.", next.lineno),
-                                &format!("{}\n{}", line.text, next.text),
+                                self.msg(
+                                    messages::ERROR,
+                                    "Unexpected section title.",
+                                    next.source,
+                                    next.lineno,
+                                ),
+                                &raw,
                             );
                             out.push(msg);
                             *pos += 2;
@@ -891,16 +1132,16 @@ impl<'a> BlockParser<'a> {
                                 self.msg(
                                     messages::WARNING,
                                     "Title underline too short.",
+                                    next.source,
                                     next.lineno,
                                 ),
-                                &format!("{}\n{}", line.text, next.text),
+                                &raw,
                             ));
                         }
                         let span = self.span_of(lines, *pos, *pos + 1);
-                        let raw = format!("{}\n{}", line.text, next.text);
                         let title_lineno = line.lineno;
                         let underline_lineno = next.lineno;
-                        let title = line.text.trim().to_string();
+                        let title = self.sources.line_text(line).trim().to_string();
                         *pos += 2;
                         return Some(SectionStart {
                             title,
@@ -917,6 +1158,7 @@ impl<'a> BlockParser<'a> {
                         out.push(self.msg(
                             messages::INFO,
                             "Possible title underline, too short for the title.\nTreating it as ordinary text because it's so short.",
+                            next.source,
                             next.lineno,
                         ));
                     }
@@ -936,19 +1178,13 @@ impl<'a> BlockParser<'a> {
     /// Paragraph: maximal run of adjacent column-0 non-blank lines, with
     /// docutils `::` literal-block chaining and the multi-line + indent
     /// "Unexpected indentation." recovery.
-    fn parse_paragraph_like(
-        &mut self,
-        lines: &[LineRef<'a>],
-        pos: &mut usize,
-        out: &mut Vec<Node>,
-    ) {
+    fn parse_paragraph_like(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
         let mut end = *pos;
         while end < lines.len() && !lines[end].is_blank() && lines[end].indent() == 0 {
             end += 1;
         }
-        let run: Vec<&str> = lines[start..end].iter().map(|l| l.text).collect();
-        let joined = run.join("\n");
+        let joined = self.join_lines(&lines[start..end]);
         let (text, expect_literal) = strip_literal_colons(&joined);
         let span = self.span_of(lines, start, end.saturating_sub(1));
         if !text.is_empty() {
@@ -969,6 +1205,7 @@ impl<'a> BlockParser<'a> {
             out.push(self.msg_sm(
                 messages::ERROR,
                 "Unexpected indentation.",
+                lines[end].source,
                 lines[end].lineno,
             ));
             // With a `::` trigger the indented block is STILL the literal
@@ -985,7 +1222,7 @@ impl<'a> BlockParser<'a> {
         }
     }
 
-    fn parse_literal_block(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_literal_block(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let mut p = *pos;
         while p < lines.len() && lines[p].is_blank() {
             p += 1;
@@ -993,11 +1230,15 @@ impl<'a> BlockParser<'a> {
         if p >= lines.len() {
             // Probe-verified: at EOF the warning still fires, anchored to
             // the line after the last one.
-            let after_end = lines.last().map(|l| l.lineno + 1).unwrap_or(1);
+            let anchor = lines
+                .last()
+                .map(|l| (l.source, l.lineno + 1))
+                .unwrap_or((0, 1));
             out.push(self.msg(
                 messages::WARNING,
                 "Literal block expected; none found.",
-                after_end,
+                anchor.0,
+                anchor.1,
             ));
             *pos = p;
             return;
@@ -1006,24 +1247,26 @@ impl<'a> BlockParser<'a> {
         if first.indent() > 0 {
             // Indented literal block.
             let (block, consumed, _indent, terminator) = indented_block(lines, p);
-            let text: Vec<&str> = block.iter().map(|l| l.text).collect();
+            let text = self.join_lines(&block);
             let span = self.span_of(lines, p, p + consumed - 1);
             let mut lb = Node::elem(kinds::LITERAL_BLOCK, span);
             lb.set("xml:space", AttrValue::Str("preserve".to_string()));
-            lb.children.push(Node::text_node(text.join("\n"), span));
+            lb.children.push(Node::text_node(text, span));
             out.push(lb);
             *pos = p + consumed;
-            if let Some(term) = terminator {
+            if let Some((term_source, term_lineno)) = terminator {
                 out.push(self.msg_sm(
                     messages::WARNING,
                     "Literal block ends without a blank line; unexpected unindent.",
-                    term,
+                    term_source,
+                    term_lineno,
                 ));
             }
             return;
         }
-        let quote_char = first
-            .text
+        let quote_char = self
+            .sources
+            .line_text(first)
             .chars()
             .next()
             .filter(|c| ADORNMENT_CHARS.contains(*c));
@@ -1033,15 +1276,15 @@ impl<'a> BlockParser<'a> {
             while endq < lines.len()
                 && !lines[endq].is_blank()
                 && lines[endq].indent() == 0
-                && lines[endq].text.starts_with(qc)
+                && self.sources.line_text(lines[endq]).starts_with(qc)
             {
                 endq += 1;
             }
-            let text: Vec<&str> = lines[p..endq].iter().map(|l| l.text).collect();
+            let text = self.join_lines(&lines[p..endq]);
             let span = self.span_of(lines, p, endq - 1);
             let mut lb = Node::elem(kinds::LITERAL_BLOCK, span);
             lb.set("xml:space", AttrValue::Str("preserve".to_string()));
-            lb.children.push(Node::text_node(text.join("\n"), span));
+            lb.children.push(Node::text_node(text, span));
             out.push(lb);
             if endq < lines.len() && !lines[endq].is_blank() {
                 let text = if lines[endq].indent() > 0 {
@@ -1049,7 +1292,12 @@ impl<'a> BlockParser<'a> {
                 } else {
                     "Inconsistent literal block quoting."
                 };
-                out.push(self.msg(messages::ERROR, text, lines[endq].lineno));
+                out.push(self.msg(
+                    messages::ERROR,
+                    text,
+                    lines[endq].source,
+                    lines[endq].lineno,
+                ));
             }
             *pos = endq;
             return;
@@ -1057,6 +1305,7 @@ impl<'a> BlockParser<'a> {
         out.push(self.msg(
             messages::WARNING,
             "Literal block expected; none found.",
+            first.source,
             first.lineno,
         ));
         *pos = p;
@@ -1068,7 +1317,7 @@ impl<'a> BlockParser<'a> {
 
     fn parse_bullet_list(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         bullet: char,
         out: &mut Vec<Node>,
@@ -1076,7 +1325,7 @@ impl<'a> BlockParser<'a> {
         let start = *pos;
         let mut list = Node::elem(kinds::BULLET_LIST, Span::ZERO);
         list.set("bullet", AttrValue::Str(bullet.to_string()));
-        let mut warn_line: Option<u32> = None;
+        let mut warn_line: Option<(u16, u32)> = None;
         loop {
             let item = self.parse_list_item(lines, pos, 1);
             list.children.push(item);
@@ -1091,23 +1340,26 @@ impl<'a> BlockParser<'a> {
                 break;
             }
             let line = lines[p];
-            if line.indent() == 0 && Self::bullet_marker(line.text) == Some(bullet) {
+            if line.indent() == 0
+                && Self::bullet_marker(self.sources.line_text(line)) == Some(bullet)
+            {
                 *pos = p;
                 continue;
             }
             if !saw_blank {
-                warn_line = Some(line.lineno);
+                warn_line = Some((line.source, line.lineno));
             }
             *pos = p;
             break;
         }
         list.span = self.span_of(lines, start, pos.saturating_sub(1));
         out.push(list);
-        if let Some(l) = warn_line {
+        if let Some((source, lineno)) = warn_line {
             out.push(self.msg_sm(
                 messages::WARNING,
                 "Bullet list ends without a blank line; unexpected unindent.",
-                l,
+                source,
+                lineno,
             ));
         }
     }
@@ -1117,21 +1369,19 @@ impl<'a> BlockParser<'a> {
     /// spaces, or the next line's indent when the marker stands alone.
     /// Leaves `*pos` just past the item's content (trailing blank lines are
     /// left for the caller).
-    fn parse_list_item(
-        &mut self,
-        lines: &[LineRef<'a>],
-        pos: &mut usize,
-        marker_chars: usize,
-    ) -> Node {
+    fn parse_list_item(&mut self, lines: &[LineRec], pos: &mut usize, marker_chars: usize) -> Node {
         let marker_line = lines[*pos];
-        let after = rest_after(marker_line.text, marker_chars);
+        let marker_text = self.sources.line_text(marker_line);
+        let after_off = rest_after_offset(marker_text, marker_chars);
+        let after = &marker_text[after_off..];
         let spaces = after.len() - after.trim_start_matches(' ').len();
-        let rest = &after[spaces..];
+        let rest_off = after_off + spaces;
+        let rest_is_empty = marker_text.len() == rest_off;
         let start = *pos;
 
-        let mut body: Vec<LineRef<'a>> = Vec::new();
+        let mut body: Vec<LineRec> = Vec::new();
         let content_indent;
-        if rest.is_empty() {
+        if rest_is_empty {
             // Fixture-verified: a bare marker's body may follow after blank
             // lines; the first indented line sets the content indent.
             let mut probe = start + 1;
@@ -1147,16 +1397,11 @@ impl<'a> BlockParser<'a> {
             }
         } else {
             content_indent = marker_chars + spaces;
-            body.push(LineRef::new(
-                rest,
-                marker_line.lineno,
-                marker_line.src_start,
-                marker_line.src_end,
-            ));
+            body.push(self.rewrap_from(marker_line, rest_off));
         }
 
         let mut last_content = start;
-        let mut pending_blanks: Vec<LineRef<'a>> = Vec::new();
+        let mut pending_blanks: Vec<LineRec> = Vec::new();
         let mut scan = start + 1;
         while scan < lines.len() {
             let l = lines[scan];
@@ -1184,7 +1429,7 @@ impl<'a> BlockParser<'a> {
 
     fn try_enumerated_list(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         first: &Enumerator,
         out: &mut Vec<Node>,
@@ -1197,7 +1442,7 @@ impl<'a> BlockParser<'a> {
             return false;
         }
         let start = *pos;
-        let mut warn_line: Option<u32> = None;
+        let mut warn_line: Option<(u16, u32)> = None;
         let mut items: Vec<Node> = Vec::new();
         let mut current = first.clone();
         // Fixture-verified: once an item is auto (#), explicit successors
@@ -1219,7 +1464,7 @@ impl<'a> BlockParser<'a> {
             let line = lines[p];
             let mut accepted = false;
             if line.indent() == 0 {
-                if let Some(e) = parse_enumerator(line.text) {
+                if let Some(e) = parse_enumerator(self.sources.line_text(line)) {
                     if e.prefix == first.prefix
                         && e.suffix == first.suffix
                         && !e.rest_empty
@@ -1240,7 +1485,7 @@ impl<'a> BlockParser<'a> {
             }
             if !accepted {
                 if !saw_blank {
-                    warn_line = Some(line.lineno);
+                    warn_line = Some((line.source, line.lineno));
                 }
                 *pos = p;
                 break;
@@ -1257,13 +1502,14 @@ impl<'a> BlockParser<'a> {
         list.set("suffix", AttrValue::Str(first.suffix.to_string()));
         list.children = items;
         list.span = self.span_of(lines, start, pos.saturating_sub(1));
-        let first_lineno = lines[start].lineno;
+        let first_anchor = (lines[start].source, lines[start].lineno);
         out.push(list);
-        if let Some(l) = warn_line {
+        if let Some((source, lineno)) = warn_line {
             out.push(self.msg_sm(
                 messages::WARNING,
                 "Enumerated list ends without a blank line; unexpected unindent.",
-                l,
+                source,
+                lineno,
             ));
         }
         if chosen.initial != 1 {
@@ -1273,7 +1519,8 @@ impl<'a> BlockParser<'a> {
                     "Enumerated list start value not ordinal-1: \"{}\" (ordinal {})",
                     first.literal, chosen.initial
                 ),
-                first_lineno,
+                first_anchor.0,
+                first_anchor.1,
             ));
         }
         true
@@ -1283,7 +1530,7 @@ impl<'a> BlockParser<'a> {
     /// EOF, indented continuation, or a valid successor enumerator.
     fn enum_item_valid(
         &self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         at: usize,
         item: &Enumerator,
         candidates: &[EnumCandidate],
@@ -1296,7 +1543,7 @@ impl<'a> BlockParser<'a> {
         if next.is_blank() || next.indent() > 0 {
             return true;
         }
-        match parse_enumerator(next.text) {
+        match parse_enumerator(self.sources.line_text(*next)) {
             Some(e)
                 if e.prefix == item.prefix
                     && e.suffix == item.suffix
@@ -1313,15 +1560,10 @@ impl<'a> BlockParser<'a> {
     // definition lists
     // ------------------------------------------------------------------
 
-    fn parse_definition_list(
-        &mut self,
-        lines: &[LineRef<'a>],
-        pos: &mut usize,
-        out: &mut Vec<Node>,
-    ) {
+    fn parse_definition_list(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
         let mut dl = Node::elem(kinds::DEFINITION_LIST, Span::ZERO);
-        let mut warn_line: Option<u32> = None;
+        let mut warn_line: Option<(u16, u32)> = None;
         loop {
             let term_line = lines[*pos];
             let (block, consumed, _indent, terminator) = indented_block(lines, *pos + 1);
@@ -1331,7 +1573,8 @@ impl<'a> BlockParser<'a> {
                 self.span_of(lines, *pos, item_last),
             );
             let term_span = self.span_of(lines, *pos, *pos);
-            let mut parts = split_classifiers(term_line.text).into_iter();
+            let term_ends_in_colons = self.sources.line_text(term_line).ends_with("::");
+            let mut parts = split_classifiers(self.sources.line_text(term_line)).into_iter();
             let term_text = parts.next().unwrap_or_default();
             let mut term_msgs = Vec::new();
             let inline = self.inline(&term_text, term_span, term_line.lineno);
@@ -1351,11 +1594,12 @@ impl<'a> BlockParser<'a> {
             // Fixture-verified: term/classifier inline messages land INSIDE
             // the definition, before its content.
             definition.children.append(&mut term_msgs);
-            if term_line.text.ends_with("::") {
+            if term_ends_in_colons {
                 // Probe-verified: docutils flags a term ending in `::`.
                 definition.children.push(self.msg(
                     messages::INFO,
                     "Blank line missing before literal block (after the \"::\")? Interpreted as a definition list item.",
+                    term_line.source,
                     term_line.lineno + 1,
                 ));
             }
@@ -1373,19 +1617,20 @@ impl<'a> BlockParser<'a> {
             }
             let continues = p < lines.len() && {
                 let l = lines[p];
+                let text = self.sources.line_text(l);
                 let nxt = lines.get(p + 1);
                 l.indent() == 0
                     && !l.is_blank()
-                    && Self::bullet_marker(l.text).is_none()
-                    && parse_enumerator(l.text).is_none()
-                    && adornment_char(l.text).is_none()
-                    && field_marker(l.text).is_none()
-                    && option_group_marker(l.text).is_none()
-                    && !l.text.starts_with(".. ")
-                    && l.text != ".."
-                    && !l.text.starts_with("| ")
-                    && !l.text.starts_with(">>> ")
-                    && !l.text.starts_with("__ ")
+                    && Self::bullet_marker(text).is_none()
+                    && parse_enumerator(text).is_none()
+                    && adornment_char(text).is_none()
+                    && field_marker(text).is_none()
+                    && option_group_marker(text).is_none()
+                    && !text.starts_with(".. ")
+                    && text != ".."
+                    && !text.starts_with("| ")
+                    && !text.starts_with(">>> ")
+                    && !text.starts_with("__ ")
                     && nxt
                         .map(|n| !n.is_blank() && n.indent() > 0)
                         .unwrap_or(false)
@@ -1401,11 +1646,12 @@ impl<'a> BlockParser<'a> {
         }
         dl.span = self.span_of(lines, start, pos.saturating_sub(1));
         out.push(dl);
-        if let Some(l) = warn_line {
+        if let Some((source, lineno)) = warn_line {
             out.push(self.msg_sm(
                 messages::WARNING,
                 "Definition list ends without a blank line; unexpected unindent.",
-                l,
+                source,
+                lineno,
             ));
         }
     }
@@ -1414,17 +1660,18 @@ impl<'a> BlockParser<'a> {
     // block quotes
     // ------------------------------------------------------------------
 
-    fn parse_block_quote(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_block_quote(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
         let (block, consumed, _indent, terminator) = indented_block(lines, *pos);
         *pos = start + consumed;
         let span = self.span_of(lines, start, start + consumed - 1);
         out.extend(self.block_quote_elements(&block, span));
-        if let Some(t) = terminator {
+        if let Some((source, lineno)) = terminator {
             out.push(self.msg_sm(
                 messages::WARNING,
                 "Block quote ends without a blank line; unexpected unindent.",
-                t,
+                source,
+                lineno,
             ));
         }
     }
@@ -1433,11 +1680,11 @@ impl<'a> BlockParser<'a> {
     /// interleaved attribution messages from an already-extracted block.
     /// Shared by indented block quotes and the epigraph/highlights/
     /// pull-quote directives.
-    fn block_quote_elements(&mut self, block: &[LineRef<'a>], span: Span) -> Vec<Node> {
+    fn block_quote_elements(&mut self, block: &[LineRec], span: Span) -> Vec<Node> {
         let mut out: Vec<Node> = Vec::new();
         // Split into blank-separated chunks; attribution chunks close quotes.
-        let mut quotes: Vec<QuoteSegment<'a>> = Vec::new();
-        let mut acc: Vec<LineRef<'a>> = Vec::new();
+        let mut quotes: Vec<QuoteSegment> = Vec::new();
+        let mut acc: Vec<LineRec> = Vec::new();
         let mut i = 0usize;
         while i < block.len() {
             if block[i].is_blank() {
@@ -1453,7 +1700,7 @@ impl<'a> BlockParser<'a> {
             // Probe-verified: an attribution needs preceding quote body —
             // a quote whose only content is "-- x" is a plain paragraph.
             let has_body = acc.iter().any(|l| !l.is_blank());
-            match attribution_from_chunk(chunk, span) {
+            match attribution_from_chunk(&self.sources, chunk, span) {
                 Some(attr) if has_body => quotes.push((std::mem::take(&mut acc), Some(attr))),
                 _ => acc.extend_from_slice(chunk),
             }
@@ -1486,7 +1733,7 @@ impl<'a> BlockParser<'a> {
     // doctest + line blocks
     // ------------------------------------------------------------------
 
-    fn parse_doctest(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_doctest(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         // Fixture-verified: a doctest block runs to the next BLANK line,
         // absorbing indented continuation/output lines verbatim.
         let start = *pos;
@@ -1494,16 +1741,16 @@ impl<'a> BlockParser<'a> {
         while end < lines.len() && !lines[end].is_blank() {
             end += 1;
         }
-        let text: Vec<&str> = lines[start..end].iter().map(|l| l.text).collect();
+        let text = self.join_lines(&lines[start..end]);
         let span = self.span_of(lines, start, end - 1);
         let mut dt = Node::elem(kinds::DOCTEST_BLOCK, span);
         dt.set("xml:space", AttrValue::Str("preserve".to_string()));
-        dt.children.push(Node::text_node(text.join("\n"), span));
+        dt.children.push(Node::text_node(text, span));
         out.push(dt);
         *pos = end;
     }
 
-    fn parse_line_block(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_line_block(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
         // (depth, text): depth None on bare `|` lines inherits the previous
         // line's depth (fixture-verified). Continuations dedent by the FIRST
@@ -1513,12 +1760,13 @@ impl<'a> BlockParser<'a> {
         let mut p = *pos;
         while p < lines.len() && !lines[p].is_blank() {
             let l = lines[p];
-            if l.indent() == 0 && (l.text == "|" || l.text.starts_with("| ")) {
+            let text = self.sources.line_text(l);
+            if l.indent() == 0 && (text == "|" || text.starts_with("| ")) {
                 cont_dedent = None;
-                if l.text == "|" {
+                if text == "|" {
                     items.push((None, String::new()));
                 } else {
-                    let content = &l.text[2..];
+                    let content = &text[2..];
                     let depth = content.len() - content.trim_start_matches(' ').len();
                     items.push((Some(depth), content[depth..].to_string()));
                 }
@@ -1530,7 +1778,7 @@ impl<'a> BlockParser<'a> {
                     if !last.1.is_empty() {
                         last.1.push('\n');
                     }
-                    last.1.push_str(&l.text[dedent..]);
+                    last.1.push_str(&text[dedent..]);
                 }
                 p += 1;
             } else {
@@ -1561,6 +1809,7 @@ impl<'a> BlockParser<'a> {
             out.push(self.msg_sm(
                 messages::WARNING,
                 "Line block ends without a blank line.",
+                lines[p - 1].source,
                 lines[p - 1].lineno,
             ));
         }
@@ -1571,14 +1820,18 @@ impl<'a> BlockParser<'a> {
     // explicit markup: comments + targets
     // ------------------------------------------------------------------
 
-    fn parse_explicit(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_explicit(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let line = lines[*pos];
+        // Local handle: `rest` must stay readable across the `&mut self`
+        // construct dispatches below.
+        let src = self.sources.arc(line.source);
+        let line_text = line.slice(&src);
         // docutils consumes ALL whitespace after `..` (fixture-verified for
         // multi-space forms).
-        let rest = if line.text == ".." {
+        let rest = if line_text == ".." {
             ""
         } else {
-            line.text[2..].trim_start()
+            line_text[2..].trim_start()
         };
 
         if rest.starts_with('[') {
@@ -1607,7 +1860,7 @@ impl<'a> BlockParser<'a> {
             }
             let cont: Vec<&str> = lines[start + 1..start + 1 + consumed]
                 .iter()
-                .map(|l| l.text.trim())
+                .map(|l| self.sources.line_text(*l).trim())
                 .collect();
             let joined = if cont.is_empty() {
                 rest.to_string()
@@ -1646,10 +1899,11 @@ impl<'a> BlockParser<'a> {
                         self.registry.set_id_anonymous(&mut target);
                         None
                     } else {
+                        let source_path = self.sources.arc_path(line.source);
                         self.registry.set_id_explicit(
                             &mut target,
                             lineno,
-                            self.source_path,
+                            &source_path,
                             internal,
                             refuri_val.as_deref(),
                         )
@@ -1664,8 +1918,12 @@ impl<'a> BlockParser<'a> {
                     // to the comment path below (fixture-verified: the
                     // comment re-absorbs the block through blank lines).
                     *pos = start;
-                    construct_error =
-                        Some(self.msg(messages::WARNING, "malformed hyperlink target.", lineno));
+                    construct_error = Some(self.msg(
+                        messages::WARNING,
+                        "malformed hyperlink target.",
+                        line.source,
+                        lineno,
+                    ));
                 }
             }
             if construct_error.is_none() {
@@ -1717,14 +1975,14 @@ impl<'a> BlockParser<'a> {
         if !rest.is_empty() {
             text_lines.push(rest.to_string());
         }
-        let mut body: &[LineRef<'a>] = &block;
+        let mut body: &[LineRec] = &block;
         if rest.is_empty() {
             while body.first().map(|l| l.is_blank()).unwrap_or(false) {
                 body = &body[1..];
             }
         }
         for l in body {
-            text_lines.push(l.text.to_string());
+            text_lines.push(self.sources.line_text(*l).to_string());
         }
         let mut comment = Node::elem(kinds::COMMENT, span);
         comment.set("xml:space", AttrValue::Str("preserve".to_string()));
@@ -1745,7 +2003,7 @@ impl<'a> BlockParser<'a> {
     /// footnote/citation marker (falls through to comment).
     fn try_footnote_def(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         rest: &str,
         out: &mut Vec<Node>,
@@ -1790,18 +2048,15 @@ impl<'a> BlockParser<'a> {
             String::new()
         };
         let (block, consumed, _indent, _term) = indented_block(lines, start + 1);
-        let mut body: Vec<LineRef<'a>> = Vec::new();
+        let mut body: Vec<LineRec> = Vec::new();
         if !first_rest.trim().is_empty() {
             // remainder starts at a virtual column; treat as its own line
-            body.push(LineRef::new(
-                rest_after(
-                    lines[start].text,
-                    lines[start].text.chars().count() - first_rest.chars().count(),
-                ),
-                lineno,
-                lines[start].src_start,
-                lines[start].src_end,
-            ));
+            let marker_text = self.sources.line_text(lines[start]);
+            let off = rest_after_offset(
+                marker_text,
+                marker_text.chars().count() - first_rest.chars().count(),
+            );
+            body.push(self.rewrap_from(lines[start], off));
         }
         for l in &block {
             body.push(*l);
@@ -1835,8 +2090,9 @@ impl<'a> BlockParser<'a> {
             self.registry.set_id_anonymous(&mut node);
             None
         } else {
+            let source_path = self.sources.arc_path(lines[start].source);
             self.registry
-                .set_id_explicit(&mut node, lineno, self.source_path, true, None)
+                .set_id_explicit(&mut node, lineno, &source_path, true, None)
         };
         if has_label_child {
             let mut lab = Node::elem(kinds::LABEL, span);
@@ -1854,7 +2110,7 @@ impl<'a> BlockParser<'a> {
                 "Footnote content expected."
             };
             node.children
-                .push(self.msg(messages::WARNING, text, lineno));
+                .push(self.msg(messages::WARNING, text, lines[start].source, lineno));
         } else {
             node.children.extend(content);
         }
@@ -1863,27 +2119,23 @@ impl<'a> BlockParser<'a> {
     }
 
     /// Field lists: `:name: value` markers (probe-verified regex port).
-    fn parse_field_list(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_field_list(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
         let mut fl = Node::elem(kinds::FIELD_LIST, Span::ZERO);
-        let mut warn_line: Option<u32> = None;
+        let mut warn_line: Option<(u16, u32)> = None;
         loop {
             let line = lines[*pos];
-            let (name_raw, body_start) = field_marker(line.text).expect("checked by caller");
+            let line_text = self.sources.line_text(line);
+            let (name_raw, body_start) = field_marker(line_text).expect("checked by caller");
             let lineno = line.lineno;
             let field_span = self.span_of(lines, *pos, *pos);
             // body: marker-line remainder + any-indent continuation block
-            let first_rest = line.text[body_start..].trim_start();
+            let first_rest = line_text[body_start..].trim_start();
+            let rest_offset = (!first_rest.is_empty()).then(|| line_text.len() - first_rest.len());
             let (block, consumed, _i, terminator) = indented_block(lines, *pos + 1);
-            let mut body_lines: Vec<LineRef<'a>> = Vec::new();
-            if !first_rest.is_empty() {
-                let offset = line.text.len() - first_rest.len();
-                body_lines.push(LineRef::new(
-                    &line.text[offset..],
-                    lineno,
-                    line.src_start,
-                    line.src_end,
-                ));
+            let mut body_lines: Vec<LineRec> = Vec::new();
+            if let Some(offset) = rest_offset {
+                body_lines.push(self.rewrap_from(line, offset));
             }
             body_lines.extend(block.iter().copied());
             *pos += 1 + consumed;
@@ -1906,8 +2158,9 @@ impl<'a> BlockParser<'a> {
             while p < lines.len() && lines[p].is_blank() {
                 p += 1;
             }
-            let continues =
-                p < lines.len() && lines[p].indent() == 0 && field_marker(lines[p].text).is_some();
+            let continues = p < lines.len()
+                && lines[p].indent() == 0
+                && field_marker(self.sources.line_text(lines[p])).is_some();
             if continues {
                 *pos = p;
                 continue;
@@ -1917,26 +2170,27 @@ impl<'a> BlockParser<'a> {
             // (indented-block terminator OR a col-0 line) warns.
             if let Some(l) = lines.get(*pos) {
                 if !l.is_blank() {
-                    warn_line = Some(l.lineno);
+                    warn_line = Some((l.source, l.lineno));
                 }
             }
             break;
         }
         fl.span = self.span_of(lines, start, pos.saturating_sub(1));
         out.push(fl);
-        if let Some(l) = warn_line {
+        if let Some((source, lineno)) = warn_line {
             out.push(self.msg_sm(
                 messages::WARNING,
                 "Field list ends without a blank line; unexpected unindent.",
-                l,
+                source,
+                lineno,
             ));
         }
     }
 
     /// An option marker line is only a list item when it has a two-space
     /// description or an indented following line (else: paragraph).
-    fn option_item_viable(&self, lines: &[LineRef<'a>], at: usize) -> bool {
-        let (_, desc) = match option_group_marker(lines[at].text) {
+    fn option_item_viable(&self, lines: &[LineRec], at: usize) -> bool {
+        let (_, desc) = match option_group_marker(self.sources.line_text(lines[at])) {
             Some(r) => r,
             None => return false,
         };
@@ -1949,24 +2203,20 @@ impl<'a> BlockParser<'a> {
             .unwrap_or(false)
     }
 
-    fn parse_option_list(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_option_list(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
         let mut ol = Node::elem(kinds::OPTION_LIST, Span::ZERO);
-        let mut warn_line: Option<u32> = None;
+        let mut warn_line: Option<(u16, u32)> = None;
         loop {
             let line = lines[*pos];
-            let (specs, desc) = option_group_marker(line.text).expect("checked by caller");
+            let line_text = self.sources.line_text(line);
+            let (specs, desc) = option_group_marker(line_text).expect("checked by caller");
+            let desc_offset = (!desc.is_empty()).then(|| line_text.len() - desc.len());
             let span = self.span_of(lines, *pos, *pos);
             let (block, consumed, _i, terminator) = indented_block(lines, *pos + 1);
-            let mut body_lines: Vec<LineRef<'a>> = Vec::new();
-            if !desc.is_empty() {
-                let offset = line.text.len() - desc.len();
-                body_lines.push(LineRef::new(
-                    &line.text[offset..],
-                    line.lineno,
-                    line.src_start,
-                    line.src_end,
-                ));
+            let mut body_lines: Vec<LineRec> = Vec::new();
+            if let Some(offset) = desc_offset {
+                body_lines.push(self.rewrap_from(line, offset));
             }
             body_lines.extend(block.iter().copied());
             *pos += 1 + consumed;
@@ -1998,7 +2248,7 @@ impl<'a> BlockParser<'a> {
             }
             let continues = p < lines.len()
                 && lines[p].indent() == 0
-                && option_group_marker(lines[p].text).is_some()
+                && option_group_marker(self.sources.line_text(lines[p])).is_some()
                 && self.option_item_viable(lines, p);
             if continues {
                 *pos = p;
@@ -2007,18 +2257,19 @@ impl<'a> BlockParser<'a> {
             let _ = terminator;
             if let Some(l) = lines.get(*pos) {
                 if !l.is_blank() {
-                    warn_line = Some(l.lineno);
+                    warn_line = Some((l.source, l.lineno));
                 }
             }
             break;
         }
         ol.span = self.span_of(lines, start, pos.saturating_sub(1));
         out.push(ol);
-        if let Some(l) = warn_line {
+        if let Some((source, lineno)) = warn_line {
             out.push(self.msg_sm(
                 messages::WARNING,
                 "Option list ends without a blank line; unexpected unindent.",
-                l,
+                source,
+                lineno,
             ));
         }
     }
@@ -2027,14 +2278,14 @@ impl<'a> BlockParser<'a> {
     // grid tables (docutils tableparser.GridTableParser port)
     // ------------------------------------------------------------------
 
-    fn parse_grid_table(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_grid_table(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
         // isolate: consume until blank line
         let mut end = *pos;
         while end < lines.len() && !lines[end].is_blank() {
             end += 1;
         }
-        let mut block: Vec<LineRef<'a>> = lines[start..end].to_vec();
+        let mut block: Vec<LineRec> = lines[start..end].to_vec();
         *pos = end;
         // docutils left-edge check: trim at the first line not starting
         // with '+' or '|'; the remainder re-parses and a blank-line
@@ -2042,60 +2293,70 @@ impl<'a> BlockParser<'a> {
         // bottom-corrupt error.
         let mut trailing_warning = None;
         let mut stale_i = block.len() - 1;
+        let mut edge_trim: Option<(usize, u16, u32)> = None;
         for (i, l) in block.iter().enumerate().skip(1) {
-            let t = l.text.trim_end();
+            let t = self.sources.line_text(*l).trim_end();
             if !(t.starts_with('+') || t.starts_with('|')) {
                 stale_i = i;
-                trailing_warning = Some(self.msg(
-                    messages::WARNING,
-                    "Blank line required after table.",
-                    l.lineno,
-                ));
-                block.truncate(i);
-                *pos = start + i;
+                edge_trim = Some((i, l.source, l.lineno));
                 break;
             }
+        }
+        if let Some((i, source, lineno)) = edge_trim {
+            trailing_warning = Some(self.msg(
+                messages::WARNING,
+                "Blank line required after table.",
+                source,
+                lineno,
+            ));
+            block.truncate(i);
+            *pos = start + i;
         }
         // docutils trims a non-border tail back to the LAST valid border
         // (the remainder re-parses, with a blank-line-required warning),
         // BEFORE any alignment checks.
-        if !is_grid_table_top(block[block.len() - 1].text.trim_end()) {
+        if !is_grid_table_top(self.sources.line_text(block[block.len() - 1]).trim_end()) {
             let mut found = None;
             for i in (2..block.len() - 1).rev() {
-                if is_grid_table_top(block[i].text.trim_end()) {
+                if is_grid_table_top(self.sources.line_text(block[i]).trim_end()) {
                     found = Some(i);
                     break;
                 }
             }
             if let Some(i) = found {
-                let next_lineno = block[i + 1].lineno;
+                let next = block[i + 1];
                 block.truncate(i + 1);
                 *pos = start + i + 1;
                 if trailing_warning.is_none() {
                     trailing_warning = Some(self.msg(
                         messages::WARNING,
                         "Blank line required after table.",
-                        next_lineno,
+                        next.source,
+                        next.lineno,
                     ));
                 }
             }
         }
-        let raw_block: Vec<String> = block.iter().map(|l| l.text.to_string()).collect();
+        let raw_block: Vec<String> = block
+            .iter()
+            .map(|l| self.sources.line_text(*l).to_string())
+            .collect();
+        let msg_path = self.sources.path(block[0].source).to_string();
         let malformed = |detail: &str, lineno: u32| -> Node {
             messages::with_literal(
                 messages::system_message(
                     messages::ERROR,
                     &format!("Malformed table.\n{detail}"),
                     lineno,
-                    self.source_path,
+                    &msg_path,
                 ),
                 raw_block.join("\n").trim_end(),
             )
         };
         // right-border alignment (DISPLAY columns: east-asian wide = 2)
-        let width = column_width(block[0].text.trim_end());
-        for l in block.iter().skip(1) {
-            let t = l.text.trim_end();
+        let width = column_width(raw_block[0].trim_end());
+        for (l, raw) in block.iter().zip(&raw_block).skip(1) {
+            let t = raw.trim_end();
             if column_width(t) != width || !(t.ends_with('+') || t.ends_with('|')) {
                 out.push(malformed("Right border not aligned or missing.", l.lineno));
                 if let Some(w) = trailing_warning {
@@ -2106,7 +2367,7 @@ impl<'a> BlockParser<'a> {
         }
         // bottom border must be a grid border (line anchor reproduces
         // docutils' stale-index quirk: the last line the edge scans reached)
-        if !is_grid_table_top(block[block.len() - 1].text.trim_end()) {
+        if !is_grid_table_top(raw_block[raw_block.len() - 1].trim_end()) {
             let lineno = lines[(start + stale_i).min(lines.len() - 1)].lineno;
             out.push(malformed("Bottom border missing or corrupt.", lineno));
             if let Some(w) = trailing_warning {
@@ -2117,11 +2378,11 @@ impl<'a> BlockParser<'a> {
 
         // grid as DISPLAY-column matrix (wide chars followed by a filler;
         // head/body sep '=' converted to '-')
-        let mut grid: Vec<Vec<char>> = block
+        let mut grid: Vec<Vec<char>> = raw_block
             .iter()
             .map(|l| {
                 let mut row = Vec::new();
-                for c in l.text.trim_end().chars() {
+                for c in l.trim_end().chars() {
                     row.push(c);
                     if unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) == 2 {
                         row.push('\u{fffd}');
@@ -2240,31 +2501,31 @@ impl<'a> BlockParser<'a> {
                 entry.set("morerows", AttrValue::Int(morerows as i64));
             }
             // cell block: rows top+1..bottom, cols left+1..right
-            let mut cell_lines: Vec<LineRef<'a>> = Vec::new();
+            let mut cell_lines: Vec<LineRec> = Vec::new();
             for l in block.iter().take(bottom).skip(top + 1) {
-                let text = display_slice(l.text, left + 1, right);
-                cell_lines.push(LineRef::new(text, l.lineno, l.src_start, l.src_end));
+                let (s, e) = display_range(self.sources.line_text(*l), left + 1, right);
+                cell_lines.push(self.rewrap_range(*l, s, e));
             }
             let base = cell_lines
                 .iter()
-                .filter(|l| !l.text.trim().is_empty())
+                .filter(|l| !self.sources.line_text(**l).trim().is_empty())
                 .map(|l| l.indent())
                 .min()
                 .unwrap_or(0);
-            let dedented: Vec<LineRef<'a>> = cell_lines
+            let dedented: Vec<LineRec> = cell_lines
                 .iter()
                 .map(|l| {
-                    if l.text.trim().is_empty() {
-                        LineRef::new("", l.lineno, l.src_start, l.src_end)
+                    if self.sources.line_text(*l).trim().is_empty() {
+                        self.blank_at(*l)
                     } else {
-                        let mut d = l.dedented(base);
+                        let d = l.dedented(base);
                         // strip trailing whitespace inside the cell view
-                        d.text = d.text.trim_end();
-                        d
+                        let trimmed = self.sources.line_text(d).trim_end().len();
+                        self.rewrap_range(d, 0, trimmed)
                     }
                 })
                 .collect();
-            if dedented.iter().any(|l| !l.text.is_empty()) {
+            if dedented.iter().any(|l| !l.is_blank()) {
                 self.line_bias += 1;
                 entry.children = self.parse_nested(&dedented, "entry");
                 self.line_bias -= 1;
@@ -2315,29 +2576,27 @@ impl<'a> BlockParser<'a> {
         }
     }
 
-    fn parse_simple_table(&mut self, lines: &[LineRef<'a>], pos: &mut usize, out: &mut Vec<Node>) {
+    fn parse_simple_table(&mut self, lines: &[LineRec], pos: &mut usize, out: &mut Vec<Node>) {
         let start = *pos;
-        let toplen = char_len(lines[start].text.trim_end());
+        let toplen = char_len(self.sources.line_text(lines[start]).trim_end());
         // isolate: find border candidates (=-runs line, same stripped length)
         let mut found = 0usize;
         let mut found_at = None;
         let mut end = None;
         let mut i = start + 1;
         while i < lines.len() {
-            let t = lines[i].text.trim_end();
+            let t = self.sources.line_text(lines[i]).trim_end();
             if is_simple_table_border(t) {
                 if char_len(t) != toplen {
-                    let raw: Vec<String> = lines[start..=i]
-                        .iter()
-                        .map(|l| l.text.to_string())
-                        .collect();
+                    let raw = self.join_lines(&lines[start..=i]);
                     out.push(messages::with_literal(
                         self.msg(
                             messages::ERROR,
                             "Malformed table.\nBottom border or header rule does not match top border.",
+                            lines[i].source,
                             lines[i].lineno,
                         ),
-                        raw.join("\n").trim_end(),
+                        raw.trim_end(),
                     ));
                     *pos = i + 1;
                     return;
@@ -2360,17 +2619,15 @@ impl<'a> BlockParser<'a> {
                 Some(f) => (f, " or no blank line after table bottom"),
                 None => (i.saturating_sub(1).max(start), ""),
             };
-            let raw: Vec<String> = lines[start..=block_end.min(lines.len() - 1)]
-                .iter()
-                .map(|l| l.text.to_string())
-                .collect();
+            let raw = self.join_lines(&lines[start..=block_end.min(lines.len() - 1)]);
             out.push(messages::with_literal(
                 self.msg(
                     messages::ERROR,
                     &format!("Malformed table.\nNo bottom table border found{extra}."),
+                    lines[start].source,
                     lines[start].lineno,
                 ),
-                raw.join("\n").trim_end(),
+                raw.trim_end(),
             ));
             *pos = block_end + 1;
             if !extra.is_empty() {
@@ -2378,6 +2635,7 @@ impl<'a> BlockParser<'a> {
                     out.push(self.msg(
                         messages::WARNING,
                         "Blank line required after table.",
+                        l.source,
                         l.lineno,
                     ));
                 }
@@ -2387,22 +2645,26 @@ impl<'a> BlockParser<'a> {
         *pos = end + 1;
         let blank_after_ok = lines.get(*pos).map(|l| l.is_blank()).unwrap_or(true);
 
-        let block: Vec<LineRef<'a>> = lines[start..=end].to_vec();
-        let raw_block: Vec<String> = block.iter().map(|l| l.text.to_string()).collect();
+        let block: Vec<LineRec> = lines[start..=end].to_vec();
+        let raw_block: Vec<String> = block
+            .iter()
+            .map(|l| self.sources.line_text(*l).to_string())
+            .collect();
+        let msg_path = self.sources.path(block[0].source).to_string();
         let malformed = |detail: &str, lineno: u32| -> Node {
             messages::with_literal(
                 messages::system_message(
                     messages::ERROR,
                     &format!("Malformed table.\n{detail}"),
                     lineno,
-                    self.source_path,
+                    &msg_path,
                 ),
                 raw_block.join("\n").trim_end(),
             )
         };
 
         // columns from the top border '=' runs
-        let top_chars: Vec<char> = block[0].text.trim_end().chars().collect();
+        let top_chars: Vec<char> = raw_block[0].trim_end().chars().collect();
         let mut columns: Vec<(usize, usize)> = Vec::new();
         let mut run_start = None;
         for (ci, c) in top_chars.iter().enumerate() {
@@ -2421,10 +2683,7 @@ impl<'a> BlockParser<'a> {
 
         // interior head/body sep: full-'='-runs line converted to span line
         let mut head_sep_row: Option<usize> = None; // index into block
-        let mut work: Vec<String> = block
-            .iter()
-            .map(|l| l.text.trim_end().to_string())
-            .collect();
+        let mut work: Vec<String> = raw_block.iter().map(|l| l.trim_end().to_string()).collect();
         let n = work.len();
         for (bi, w) in work.iter_mut().enumerate() {
             if bi > 0 && bi < n - 1 && is_simple_table_border(w) {
@@ -2600,31 +2859,33 @@ impl<'a> BlockParser<'a> {
                     entry.set("morecols", AttrValue::Int(morecols as i64));
                 }
                 // cell block
-                let mut cell_lines: Vec<LineRef<'a>> = Vec::new();
+                let mut cell_lines: Vec<LineRec> = Vec::new();
                 #[allow(clippy::needless_range_loop)]
                 for bi in row.start..row.end.min(bottom) {
-                    let l = &block[bi];
-                    let orig = display_slice(l.text, *cs, ce_eff.min(column_width(l.text)));
-                    let use_text = orig.trim_end();
-                    cell_lines.push(LineRef::new(use_text, l.lineno, l.src_start, l.src_end));
+                    let l = block[bi];
+                    let text = self.sources.line_text(l);
+                    let (s, e) = display_range(text, *cs, ce_eff.min(column_width(text)));
+                    // strip trailing whitespace inside the cell view
+                    let e = s + text[s..e].trim_end().len();
+                    cell_lines.push(self.rewrap_range(l, s, e));
                 }
                 let base = cell_lines
                     .iter()
-                    .filter(|l| !l.text.trim().is_empty())
+                    .filter(|l| !self.sources.line_text(**l).trim().is_empty())
                     .map(|l| l.indent())
                     .min()
                     .unwrap_or(0);
-                let dedented: Vec<LineRef<'a>> = cell_lines
+                let dedented: Vec<LineRec> = cell_lines
                     .iter()
                     .map(|l| {
-                        if l.text.trim().is_empty() {
-                            LineRef::new("", l.lineno, l.src_start, l.src_end)
+                        if self.sources.line_text(*l).trim().is_empty() {
+                            self.blank_at(*l)
                         } else {
                             l.dedented(base)
                         }
                     })
                     .collect();
-                if dedented.iter().any(|l| !l.text.is_empty()) {
+                if dedented.iter().any(|l| !l.is_blank()) {
                     self.line_bias += 1;
                     entry.children = self.parse_nested(&dedented, "entry");
                     self.line_bias -= 1;
@@ -2676,6 +2937,7 @@ impl<'a> BlockParser<'a> {
                 out.push(self.msg(
                     messages::WARNING,
                     "Blank line required after table.",
+                    l.source,
                     l.lineno,
                 ));
             }
@@ -2687,7 +2949,7 @@ impl<'a> BlockParser<'a> {
     /// generic admonition; more directives arrive in later tasks.
     fn parse_directive(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         name: &str,
         first_rest: &str,
@@ -2707,21 +2969,16 @@ impl<'a> BlockParser<'a> {
         while lines.get(raw_end).map(|l| l.is_blank()).unwrap_or(false) {
             raw_end += 1;
         }
-        let mut raw_lines: Vec<&str> = vec![lines[start].text];
+        let mut rawsource = self.sources.line_text(lines[start]).to_string();
         for l in &lines[start + 1..raw_end] {
-            raw_lines.push(l.text);
+            rawsource.push('\n');
+            rawsource.push_str(self.sources.line_text(*l));
         }
-        let rawsource = raw_lines.join("\n");
 
         let first_line = {
             let t = first_rest.trim_start_matches(' ');
-            let offset = lines[start].text.len() - t.len();
-            LineRef::new(
-                &lines[start].text[offset..],
-                lineno,
-                lines[start].src_start,
-                lines[start].src_end,
-            )
+            let offset = self.sources.line_text(lines[start]).len() - t.len();
+            self.rewrap_from(lines[start], offset)
         };
         self.run_directive_core(
             name,
@@ -2741,8 +2998,8 @@ impl<'a> BlockParser<'a> {
     fn run_directive_core(
         &mut self,
         name: &str,
-        first_line: LineRef<'a>,
-        block: &[LineRef<'a>],
+        first_line: LineRec,
+        block: &[LineRec],
         rawsource: &str,
         lineno: u32,
         span: Span,
@@ -2758,12 +3015,14 @@ impl<'a> BlockParser<'a> {
                 &format!(
                     "No directive entry for \"{name}\" in module \"docutils.parsers.rst.languages.en\".\nTrying \"{name}\" as canonical directive name."
                 ),
+                span.source,
                 lineno,
             ));
             out.push(messages::with_literal(
                 self.msg(
                     messages::ERROR,
                     &format!("Unknown directive type \"{name}\"."),
+                    span.source,
                     lineno,
                 ),
                 rawsource,
@@ -2778,6 +3037,7 @@ impl<'a> BlockParser<'a> {
                 me.msg(
                     messages::ERROR,
                     &format!("Error in \"{name}\" directive:\n{detail}."),
+                    span.source,
                     lineno,
                 ),
                 rawsource,
@@ -2788,7 +3048,7 @@ impl<'a> BlockParser<'a> {
         // `indented` mirrors get_first_known_indented(match.end(),
         // strip_top=0): the marker-line remainder after `::` and ALL
         // following spaces, then the (already dedented) indented block.
-        let mut indented: Vec<LineRef<'a>> = vec![first_line];
+        let mut indented: Vec<LineRec> = vec![first_line];
         indented.extend(block.iter().copied());
         // Exactly ONE leading blank line is trimmed, then all trailing.
         if indented.first().map(|l| l.is_blank()).unwrap_or(false) {
@@ -2803,8 +3063,8 @@ impl<'a> BlockParser<'a> {
         let declares_specs = spec.required_arguments > 0
             || spec.optional_arguments > 0
             || !spec.option_spec.is_empty();
-        let mut arg_block: Vec<LineRef<'a>>;
-        let mut content: Vec<LineRef<'a>>;
+        let mut arg_block: Vec<LineRec>;
+        let mut content: Vec<LineRec>;
         let blank_idx;
         if !indented.is_empty() && declares_specs {
             blank_idx = indented
@@ -2830,10 +3090,10 @@ impl<'a> BlockParser<'a> {
         if !spec.option_spec.is_empty() {
             if let Some(k) = arg_block
                 .iter()
-                .position(|l| field_marker(l.text).is_some())
+                .position(|l| field_marker(self.sources.line_text(*l)).is_some())
             {
                 let opt_block = arg_block.split_off(k);
-                match parse_extension_options(&opt_block, spec.option_spec) {
+                match parse_extension_options(&self.sources, &opt_block, spec.option_spec) {
                     Ok(opts) => {
                         for (k2, v) in opts {
                             match options.iter_mut().find(|(n, _)| *n == k2) {
@@ -2866,11 +3126,7 @@ impl<'a> BlockParser<'a> {
         // Arguments (parse_directive_arguments, states.py:2365-2380).
         let mut arguments: Vec<String> = Vec::new();
         if spec.required_arguments + spec.optional_arguments > 0 {
-            let arg_text = arg_block
-                .iter()
-                .map(|l| l.text)
-                .collect::<Vec<_>>()
-                .join("\n");
+            let arg_text = self.join_lines(&arg_block);
             match parse_directive_arguments(&arg_text, &spec) {
                 Ok(a) => arguments = a,
                 Err(detail) => {
@@ -2935,13 +3191,47 @@ impl<'a> BlockParser<'a> {
             // always consulted last anyway), so the state has nothing to
             // steer — the node-level effect, an empty return, is all of it.
             DirectiveKind::DefaultDomainDir => {}
+            #[cfg(test)]
+            DirectiveKind::TestSplice => {
+                let outcome = self.run_test_splice(input);
+                self.finish_directive(outcome);
+            }
         }
+    }
+
+    /// Bank a directive's [`DirectiveOutcome`] for the enclosing
+    /// block-parse loop: a splice waits in `pending_splice` until the loop
+    /// reaches its cursor. Splice-producing directive arms (T12's include)
+    /// route their return value through here.
+    #[allow(dead_code)] // see DirectiveOutcome
+    fn finish_directive(&mut self, outcome: DirectiveOutcome) {
+        if let DirectiveOutcome::Splice(request) = outcome {
+            self.pending_splice = Some(request);
+        }
+    }
+
+    /// The test-only splice producer: content lines become a spliced
+    /// source named by the argument. Built from the input alone — the
+    /// shape T12's include takes: no parser internals needed to return a
+    /// splice.
+    #[cfg(test)]
+    fn run_test_splice(&mut self, input: DirectiveInput<'_>) -> DirectiveOutcome {
+        let lines = input
+            .content
+            .iter()
+            .map(|l| self.sources.line_text(*l).to_string())
+            .collect();
+        DirectiveOutcome::Splice(SpliceRequest {
+            lines,
+            source_path: input.arguments[0].clone(),
+            base_lineno_override: None,
+        })
     }
 
     /// `.. program::` (`domains/std/__init__.py:333-348`): pure
     /// `env.ref_context` state, no nodes. The literal argument `None` pops
     /// the scope rather than naming a program called "None".
-    fn run_program(&mut self, input: DirectiveInput<'a, '_>) {
+    fn run_program(&mut self, input: DirectiveInput<'_>) {
         let Some(argument) = input.arguments.first() else {
             return;
         };
@@ -2955,13 +3245,8 @@ impl<'a> BlockParser<'a> {
 
     /// sphinx math (patches.py MathDirective + math-domain numbering).
     /// Absent label/number are Python None -> pformat "True".
-    fn run_sphinx_math(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
-        let mut latex = input
-            .content
-            .iter()
-            .map(|l| l.text)
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn run_sphinx_math(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
+        let mut latex = self.join_lines(&input.content);
         if let Some(arg) = input.arguments.first() {
             latex = if latex.is_empty() {
                 format!("{arg}\n\n")
@@ -3006,7 +3291,7 @@ impl<'a> BlockParser<'a> {
     }
 
     /// sphinx index directive (sphinx/domains/index.py IndexDirective).
-    fn run_index(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_index(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let target_id = format!("index-{}", self.registry.new_index_serialno());
         let mut entries: Vec<String> = Vec::new();
         for line in input.arguments[0].split('\n') {
@@ -3032,7 +3317,7 @@ impl<'a> BlockParser<'a> {
 
     /// sphinx hlist (other.py HList): content must be exactly one bullet
     /// list; distributed into ncolumns hlistcol children.
-    fn run_hlist(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_hlist(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let ncolumns = match opt_get(&input.options, "columns") {
             Some(OptVal::Int(n)) if *n > 0 => *n as usize,
             _ => 2,
@@ -3077,7 +3362,7 @@ impl<'a> BlockParser<'a> {
     /// Sphinx's explicit `in_comment` flag has no counterpart here because
     /// this loop already skips every indented line it meets outside a
     /// definition block, whether or not a comment preceded it.
-    fn run_glossary(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_glossary(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let mut glossary = Node::elem("glossary", input.span);
         glossary.set(
             "sorted",
@@ -3101,20 +3386,20 @@ impl<'a> BlockParser<'a> {
                 i += 1;
                 continue;
             }
-            if is_glossary_comment(&content[i]) {
+            if is_glossary_comment(&content[i], self.sources.line_text(content[i])) {
                 i += 1;
                 continue;
             }
-            let mut term_lines: Vec<LineRef<'a>> = Vec::new();
+            let mut term_lines: Vec<LineRec> = Vec::new();
             while i < content.len()
                 && !content[i].is_blank()
                 && content[i].indent() == 0
-                && !is_glossary_comment(&content[i])
+                && !is_glossary_comment(&content[i], self.sources.line_text(content[i]))
             {
                 term_lines.push(content[i]);
                 i += 1;
             }
-            let mut def_lines: Vec<LineRef<'a>> = Vec::new();
+            let mut def_lines: Vec<LineRec> = Vec::new();
             while i < content.len() && (content[i].is_blank() || content[i].indent() > 0) {
                 if content[i].is_blank()
                     && content
@@ -3134,7 +3419,8 @@ impl<'a> BlockParser<'a> {
             let mut item = Node::elem(kinds::DEFINITION_LIST_ITEM, input.span);
             let mut term_messages: Vec<Node> = Vec::new();
             for tl in &term_lines {
-                let raw_term = tl.text.trim();
+                let raw_term = self.sources.line_text(*tl).trim().to_string();
+                let raw_term = raw_term.as_str();
                 // split_term_classifiers: ' +: +' — first classifier is
                 // the index key.
                 let mut parts = raw_term.splitn(2, " : ");
@@ -3149,9 +3435,10 @@ impl<'a> BlockParser<'a> {
                 // location — the duplicate-object warning, above all — reads
                 // that, so each term carries its own span here.
                 let term_span = Span {
-                    source: input.span.source,
-                    start: tl.src_start,
-                    end: tl.src_end,
+                    source: tl.source,
+                    line: tl.lineno,
+                    start: tl.start,
+                    end: tl.end,
                 };
                 let inline = self.inline(&term_text, term_span, tl.lineno);
                 let mut term = Node::elem(kinds::TERM, term_span);
@@ -3202,7 +3489,7 @@ impl<'a> BlockParser<'a> {
     fn run_object_description(
         &mut self,
         kind: ObjectDescKind,
-        input: DirectiveInput<'a, '_>,
+        input: DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
         let Some(argument) = input.arguments.first() else {
@@ -3375,6 +3662,7 @@ impl<'a> BlockParser<'a> {
                 // signature node — which carries the directive's own line.
                 // The spelling contributes nothing either way.
                 self.log_warnings.push(super::ParseLogWarning {
+                    source: span.source,
                     message: format!(
                         "Malformed option description {}, should look like \"opt\", \
                          \"-opt args\", \"--opt args\", \"/opt args\" or \"+opt args\"",
@@ -3484,6 +3772,7 @@ impl<'a> BlockParser<'a> {
                 for optname in &allnames {
                     self.program_option_records
                         .push(super::ProgramOptionRecord {
+                            source: signode.span.source,
                             program: program.clone(),
                             name: optname.clone(),
                             node_id: first_id.clone(),
@@ -3520,6 +3809,7 @@ impl<'a> BlockParser<'a> {
         signode.attrs.ids.push(node_id.clone());
         self.registry.note_explicit_id(&node_id);
         self.std_object_records.push(super::ObjectRegistration {
+            source: signode.span.source,
             objtype: objtype.to_string(),
             name: name.to_string(),
             node_id: node_id.clone(),
@@ -3531,7 +3821,7 @@ impl<'a> BlockParser<'a> {
     /// `ConfigurationValue.transform_content` (`domains/std:153-185`):
     /// `:type:` and `:default:` render as a field list prepended to the
     /// description content, each field followed by its own inline messages.
-    fn confval_transform_content(&mut self, input: &DirectiveInput<'a, '_>, content: &mut Node) {
+    fn confval_transform_content(&mut self, input: &DirectiveInput<'_>, content: &mut Node) {
         let mut field_list = Node::elem(kinds::FIELD_LIST, input.span);
         for (option, label) in [("type", "Type"), ("default", "Default")] {
             let Some(OptVal::Str(value)) = opt_get(&input.options, option) else {
@@ -3560,7 +3850,7 @@ impl<'a> BlockParser<'a> {
     fn run_version_change(
         &mut self,
         info: &'static (&'static str, &'static str, &'static str),
-        input: DirectiveInput<'a, '_>,
+        input: DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
         let (type_name, label, lead_fmt) = *info;
@@ -3577,14 +3867,7 @@ impl<'a> BlockParser<'a> {
                     None
                 } else {
                     text_lineno = input.content[0].lineno;
-                    Some(
-                        input
-                            .content
-                            .iter()
-                            .map(|l| l.text)
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    )
+                    Some(self.join_lines(&input.content))
                 }
             })
             .filter(|t| !t.is_empty());
@@ -3618,16 +3901,27 @@ impl<'a> BlockParser<'a> {
 
     /// seealso (sphinx/directives/other.py): admonition-shaped custom
     /// node with no attributes.
-    fn run_seealso(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_seealso(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let mut node = Node::elem("seealso", input.span);
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             node.attrs.classes.extend(classes.iter().cloned());
         }
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         let content = self.parse_nested(&input.content, "seealso");
         node.children.extend(content);
         out.push(node);
@@ -3637,7 +3931,7 @@ impl<'a> BlockParser<'a> {
     /// falls back to the `.. highlight::` state then the 'default'
     /// sentinel; :caption: wraps in a literal-block-wrapper container
     /// that takes the ids/names.
-    fn run_sphinx_code_block(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_sphinx_code_block(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let language = input
             .arguments
             .first()
@@ -3653,7 +3947,7 @@ impl<'a> BlockParser<'a> {
             match parse_linenos(spec, nlines) {
                 Ok(lines_list) => hl_lines = lines_list,
                 Err(msg) => {
-                    out.push(self.msg(messages::WARNING, &msg, input.lineno));
+                    out.push(self.msg(messages::WARNING, &msg, input.span.source, input.lineno));
                     return;
                 }
             }
@@ -3684,12 +3978,7 @@ impl<'a> BlockParser<'a> {
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             lb.attrs.classes.extend(classes.iter().cloned());
         }
-        let code = input
-            .content
-            .iter()
-            .map(|l| l.text)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let code = self.join_lines(&input.content);
         lb.children.push(Node::text_node(code, input.span));
         match opt_get(&input.options, "caption") {
             Some(OptVal::Str(caption_text)) => {
@@ -3699,7 +3988,13 @@ impl<'a> BlockParser<'a> {
                     .classes
                     .push("literal-block-wrapper".to_string());
                 container.set("literal_block", AttrValue::Int(1));
-                self.directive_add_name(&mut container, &input.options, input.lineno, out);
+                self.directive_add_name(
+                    &mut container,
+                    &input.options,
+                    input.span.source,
+                    input.lineno,
+                    out,
+                );
                 let inline = self.inline(&caption_text.clone(), input.span, input.lineno);
                 let mut caption = Node::elem("caption", input.span);
                 caption.children = inline.nodes;
@@ -3709,7 +4004,13 @@ impl<'a> BlockParser<'a> {
                 out.extend(inline.messages);
             }
             _ => {
-                self.directive_add_name(&mut lb, &input.options, input.lineno, out);
+                self.directive_add_name(
+                    &mut lb,
+                    &input.options,
+                    input.span.source,
+                    input.lineno,
+                    out,
+                );
                 out.push(lb);
             }
         }
@@ -3717,7 +4018,7 @@ impl<'a> BlockParser<'a> {
 
     /// sphinx highlight: emits a highlightlang node AND sets the state
     /// later code-blocks read (env.temp_data parity).
-    fn run_highlight(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_highlight(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let lang = input.arguments[0].clone();
         self.highlight_language = Some(lang.clone());
         let mut node = Node::elem("highlightlang", input.span);
@@ -3736,7 +4037,7 @@ impl<'a> BlockParser<'a> {
 
     /// sphinx only: expr stored verbatim; evaluation is a later build
     /// phase.
-    fn run_only(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_only(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let mut node = Node::elem("only", input.span);
         node.set("expr", AttrValue::Str(input.arguments[0].clone()));
         let content = self.parse_nested(&input.content, "only");
@@ -3748,7 +4049,7 @@ impl<'a> BlockParser<'a> {
     /// lines) for the build pipeline; the node is a best-effort
     /// `compound.toctree-wrapper > toctree` (probe shape; exact attr
     /// parity lands with the sphinx-fixture toctree cases).
-    fn run_toctree(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_toctree(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let glob = matches!(opt_get(&input.options, "glob"), Some(OptVal::Null));
         let mut entries: Vec<super::ToctreeEntryRecord> = Vec::new();
         let mut raw_entries: Vec<String> = Vec::new();
@@ -3756,7 +4057,8 @@ impl<'a> BlockParser<'a> {
             if l.is_blank() {
                 continue;
             }
-            let t = l.text.trim();
+            let t = self.sources.line_text(*l).trim().to_string();
+            let t = t.as_str();
             raw_entries.push(t.to_string());
             // sphinx explicit_title_re `^(.+?)\s*<(.*?)>$`: the TITLE part
             // must be nonempty — a bare `<foo>` entry is a literal target
@@ -3841,11 +4143,7 @@ impl<'a> BlockParser<'a> {
         out.push(compound);
     }
 
-    fn substitution_context_error(
-        &self,
-        input: &DirectiveInput<'a, '_>,
-        out: &mut Vec<Node>,
-    ) -> bool {
+    fn substitution_context_error(&self, input: &DirectiveInput<'_>, out: &mut Vec<Node>) -> bool {
         if self.substitution_ctx.is_some() {
             return false;
         }
@@ -3854,19 +4152,24 @@ impl<'a> BlockParser<'a> {
                 "Invalid context: the \"{}\" directive can only be used within a substitution definition.",
                 input.name
             ),
-            input.lineno,
+            input.span.source, input.lineno,
             input.rawsource,
         ));
         true
     }
 
     /// replace (misc.py:357-387).
-    fn run_replace(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_replace(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if self.substitution_context_error(&input, out) {
             return;
         }
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         // The nested parse runs OUTSIDE the SubstitutionDef state: an
@@ -3900,13 +4203,14 @@ impl<'a> BlockParser<'a> {
                     "Error in \"{}\" directive: may contain a single paragraph only.",
                     input.name
                 ),
+                input.span.source,
                 input.lineno,
             ));
         }
     }
 
     /// unicode (misc.py:390-431).
-    fn run_unicode(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_unicode(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if self.substitution_context_error(&input, out) {
             return;
         }
@@ -3925,6 +4229,7 @@ impl<'a> BlockParser<'a> {
                 Err(detail) => {
                     out.push(self.directive_run_error(
                         &format!("Invalid character code: {code}\nValueError: {detail}"),
+                        input.span.source,
                         input.lineno,
                         input.rawsource,
                     ));
@@ -3936,25 +4241,20 @@ impl<'a> BlockParser<'a> {
 
     /// date (misc.py:639-666): strftime at PARSE time (deliberately
     /// non-deterministic output; the fixture corpus avoids success cases).
-    fn run_date(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_date(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if self.substitution_context_error(&input, out) {
             return;
         }
         let format = if input.content.is_empty() {
             "%Y-%m-%d".to_string()
         } else {
-            input
-                .content
-                .iter()
-                .map(|l| l.text)
-                .collect::<Vec<_>>()
-                .join("\n")
+            self.join_lines(&input.content)
         };
         out.push(Node::text_node(strftime_now(&format), input.span));
     }
 
     /// Table.make_title (tables.py:46-57).
-    fn table_make_title(&mut self, input: &DirectiveInput<'a, '_>) -> (Option<Node>, Vec<Node>) {
+    fn table_make_title(&mut self, input: &DirectiveInput<'_>) -> (Option<Node>, Vec<Node>) {
         match input.arguments.first() {
             Some(text) => {
                 let inline = self.inline(text, input.span, input.lineno);
@@ -3973,7 +4273,7 @@ impl<'a> BlockParser<'a> {
     fn finish_table(
         &mut self,
         mut table: Node,
-        input: &DirectiveInput<'a, '_>,
+        input: &DirectiveInput<'_>,
         title: Option<Node>,
         title_messages: Vec<Node>,
         out: &mut Vec<Node>,
@@ -3984,7 +4284,13 @@ impl<'a> BlockParser<'a> {
         if let Some(OptVal::Str(a)) = opt_get(&input.options, "align") {
             table.set("align", AttrValue::Str(a.clone()));
         }
-        self.directive_add_name(&mut table, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut table,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         if let Some(t) = title {
             table.children.insert(0, t);
         }
@@ -3993,7 +4299,7 @@ impl<'a> BlockParser<'a> {
     }
 
     /// table (tables.py RSTTable:127-172).
-    fn run_rst_table(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_rst_table(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
             // RSTTable's missing-content diagnostic is a WARNING, unlike
             // the assert_has_content ERROR family (tables.py:135-139).
@@ -4003,6 +4309,7 @@ impl<'a> BlockParser<'a> {
                     "Content block expected for the \"{}\" directive; none found.",
                     input.name
                 ),
+                input.span.source,
                 input.lineno,
                 input.rawsource,
             ));
@@ -4016,7 +4323,7 @@ impl<'a> BlockParser<'a> {
                     "Error parsing content block for the \"{}\" directive: exactly one table expected.",
                     input.name
                 ),
-                input.lineno,
+                input.span.source, input.lineno,
                 input.rawsource,
             ));
             return;
@@ -4053,6 +4360,7 @@ impl<'a> BlockParser<'a> {
                             "\"{}\" widths do not match the number of columns in table ({}).",
                             input.name, n_cols
                         ),
+                        input.span.source,
                         input.lineno,
                         input.rawsource,
                     ));
@@ -4075,7 +4383,7 @@ impl<'a> BlockParser<'a> {
     }
 
     /// csv-table (tables.py CSVTable:175-403).
-    fn run_csv_table(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_csv_table(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let has_file = opt_get(&input.options, "file").is_some();
         let has_url = opt_get(&input.options, "url").is_some();
         // get_csv_data (tables.py:321-388).
@@ -4087,17 +4395,13 @@ impl<'a> BlockParser<'a> {
                         "\"{}\" directive may not both specify an external file and have content.",
                         input.name
                     ),
+                    input.span.source,
                     input.lineno,
                     input.rawsource,
                 ));
                 return;
             }
-            csv_text = input
-                .content
-                .iter()
-                .map(|l| l.text)
-                .collect::<Vec<_>>()
-                .join("\n");
+            csv_text = self.join_lines(&input.content);
         } else if has_file {
             if has_url {
                 out.push(self.directive_run_error(
@@ -4105,7 +4409,7 @@ impl<'a> BlockParser<'a> {
                         "The \"file\" and \"url\" options may not be simultaneously specified for the \"{}\" directive.",
                         input.name
                     ),
-                    input.lineno,
+                    input.span.source, input.lineno,
                     input.rawsource,
                 ));
                 return;
@@ -4113,7 +4417,7 @@ impl<'a> BlockParser<'a> {
             let Some(OptVal::Str(path)) = opt_get(&input.options, "file") else {
                 unreachable!("file option is Path-converted");
             };
-            let base = std::path::Path::new(self.source_path)
+            let base = std::path::Path::new(self.sources.path(0))
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
@@ -4129,7 +4433,7 @@ impl<'a> BlockParser<'a> {
                             input.name,
                             py_repr(Some(path))
                         ),
-                        input.lineno,
+                        input.span.source, input.lineno,
                         input.rawsource,
                     ));
                     return;
@@ -4142,6 +4446,7 @@ impl<'a> BlockParser<'a> {
                     "The \"{}\" directive requires content; none supplied.",
                     input.name
                 ),
+                input.span.source,
                 input.lineno,
                 input.rawsource,
             ));
@@ -4200,7 +4505,12 @@ impl<'a> BlockParser<'a> {
             header_rows,
             stub_columns,
         ) {
-            out.push(self.directive_run_error(&msg, input.lineno, input.rawsource));
+            out.push(self.directive_run_error(
+                &msg,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         // Column widths (tables.py:101-118).
@@ -4213,6 +4523,7 @@ impl<'a> BlockParser<'a> {
                             "\"{}\" widths do not match the number of columns in table ({}).",
                             input.name, max_cols
                         ),
+                        input.span.source,
                         input.lineno,
                         input.rawsource,
                     ));
@@ -4224,6 +4535,7 @@ impl<'a> BlockParser<'a> {
                 if max_cols == 0 {
                     out.push(self.directive_run_error(
                         "No table data detected in CSV file.",
+                        input.span.source,
                         input.lineno,
                         input.rawsource,
                     ));
@@ -4239,7 +4551,8 @@ impl<'a> BlockParser<'a> {
                 let mut entry = Node::elem(kinds::ENTRY, input.span);
                 if let Some(cell) = cells.get(i) {
                     if !cell.is_empty() {
-                        entry.children = self.parse_detached(cell, input.lineno, "entry");
+                        entry.children =
+                            self.parse_detached(cell, input.lineno, input.span.source, "entry");
                     }
                 }
                 entries.push(entry);
@@ -4273,13 +4586,14 @@ impl<'a> BlockParser<'a> {
     }
 
     /// list-table (tables.py ListTable:406-523).
-    fn run_list_table(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_list_table(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
             out.push(self.directive_run_error(
                 &format!(
                     "The \"{}\" directive is empty; content required.",
                     input.name
                 ),
+                input.span.source,
                 input.lineno,
                 input.rawsource,
             ));
@@ -4293,6 +4607,7 @@ impl<'a> BlockParser<'a> {
                     "Error parsing content block for the \"{}\" directive: {detail}",
                     input.name
                 ),
+                input.span.source,
                 input.lineno,
                 input.rawsource,
             )
@@ -4353,7 +4668,12 @@ impl<'a> BlockParser<'a> {
             header_rows,
             stub_columns,
         ) {
-            out.push(self.directive_run_error(&msg, input.lineno, input.rawsource));
+            out.push(self.directive_run_error(
+                &msg,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let n_cols = first_len.unwrap_or(0);
@@ -4366,6 +4686,7 @@ impl<'a> BlockParser<'a> {
                             "\"{}\" widths do not match the number of columns in table ({}).",
                             input.name, n_cols
                         ),
+                        input.span.source,
                         input.lineno,
                         input.rawsource,
                     ));
@@ -4496,7 +4817,7 @@ impl<'a> BlockParser<'a> {
     fn run_pseudo_section(
         &mut self,
         kind: &'static str,
-        input: DirectiveInput<'a, '_>,
+        input: DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
         // Sidebar's own pre-checks run before the shared context check
@@ -4508,6 +4829,7 @@ impl<'a> BlockParser<'a> {
                         "The \"{}\" directive may not be used within a sidebar element.",
                         input.name
                     ),
+                    input.span.source,
                     input.lineno,
                     input.rawsource,
                 ));
@@ -4516,6 +4838,7 @@ impl<'a> BlockParser<'a> {
             if opt_get(&input.options, "subtitle").is_some() && input.arguments.is_empty() {
                 out.push(self.directive_run_error(
                     "The \"subtitle\" option may not be used without a title.",
+                    input.span.source,
                     input.lineno,
                     input.rawsource,
                 ));
@@ -4531,6 +4854,7 @@ impl<'a> BlockParser<'a> {
                         "The \"{}\" directive may not be used within topics or body elements.",
                         input.name
                     ),
+                    input.span.source,
                     input.lineno,
                     input.rawsource,
                 ));
@@ -4538,7 +4862,12 @@ impl<'a> BlockParser<'a> {
             }
         }
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let mut node = Node::elem(kind, input.span);
@@ -4561,7 +4890,13 @@ impl<'a> BlockParser<'a> {
             }
         }
         node.children.append(&mut title_messages);
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         let content = self.parse_nested(&input.content, kind);
         node.children.extend(content);
         out.push(node);
@@ -4569,14 +4904,20 @@ impl<'a> BlockParser<'a> {
 
     /// rubric (body.py:240-254): inline children, no paragraph wrapper,
     /// inline messages as siblings after the node.
-    fn run_rubric(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_rubric(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let inline = self.inline(&input.arguments[0], input.span, input.lineno);
         let mut node = Node::elem("rubric", input.span);
         node.children = inline.nodes;
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             node.attrs.classes.extend(classes.iter().cloned());
         }
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         out.push(node);
         out.extend(inline.messages);
     }
@@ -4586,11 +4927,16 @@ impl<'a> BlockParser<'a> {
     fn run_quote_class(
         &mut self,
         class: &'static str,
-        input: DirectiveInput<'a, '_>,
+        input: DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let mut elements = self.block_quote_elements(&input.content, input.span);
@@ -4603,25 +4949,41 @@ impl<'a> BlockParser<'a> {
     }
 
     /// compound (body.py:286-301).
-    fn run_compound(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_compound(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let mut node = Node::elem("compound", input.span);
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             node.attrs.classes.extend(classes.iter().cloned());
         }
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         let content = self.parse_nested(&input.content, "compound");
         node.children.extend(content);
         out.push(node);
     }
 
     /// container (body.py:304-329): classes come from the ARGUMENT.
-    fn run_container(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_container(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let mut classes: Vec<String> = Vec::new();
@@ -4634,6 +4996,7 @@ impl<'a> BlockParser<'a> {
                             "Invalid class attribute value for \"{}\" directive: \"{}\".",
                             input.name, arg
                         ),
+                        input.span.source,
                         input.lineno,
                         input.rawsource,
                     ));
@@ -4643,7 +5006,13 @@ impl<'a> BlockParser<'a> {
         }
         let mut node = Node::elem("container", input.span);
         node.attrs.classes.extend(classes);
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         let content = self.parse_nested(&input.content, "container");
         node.children.extend(content);
         out.push(node);
@@ -4651,17 +5020,17 @@ impl<'a> BlockParser<'a> {
 
     /// parsed-literal (body.py:132-146): full inline parse inside a
     /// whitespace-preserving literal_block; messages follow the node.
-    fn run_parsed_literal(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_parsed_literal(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
-        let text = input
-            .content
-            .iter()
-            .map(|l| l.text)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = self.join_lines(&input.content);
         let inline = self.inline(&text, input.span, input.lineno);
         let mut node = Node::elem(kinds::LITERAL_BLOCK, input.span);
         node.set("xml:space", AttrValue::Str("preserve".to_string()));
@@ -4669,7 +5038,13 @@ impl<'a> BlockParser<'a> {
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             node.attrs.classes.extend(classes.iter().cloned());
         }
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         out.push(node);
         out.extend(inline.messages);
     }
@@ -4677,18 +5052,32 @@ impl<'a> BlockParser<'a> {
     /// DirectiveError-style message (raised by a directive's own run()):
     /// message text VERBATIM — no 'Error in "X" directive:' prefix — plus
     /// the raw block as a literal_block child (states.py:2287-2291).
-    fn directive_run_message(&self, level: u8, text: &str, lineno: u32, rawsource: &str) -> Node {
-        messages::with_literal(self.msg(level, text, lineno), rawsource)
+    fn directive_run_message(
+        &self,
+        level: u8,
+        text: &str,
+        source: u16,
+        lineno: u32,
+        rawsource: &str,
+    ) -> Node {
+        messages::with_literal(self.msg(level, text, source, lineno), rawsource)
     }
 
-    fn directive_run_error(&self, text: &str, lineno: u32, rawsource: &str) -> Node {
-        self.directive_run_message(messages::ERROR, text, lineno, rawsource)
+    fn directive_run_error(&self, text: &str, source: u16, lineno: u32, rawsource: &str) -> Node {
+        self.directive_run_message(messages::ERROR, text, source, lineno, rawsource)
     }
 
     /// assert_has_content() (rst/__init__.py:370-377).
-    fn directive_content_error(&self, name: &str, lineno: u32, rawsource: &str) -> Node {
+    fn directive_content_error(
+        &self,
+        name: &str,
+        source: u16,
+        lineno: u32,
+        rawsource: &str,
+    ) -> Node {
         self.directive_run_error(
             &format!("Content block expected for the \"{name}\" directive; none found."),
+            source,
             lineno,
             rawsource,
         )
@@ -4700,14 +5089,16 @@ impl<'a> BlockParser<'a> {
         &mut self,
         node: &mut Node,
         options: &[(String, OptVal)],
+        source: u16,
         lineno: u32,
         out: &mut Vec<Node>,
     ) {
         if let Some(OptVal::Str(n)) = opt_get(options, "name") {
             node.attrs.names.push(ids::fully_normalize_name(n));
+            let source_path = self.sources.arc_path(source);
             let msg = self
                 .registry
-                .set_id_explicit(node, lineno, self.source_path, true, None);
+                .set_id_explicit(node, lineno, &source_path, true, None);
             if let Some(m) = msg {
                 out.push(m);
             }
@@ -4717,26 +5108,42 @@ impl<'a> BlockParser<'a> {
     fn run_admonition(
         &mut self,
         kind: &'static str,
-        input: DirectiveInput<'a, '_>,
+        input: DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let mut node = Node::elem(kind, input.span);
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             node.attrs.classes.extend(classes.iter().cloned());
         }
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         let content = self.parse_nested(&input.content, kind);
         node.children.extend(content);
         out.push(node);
     }
 
-    fn run_generic_admonition(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_generic_admonition(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let title_text = input.arguments[0].clone();
@@ -4753,7 +5160,13 @@ impl<'a> BlockParser<'a> {
                     .push(format!("admonition-{}", ids::make_id(&title_text)));
             }
         }
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         let inline = self.inline(&title_text, input.span, input.lineno);
         let mut title = Node::elem(kinds::TITLE, input.span);
         title.children = inline.nodes;
@@ -4766,7 +5179,7 @@ impl<'a> BlockParser<'a> {
         out.push(node);
     }
 
-    fn run_image(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_image(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         match self.build_image(&input, out) {
             Ok(node) => out.push(node),
             Err(msg) => out.push(*msg),
@@ -4777,7 +5190,7 @@ impl<'a> BlockParser<'a> {
     /// reference); Err carries the system_message. Shared with figure.
     fn build_image(
         &mut self,
-        input: &DirectiveInput<'a, '_>,
+        input: &DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) -> Result<Node, Box<Node>> {
         // Two-stage :align: validation (images.py:53-63): the converter
@@ -4807,7 +5220,7 @@ impl<'a> BlockParser<'a> {
                         "Error in \"{}\" directive: \"{}\" is not a valid value for the \"align\" option{}.  Valid values for \"align\" are: {}.",
                         input.name, align, ctx_txt, valid
                     ),
-                    input.lineno,
+                    input.span.source, input.lineno,
                     input.rawsource,
                 )));
             }
@@ -4848,7 +5261,13 @@ impl<'a> BlockParser<'a> {
             }
         }
         image.set("uri", AttrValue::Str(uri));
-        self.directive_add_name(&mut image, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut image,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         Ok(match reference {
             Some(mut r) => {
                 r.children.push(image);
@@ -4860,7 +5279,7 @@ impl<'a> BlockParser<'a> {
 
     /// figure (images.py:110-186), plus sphinx's override (patches.py:33-56)
     /// which moves `:name:` from the inner image onto the figure itself.
-    fn run_figure(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_figure(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         // sphinx pops `name` before delegating to docutils, so the image
         // never sees it, and re-applies it to the figure node afterwards —
         // but only on the success path (a figure returned *with* an error
@@ -4930,6 +5349,7 @@ impl<'a> BlockParser<'a> {
                     out.push(figure);
                     out.push(self.directive_run_error(
                         "Figure caption must be a paragraph or empty comment.",
+                        input.span.source,
                         input.lineno,
                         input.rawsource,
                     ));
@@ -4945,7 +5365,13 @@ impl<'a> BlockParser<'a> {
         if name_on_figure {
             // After the nested parse, exactly where sphinx calls it — the
             // caption's own targets are registered first.
-            self.directive_add_name(&mut figure, &input.options, input.lineno, out);
+            self.directive_add_name(
+                &mut figure,
+                &input.options,
+                input.span.source,
+                input.lineno,
+                out,
+            );
         }
         out.push(figure);
     }
@@ -4953,15 +5379,21 @@ impl<'a> BlockParser<'a> {
     /// code (body.py:149-211). The parity oracle runs docutils WITHOUT
     /// Pygments: a language argument fails the whole directive with a
     /// WARNING; language-less code emits a plain classes="code" literal.
-    fn run_code(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_code(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         if !input.arguments.is_empty() {
             out.push(self.directive_run_message(
                 messages::WARNING,
                 "Cannot analyze code. Pygments package not found.",
+                input.span.source,
                 input.lineno,
                 input.rawsource,
             ));
@@ -4975,6 +5407,7 @@ impl<'a> BlockParser<'a> {
                     None => {
                         out.push(self.directive_run_error(
                             ":number-lines: with non-integer start value",
+                            input.span.source,
                             input.lineno,
                             input.rawsource,
                         ));
@@ -4984,7 +5417,11 @@ impl<'a> BlockParser<'a> {
             }
             _ => None,
         };
-        let code_lines: Vec<&str> = input.content.iter().map(|l| l.text).collect();
+        let code_lines: Vec<String> = input
+            .content
+            .iter()
+            .map(|l| self.sources.line_text(*l).to_string())
+            .collect();
         let mut node = Node::elem(kinds::LITERAL_BLOCK, input.span);
         node.attrs.classes.push("code".to_string());
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
@@ -5017,23 +5454,29 @@ impl<'a> BlockParser<'a> {
                     .push(Node::text_node(code_lines.join("\n"), input.span));
             }
         }
-        self.directive_add_name(&mut node, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         out.push(node);
     }
 
     /// math (body.py:214-237): blank-line-separated blocks become sibling
     /// math_block nodes; :name: only lands on the first (options.pop).
-    fn run_math(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_math(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
-        let joined = input
-            .content
-            .iter()
-            .map(|l| l.text)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let joined = self.join_lines(&input.content);
         let mut named = false;
         for block in joined.split("\n\n") {
             if block.is_empty() {
@@ -5046,7 +5489,13 @@ impl<'a> BlockParser<'a> {
             }
             node.children.push(Node::text_node(block, input.span));
             if !named {
-                self.directive_add_name(&mut node, &input.options, input.lineno, out);
+                self.directive_add_name(
+                    &mut node,
+                    &input.options,
+                    input.span.source,
+                    input.lineno,
+                    out,
+                );
                 named = true;
             }
             out.push(node);
@@ -5054,7 +5503,7 @@ impl<'a> BlockParser<'a> {
     }
 
     /// raw (misc.py:270-354).
-    fn run_raw(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_raw(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let has_file = opt_get(&input.options, "file").is_some();
         let has_url = opt_get(&input.options, "url").is_some();
         let text: String;
@@ -5066,17 +5515,13 @@ impl<'a> BlockParser<'a> {
                         "\"{}\" directive may not both specify an external file and have content.",
                         input.name
                     ),
+                    input.span.source,
                     input.lineno,
                     input.rawsource,
                 ));
                 return;
             }
-            text = input
-                .content
-                .iter()
-                .map(|l| l.text)
-                .collect::<Vec<_>>()
-                .join("\n");
+            text = self.join_lines(&input.content);
         } else if has_file {
             if has_url {
                 out.push(self.directive_run_error(
@@ -5084,7 +5529,7 @@ impl<'a> BlockParser<'a> {
                         "The \"file\" and \"url\" options may not be simultaneously specified for the \"{}\" directive.",
                         input.name
                     ),
-                    input.lineno,
+                    input.span.source, input.lineno,
                     input.rawsource,
                 ));
                 return;
@@ -5092,7 +5537,7 @@ impl<'a> BlockParser<'a> {
             let Some(OptVal::Str(path)) = opt_get(&input.options, "file") else {
                 unreachable!("file option is Path-converted");
             };
-            let base = std::path::Path::new(self.source_path)
+            let base = std::path::Path::new(self.sources.path(0))
                 .parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
@@ -5112,7 +5557,7 @@ impl<'a> BlockParser<'a> {
                             input.name,
                             py_repr(Some(path))
                         ),
-                        input.lineno,
+                        input.span.source, input.lineno,
                         input.rawsource,
                     ));
                     return;
@@ -5127,12 +5572,18 @@ impl<'a> BlockParser<'a> {
                     "Problems with \"{}\" directive URL: fetching is not supported.",
                     input.name
                 ),
+                input.span.source,
                 input.lineno,
                 input.rawsource,
             ));
             return;
         } else {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let format = input.arguments[0]
@@ -5154,9 +5605,14 @@ impl<'a> BlockParser<'a> {
     }
 
     /// line-block directive (body.py:99-129): same tree as `|` syntax.
-    fn run_line_block(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_line_block(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         if input.content.is_empty() {
-            out.push(self.directive_content_error(input.name, input.lineno, input.rawsource));
+            out.push(self.directive_content_error(
+                input.name,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
             return;
         }
         let mut resolved: Vec<(usize, Vec<Node>)> = Vec::with_capacity(input.content.len());
@@ -5169,7 +5625,8 @@ impl<'a> BlockParser<'a> {
             }
             let depth = l.indent();
             prev_depth = depth;
-            let inline = self.inline(l.text.trim(), input.span, l.lineno);
+            let text = self.sources.line_text(*l).trim().to_string();
+            let inline = self.inline(&text, input.span, l.lineno);
             lb_messages.extend(inline.messages);
             resolved.push((depth, inline.nodes));
         }
@@ -5177,7 +5634,13 @@ impl<'a> BlockParser<'a> {
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             block.attrs.classes.extend(classes.iter().cloned());
         }
-        self.directive_add_name(&mut block, &input.options, input.lineno, out);
+        self.directive_add_name(
+            &mut block,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
         out.push(block);
         out.append(&mut lb_messages);
     }
@@ -5185,7 +5648,7 @@ impl<'a> BlockParser<'a> {
     /// class (misc.py:434-469): with content, classes apply directly to
     /// every top-level child; without, a pending node is emitted for the
     /// ClassAttribute transform.
-    fn run_class(&mut self, input: DirectiveInput<'a, '_>, out: &mut Vec<Node>) {
+    fn run_class(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let class_values = match convert_option(Conv::ClassOption, Some(&input.arguments[0])) {
             Ok(OptVal::StrList(list)) => list,
             _ => {
@@ -5194,6 +5657,7 @@ impl<'a> BlockParser<'a> {
                         "Invalid class attribute value for \"{}\" directive: \"{}\".",
                         input.name, input.arguments[0]
                     ),
+                    input.span.source,
                     input.lineno,
                     input.rawsource,
                 ));
@@ -5232,23 +5696,25 @@ impl<'a> BlockParser<'a> {
     /// falls through to the comment path with `construct_error` set.
     fn parse_substitution_def(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
-        rest: &'a str,
+        rest: &str,
         out: &mut Vec<Node>,
         construct_error: &mut Option<Node>,
     ) -> bool {
         let start = *pos;
-        let lineno = lines[start].lineno;
+        let marker_rec = lines[start];
+        let lineno = marker_rec.lineno;
+        let msg_source = marker_rec.source;
         let (block, consumed, _indent, _term) = indented_block(lines, start + 1);
         let span = self.span_of(lines, start, start + consumed);
         // blocktext for message literals: the raw marker line + raw block
         // (trailing blanks already trimmed by indented_block).
-        let mut bt: Vec<&str> = vec![lines[start].text];
+        let mut blocktext = self.sources.line_text(marker_rec).to_string();
         for l in &lines[start + 1..start + 1 + consumed] {
-            bt.push(l.text);
+            blocktext.push('\n');
+            blocktext.push_str(self.sources.line_text(*l));
         }
-        let blocktext = bt.join("\n");
 
         // Marker scan: `|name|` possibly joined across adjacent block lines
         // (states.py:2151-2160). Failure at end-of-block = MarkupError.
@@ -5262,32 +5728,42 @@ impl<'a> BlockParser<'a> {
                 *construct_error = Some(self.msg(
                     messages::WARNING,
                     "malformed substitution definition.",
+                    msg_source,
                     lineno,
                 ));
                 return false;
             }
             acc.push(' ');
-            acc.push_str(block[used].text.trim());
+            acc.push_str(self.sources.line_text(block[used]).trim());
             used += 1;
         };
         *pos = start + 1 + consumed;
         // Remainder after the marker lives on ONE physical line: `rest`
         // when the marker was single-line, else the last joined block line.
-        let (rem_slice, rem_lineno): (&'a str, u32) = if used == 0 {
-            (&rest[marker.remainder_start..], lineno)
+        let (rem_rec, rem_lineno): (LineRec, u32) = if used == 0 {
+            // `rest` is the marker line's text past `.. ` and its leading
+            // spaces; recover its byte offset within the line to re-wrap.
+            let rest_offset = self.sources.line_text(marker_rec).len() - rest.len();
+            (
+                self.rewrap_from(marker_rec, rest_offset + marker.remainder_start),
+                lineno,
+            )
         } else {
             let last = block[used - 1];
-            let trimmed = last.text.trim();
+            let last_text = self.sources.line_text(last);
+            let trimmed = last_text.trim();
             let seg_start = acc.len() - trimmed.len();
             let within = marker.remainder_start.saturating_sub(seg_start);
-            let base = last.text.len() - last.text.trim_start().len();
-            (&last.text[base + within..], last.lineno)
+            let base = last_text.len() - last_text.trim_start().len();
+            (self.rewrap_from(last, base + within), last.lineno)
         };
-        let mut content_block: Vec<LineRef<'a>> = block[used..].to_vec();
+        let mut content_block: Vec<LineRec> = block[used..].to_vec();
 
         let subname_ws = ids::whitespace_normalize_name(&marker.name);
         // Missing contents (states.py:2168-2176).
-        if rem_slice.trim().is_empty() && content_block.iter().all(|l| l.is_blank()) {
+        if self.sources.line_text(rem_rec).trim().is_empty()
+            && content_block.iter().all(|l| l.is_blank())
+        {
             out.push(messages::with_literal(
                 self.msg(
                     messages::WARNING,
@@ -5295,6 +5771,7 @@ impl<'a> BlockParser<'a> {
                         "Substitution definition \"{}\" missing contents.",
                         marker.name
                     ),
+                    msg_source,
                     lineno,
                 ),
                 &blocktext,
@@ -5312,16 +5789,10 @@ impl<'a> BlockParser<'a> {
         // continuation lines begin, for rawsource reconstruction with
         // original indentation (docutils strip_indent=False).
         let mut raw_content_from = used;
-        let (dline, dlineno) = if !rem_slice.trim().is_empty() {
-            (
-                LineRef::new(
-                    rem_slice.trim_start_matches(' '),
-                    rem_lineno,
-                    lines[start].src_start,
-                    lines[start].src_end,
-                ),
-                rem_lineno,
-            )
+        let (dline, dlineno) = if !self.sources.line_text(rem_rec).trim().is_empty() {
+            let rem_text = self.sources.line_text(rem_rec);
+            let spaces = rem_text.len() - rem_text.trim_start_matches(' ').len();
+            (self.rewrap_from(rem_rec, spaces), rem_lineno)
         } else {
             while content_block.first().map(|l| l.is_blank()).unwrap_or(false) {
                 content_block.remove(0);
@@ -5335,26 +5806,24 @@ impl<'a> BlockParser<'a> {
         // Embedded directive marker: simplename + `::` + (space|EOL) — NO
         // optional space before `::` (SubstitutionDef state pattern).
         let mut produced: Vec<Node> = Vec::new();
-        if let Some((dname, dfirst_rest)) = match_embedded_directive(dline.text) {
+        let dline_src = self.sources.arc(dline.source);
+        let dline_text = dline.slice(&dline_src);
+        if let Some((dname, dfirst_rest)) = match_embedded_directive(dline_text) {
             let dblock = dedent_by_min(&content_block);
             // rawsource with ORIGINAL indentation (the nested state
             // machine's lines are strip_indent=False; fixture-verified).
             let embedded_raw = {
-                let mut v: Vec<&str> = vec![dline.text];
+                let mut raw = dline_text.to_string();
                 for l in &lines[start + 1 + raw_content_from..start + 1 + consumed] {
-                    v.push(l.text);
+                    raw.push('\n');
+                    raw.push_str(self.sources.line_text(*l));
                 }
-                v.join("\n")
+                raw
             };
             let dfirst = {
                 let t = dfirst_rest.trim_start_matches(' ');
-                let offset = dline.text.len() - t.len();
-                LineRef::new(
-                    &dline.text[offset..],
-                    dlineno,
-                    dline.src_start,
-                    dline.src_end,
-                )
+                let offset = dline_text.len() - t.len();
+                self.rewrap_from(dline, offset)
             };
             self.substitution_ctx = Some(SubstCtx::default());
             let saved_kind = self.nested_node_kind.replace("substitution_definition");
@@ -5391,6 +5860,7 @@ impl<'a> BlockParser<'a> {
             let mut msg = self.msg(
                 messages::ERROR,
                 "Problematic content in substitution definition",
+                msg_source,
                 lineno,
             );
             let mut lb = Node::elem(kinds::LITERAL_BLOCK, Span::ZERO);
@@ -5412,6 +5882,7 @@ impl<'a> BlockParser<'a> {
                 self.msg(
                     messages::ERROR,
                     &format!("{phrase} are not supported in a substitution definition."),
+                    msg_source,
                     lineno,
                 ),
                 &blocktext,
@@ -5428,6 +5899,7 @@ impl<'a> BlockParser<'a> {
                         "Substitution definition \"{}\" empty or invalid.",
                         marker.name
                     ),
+                    msg_source,
                     lineno,
                 ),
                 &blocktext,
@@ -5442,6 +5914,7 @@ impl<'a> BlockParser<'a> {
             out.push(self.msg(
                 messages::ERROR,
                 &format!("Duplicate substitution definition name: \"{subname_ws}\"."),
+                msg_source,
                 lineno,
             ));
             if !self.substitution_dupnames.contains(&subname_ws) {
@@ -5457,7 +5930,7 @@ impl<'a> BlockParser<'a> {
 
     fn parse_anonymous_shortcut(
         &mut self,
-        lines: &[LineRef<'a>],
+        lines: &[LineRec],
         pos: &mut usize,
         rest: &str,
         out: &mut Vec<Node>,
@@ -5477,7 +5950,7 @@ impl<'a> BlockParser<'a> {
             if !link.is_empty() {
                 link.push('\n');
             }
-            link.push_str(l.text.trim());
+            link.push_str(self.sources.line_text(*l).trim());
         }
         *pos = start + 1 + consumed;
         let mut target = Node::elem(kinds::TARGET, span);
@@ -5751,14 +6224,21 @@ fn display_byte_index(text: &str) -> Vec<usize> {
 /// Slice by DISPLAY column range (byte-safe; mid-wide-char boundaries
 /// clamp to char edges).
 fn display_slice(text: &str, from: usize, to: usize) -> &str {
+    let (start, end) = display_range(text, from, to);
+    &text[start..end]
+}
+
+/// The byte range [`display_slice`] would take — for carving a `LineRec`
+/// sub-view rather than a borrowed slice.
+fn display_range(text: &str, from: usize, to: usize) -> (usize, usize) {
     let index = display_byte_index(text);
     let n = index.len() - 1;
     let start = index[from.min(n)];
     let end = index[to.min(n)];
     if start >= end {
-        ""
+        (start, start)
     } else {
-        &text[start..end]
+        (start, end)
     }
 }
 
@@ -5919,6 +6399,11 @@ enum DirectiveKind {
     ProgramDir,
     /// `.. default-domain::` (`directives/__init__.py:353-366`).
     DefaultDomainDir,
+    /// Test-only exercise of the [`SpliceRequest`] channel: content lines
+    /// become a spliced source named by the argument. No shipping
+    /// directive produces a splice until T12's `include`.
+    #[cfg(test)]
+    TestSplice,
 }
 
 /// Which `ObjectDescription` subclass a `desc`-producing directive is.
@@ -5941,6 +6426,17 @@ enum ObjectDescKind {
 
 /// Sphinx-mode registry: overlays/extends the docutils-native table.
 fn directive_spec_mode(lower: &str, sphinx: bool) -> Option<DirectiveSpec> {
+    #[cfg(test)]
+    if lower == "sphinx-ultra-test-splice" {
+        return Some(DirectiveSpec {
+            required_arguments: 1,
+            optional_arguments: 0,
+            final_argument_whitespace: true,
+            has_content: true,
+            option_spec: &[],
+            kind: DirectiveKind::TestSplice,
+        });
+    }
     if sphinx {
         if let Some(s) = sphinx_directive_spec(lower) {
             return Some(s);
@@ -6592,13 +7088,13 @@ enum OptVal {
 }
 
 /// The arguments/options/content/etc. handed to a directive's run().
-struct DirectiveInput<'a, 'r> {
+struct DirectiveInput<'r> {
     /// The directive name AS WRITTEN (docutils self.name; error messages
     /// reproduce the original case).
     name: &'r str,
     arguments: Vec<String>,
     options: Vec<(String, OptVal)>,
-    content: Vec<LineRef<'a>>,
+    content: Vec<LineRec>,
     span: Span,
     lineno: u32,
     rawsource: &'r str,
@@ -6919,7 +7415,8 @@ fn py_split_max(text: &str, maxsplit: usize) -> Vec<String> {
 /// (states.py:2382-2413, utils.py:274-369). Errors return the MarkupError
 /// detail string; the caller adds the 'Error in "X" directive:' wrapper.
 fn parse_extension_options(
-    opt_block: &[LineRef<'_>],
+    sources: &SourceTable,
+    opt_block: &[LineRec],
     option_spec: &'static [(&'static str, Conv)],
 ) -> Result<Vec<(String, OptVal)>, String> {
     // Pass 1 (extract_options): collect (lowercased name, body) fields.
@@ -6928,8 +7425,9 @@ fn parse_extension_options(
     let mut i = 0usize;
     while i < opt_block.len() {
         let l = opt_block[i];
+        let l_text = sources.line_text(l);
         let marker = if l.indent() == 0 {
-            field_marker(l.text)
+            field_marker(l_text)
         } else {
             None
         };
@@ -6937,7 +7435,7 @@ fn parse_extension_options(
             return Err("invalid option block".to_string());
         };
         let mut body_lines: Vec<&str> = Vec::new();
-        let first = l.text[body_start..].trim_start_matches(' ');
+        let first = l_text[body_start..].trim_start_matches(' ');
         if !first.is_empty() {
             body_lines.push(first);
         }
@@ -6950,7 +7448,7 @@ fn parse_extension_options(
         let conts = &opt_block[i + 1..j];
         let min_indent = conts.iter().map(|c| c.indent()).min().unwrap_or(0);
         for c in conts {
-            body_lines.push(&c.text[min_indent.min(c.indent())..]);
+            body_lines.push(&sources.line_text(*c)[min_indent.min(c.indent())..]);
         }
         if raw_name.split_whitespace().count() != 1 {
             return Err(
@@ -7515,7 +8013,7 @@ fn match_embedded_directive(text: &str) -> Option<(String, &str)> {
     Some((name, &text[byte_after..]))
 }
 
-fn dedent_by_min<'a>(block: &[LineRef<'a>]) -> Vec<LineRef<'a>> {
+fn dedent_by_min(block: &[LineRec]) -> Vec<LineRec> {
     let min = block
         .iter()
         .filter(|l| !l.is_blank())
@@ -7669,10 +8167,10 @@ fn match_simplename_chars(chars: &[char], at: usize) -> Option<usize> {
 /// Returns (dedented block, consumed line count, base indent, adjacency
 /// terminator line number when the block ends at an adjacent non-blank
 /// column-0 line).
-fn indented_block<'a>(
-    lines: &[LineRef<'a>],
+fn indented_block(
+    lines: &[LineRec],
     start: usize,
-) -> (Vec<LineRef<'a>>, usize, usize, Option<u32>) {
+) -> (Vec<LineRec>, usize, usize, Option<(u16, u32)>) {
     let mut end = start;
     let mut last_content = None;
     while end < lines.len() {
@@ -7699,14 +8197,14 @@ fn indented_block<'a>(
         .map(|l| l.indent())
         .min()
         .unwrap_or(0);
-    let block: Vec<LineRef<'a>> = lines[start..block_end]
+    let block: Vec<LineRec> = lines[start..block_end]
         .iter()
         .map(|l| if l.is_blank() { *l } else { l.dedented(base) })
         .collect();
     let terminator = lines
         .get(block_end)
         .filter(|l| !l.is_blank())
-        .map(|l| l.lineno);
+        .map(|l| (l.source, l.lineno));
     (block, block_end - start, base, terminator)
 }
 
@@ -7727,24 +8225,28 @@ fn strip_literal_colons(text: &str) -> (String, bool) {
     (text.to_string(), false)
 }
 
-fn attribution_from_chunk(chunk: &[LineRef<'_>], span: Span) -> Option<(Node, u32)> {
+fn attribution_from_chunk(
+    sources: &SourceTable,
+    chunk: &[LineRec],
+    span: Span,
+) -> Option<(Node, u32)> {
     let first = chunk.first()?;
     if first.indent() != 0 {
         return None;
     }
+    let first_text = sources.line_text(*first);
     // Fixture-verified marker rules: `--`/`---` (not followed by another
     // hyphen) or an em dash, then ZERO or more spaces (all consumed), then
     // non-space text.
-    let after = match first.text.strip_prefix('\u{2014}') {
+    let after = match first_text.strip_prefix('\u{2014}') {
         Some(r) => r,
         None => {
             // `---` then `--`; a further hyphen means an adornment, not a
             // marker. The `---` arm runs first, so the `--` arm's remainder
             // can only start with `-` for exactly `---x`-shaped input.
-            let r = first
-                .text
+            let r = first_text
                 .strip_prefix("---")
-                .or_else(|| first.text.strip_prefix("--"))?;
+                .or_else(|| first_text.strip_prefix("--"))?;
             if r.starts_with('-') {
                 return None;
             }
@@ -7767,7 +8269,7 @@ fn attribution_from_chunk(chunk: &[LineRef<'_>], span: Span) -> Option<(Node, u3
         }
         for l in &chunk[1..] {
             text.push('\n');
-            text.push_str(&l.text[indent..]);
+            text.push_str(&sources.line_text(*l)[indent..]);
         }
     }
     let mut attribution = Node::elem(kinds::ATTRIBUTION, span);
@@ -8123,7 +8625,112 @@ fn reference_name_from_link(link: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::rst::{parse_rst, ParseOptions};
+
+    /// The `(source, lineno)` sequence of a line stream.
+    fn stream_of(lines: &[LineRec]) -> Vec<(u16, u32)> {
+        lines.iter().map(|l| (l.source, l.lineno)).collect()
+    }
+
+    #[test]
+    fn splicing_a_pushed_source_inserts_its_recs_at_the_cursor() {
+        let mut p = BlockParser::new("one\ntwo\nthree", "<doc>");
+        let mut stream = std::mem::take(&mut p.top);
+        assert_eq!(stream_of(&stream), vec![(0, 1), (0, 2), (0, 3)]);
+
+        p.apply_splice(
+            &mut stream,
+            1,
+            SpliceRequest {
+                lines: vec!["alpha".to_string(), "beta".to_string()],
+                source_path: "inc.rst".to_string(),
+                base_lineno_override: None,
+            },
+        );
+
+        assert_eq!(
+            stream_of(&stream),
+            vec![(0, 1), (1, 1), (1, 2), (0, 2), (0, 3)],
+            "the pushed source's lines join the stream at the cursor"
+        );
+        assert_eq!(p.sources.len(), 2, "source_texts gained the new entry");
+        assert_eq!(p.sources.path(1), "inc.rst");
+        assert_eq!(p.sources.text(1), "alpha\nbeta");
+    }
+
+    #[test]
+    fn a_directive_returned_splice_parses_at_the_cursor_with_its_own_provenance() {
+        // The cfg(test) splice directive returns a SpliceRequest built from
+        // its input alone; the block-parse loop must insert its lines right
+        // after the directive and keep parsing.
+        let src =
+            "before\n\n.. sphinx-ultra-test-splice:: inc.rst\n\n   alpha\n\n   beta\n\nafter\n";
+        let tree = parse_rst(
+            src,
+            &ParseOptions {
+                source_path: "<doc>".into(),
+                sphinx: false,
+                docname: "index".into(),
+                exclude_patterns: Vec::new(),
+                found_docs: None,
+            },
+        );
+        assert_eq!(
+            tree.sources,
+            vec!["<doc>".to_string(), "inc.rst".to_string()]
+        );
+        let paras: Vec<(String, u16, u32)> = tree
+            .root
+            .children
+            .iter()
+            .map(|n| (n.astext(), n.span.source, n.span.line))
+            .collect();
+        assert_eq!(
+            paras,
+            vec![
+                ("before".to_string(), 0, 1),
+                ("alpha".to_string(), 1, 1),
+                ("beta".to_string(), 1, 3),
+                ("after".to_string(), 0, 9),
+            ],
+            "spliced paragraphs carry the pushed source's id and 1-based lines"
+        );
+    }
+
+    #[test]
+    fn a_title_underline_warning_stamps_the_recs_table_path_and_lineno() {
+        // "====" is >= 4 chars but shorter than the title: the section forms
+        // with a "Title underline too short." WARNING whose source/line come
+        // from the underline REC — its table path and lineno — not from a
+        // recount of the document text.
+        let tree = parse_rst(
+            "badly\n====\n",
+            &ParseOptions {
+                source_path: "<doc>".into(),
+                sphinx: false,
+                docname: "index".into(),
+                exclude_patterns: Vec::new(),
+                found_docs: None,
+            },
+        );
+        let section = &tree.root.children[0];
+        let msg = section
+            .children
+            .iter()
+            .find(|n| n.kind == kinds::SYSTEM_MESSAGE)
+            .expect("short underline warns");
+        assert_eq!(
+            msg.get("source"),
+            Some(&AttrValue::Str(tree.sources[0].clone())),
+            "message source = the rec's table path"
+        );
+        assert_eq!(
+            msg.get("line"),
+            Some(&AttrValue::Int(2)),
+            "message line = the underline rec's lineno"
+        );
+    }
 
     fn pf(src: &str) -> String {
         parse_rst(

@@ -55,7 +55,11 @@ const DOCTREE_MAGIC: &[u8; 4] = b"SUDT";
 ///   not. Wave 4's index-entry attribute moving from `AttrValue::Str` to
 ///   `AttrValue::List` is the worked example: both variants decode, and an
 ///   old blob then harvests the wrong index entries.
-const DOCTREE_FORMAT_VERSION: u32 = 1;
+///
+/// Version 2: wave 4.5's provenance change — `Span` gained a `line` field
+/// (and its byte range now indexes the parser's processed source text),
+/// so version-1 blobs no longer decode as written.
+const DOCTREE_FORMAT_VERSION: u32 = 2;
 
 /// Bytes of the [`DOCTREE_MAGIC`] + [`DOCTREE_FORMAT_VERSION`] header.
 const DOCTREE_HEADER_LEN: usize = DOCTREE_MAGIC.len() + std::mem::size_of::<u32>();
@@ -1007,20 +1011,19 @@ impl SphinxBuilder {
             // The document's toctree diagnostics, produced when its entries
             // were resolved. Sphinx logs them during the read phase, which
             // walks documents in this same sorted order.
-            self.report_parse_warnings(&result.document);
+            self.report_parse_warnings(&result.document, &result.doctree);
 
             // The domains' read-phase hooks, dispatched in the order
             // `_DomainsContainer._process_doc` walks them — `index` before
             // `std` — and after the parse diagnostics above, which Sphinx
-            // logs while reading.
-            let text = result.document.content.to_string();
+            // logs while reading. Warning locations come from node spans
+            // and the doctree's source table, not the document text.
             let mut index_warnings = Vec::new();
             env_genindex::process_doc(
                 env,
                 docname,
                 &mut result.doctree,
                 &result.document.source_path,
-                &text,
                 &mut index_warnings,
             );
             for warning in index_warnings {
@@ -1034,7 +1037,6 @@ impl SphinxBuilder {
                     docname,
                     doctree: &result.doctree,
                     registry: &result.document.registry,
-                    text: &text,
                     path: &result.document.source_path,
                 },
                 &doc2path,
@@ -1076,11 +1078,19 @@ impl SphinxBuilder {
     /// records rather than raised as they happen, so that a cache hit — which
     /// skips the parse entirely — still reproduces them.
     ///
-    /// Sphinx logs both as the parse reaches them, so they interleave by
-    /// source position; the two record streams are each in document order,
-    /// and a stable sort by line merges them back into that one order.
-    fn report_parse_warnings(&self, document: &Document) {
-        let mut ordered: Vec<(u32, BuildWarning)> = Vec::new();
+    /// Each stream replays in its own record sequence — the order the parse
+    /// produced. (The old stable sort by line only reproduced document
+    /// order while every record came from one source; an included file's
+    /// warnings would be shuffled into the includer's. A warning's line is
+    /// display data, not an ordering key.) A document carrying both kinds
+    /// emits all toctree warnings before all log warnings rather than
+    /// interleaved by position — the same cross-category simplification
+    /// `std_domain::process_doc` documents.
+    ///
+    /// `doctree` supplies the source table: a log warning raised inside an
+    /// included file renders that file's path, not the document's.
+    fn report_parse_warnings(&self, document: &Document, doctree: &Doctree) {
+        let mut ordered: Vec<BuildWarning> = Vec::new();
         for toctree in &document.toctrees {
             for warning in &toctree.warnings {
                 let warning_type = match warning.kind {
@@ -1090,8 +1100,7 @@ impl SphinxBuilder {
                     }
                     ToctreeWarningKind::DuplicateEntry => WarningType::Other,
                 };
-                ordered.push((
-                    warning.line,
+                ordered.push(
                     BuildWarning::new(
                         document.source_path.clone(),
                         Some(warning.line as usize),
@@ -1099,25 +1108,26 @@ impl SphinxBuilder {
                         warning_type,
                     )
                     .with_category(warning.category.clone()),
-                ));
+                );
             }
         }
         for warning in &document.registry.log_warnings {
+            let source_path = doctree
+                .sources
+                .get(warning.source as usize)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| document.source_path.clone());
             // Sphinx logs these with no `type`/`subtype`, so they render
             // with no `[category]` suffix.
-            ordered.push((
-                warning.line,
-                BuildWarning::new(
-                    document.source_path.clone(),
-                    Some(warning.line as usize),
-                    warning.message.clone(),
-                    WarningType::Other,
-                ),
+            ordered.push(BuildWarning::new(
+                source_path,
+                Some(warning.line as usize),
+                warning.message.clone(),
+                WarningType::Other,
             ));
         }
-        ordered.sort_by_key(|(line, _)| *line);
         let mut warnings = self.warnings.lock().unwrap();
-        warnings.extend(ordered.into_iter().map(|(_, warning)| warning));
+        warnings.extend(ordered);
     }
 
     /// Resolve phase: whole-project state that only exists once every
@@ -1271,7 +1281,6 @@ impl SphinxBuilder {
                 &nitpick,
                 &result.docname,
                 &mut doctree,
-                &result.document.content.to_string(),
                 &result.document.source_path,
             );
             unresolvable_domain_refs += resolution.unresolvable_domain_refs;
