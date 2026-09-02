@@ -17539,6 +17539,32 @@ mod literalinclude_reader_tests {
         assert_eq!(count, 0);
     }
 
+    /// `prepend`/`append`/`dedent` are LEGAL beside `:diff:` (not in the
+    /// invalid matrix) but the diff short-circuit skips the whole filter
+    /// chain — no prepend/append lines, no dedent, no dedent warning
+    /// (probed this session).
+    #[test]
+    fn diff_mode_skips_the_legal_but_bypassed_filters() {
+        let old = fixture("example_old.py");
+        let plain = {
+            let options = LiteralIncludeOptions {
+                diff: Some(old.clone()),
+                ..Default::default()
+            };
+            read(options).unwrap()
+        };
+        let options = LiteralIncludeOptions {
+            diff: Some(old),
+            prepend: Some("# P".to_string()),
+            append: Some("# A".to_string()),
+            dedent: Some(Some(1)),
+            ..Default::default()
+        };
+        let (result, warnings) = read_with_warnings(options);
+        assert_eq!(result.unwrap(), plain);
+        assert!(warnings.is_empty());
+    }
+
     /// Missing diff file: the CURRENT file reads first, then the old
     /// one fails with the read_file text (probed).
     #[test]
