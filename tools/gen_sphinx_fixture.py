@@ -689,6 +689,62 @@ CASES = [
     ('py', 'role_lstrip_edges', 'See :py:func:`..target` and :py:func:`~~pkg.f` and :py:class:`custom <.Cls>`.\n'),
     ('py', 'role_in_currentmodule_scope', '.. py:currentmodule:: rmod\n\nSee :py:func:`local` here.\n'),
     ('py', 'role_in_class_scope', '.. py:class:: C\n\n   See :py:meth:`m` here.\n'),
+    # ----- wave-4.5 task 8: signature/annotation parsing shapes ([PY §2]) -----
+    # Default configuration; the annotation grammar, arglist channels and
+    # PEP-695 type parameter lists.
+    ('pysig', 'union_pipe', '.. py:function:: f(x: int | None) -> int | str\n'),
+    ('pysig', 'optional_union_rewrite', '.. py:function:: f(x: Optional[int], y: Union[int, str])\n'),
+    ('pysig', 'subscript_generics', '.. py:function:: f(x: list[str], y: dict[str, int]) -> list[str]\n'),
+    ('pysig', 'tilde_annotation', '.. py:function:: f(x: ~mymod.MyClass)\n'),
+    ('pysig', 'dot_annotation_refspecific', '.. py:function:: f(x: .MyClass)\n'),
+    ('pysig', 'string_annotation_literal', ".. py:function:: f(x: 'MyClass')\n"),
+    ('pysig', 'typing_prefix_and_none', '.. py:function:: f(x: typing.Any, y: None)\n'),
+    ('pysig', 'tuple_ellipsis', '.. py:function:: f(x: tuple[int, ...])\n'),
+    ('pysig', 'literal_annotation_default_conf', ".. py:function:: f(x: Literal['a', 'b'] = 'a')\n"),
+    ('pysig', 'typeparams_full', '.. py:class:: C[T, *Ts, **P]\n'),
+    ('pysig', 'typeparams_constraint', '.. py:function:: f[T: (int, str)](x: T) -> T\n'),
+    ('pysig', 'typeparams_default', '.. py:function:: f[T = int](x)\n'),
+    ('pysig', 'pseudo_default_eq_shape', '.. py:function:: f(a[, b=1])\n'),
+    ('pysig', 'pseudo_bracket_imbalance', '.. py:function:: f(a[, b)\n'),
+    ('pysig', 'varargs_then_keyword', '.. py:function:: f(*args, k=1)\n'),
+    ('pysig', 'negative_none_defaults', '.. py:function:: f(x=-1, y=None)\n'),
+    ('pysig', 'annotated_default_spacing', '.. py:function:: f(x: int = 2, y=3)\n'),
+    ('pysig', 'backslash_in_arglist_default', '.. py:function:: f(a\\, b)\n'),
+    # ----- wave-4.5 task 8: signature-config family ([SIG] A/B/C/D/E + -----
+    # ----- U/L/F-U/P matrices as per-case confoverrides) -----
+    ('pyconf', 'wrap_equal_no_flip', '.. py:function:: foo(aaaa)\n', {'maximum_signature_line_length': 9}),
+    ('pyconf', 'wrap_over_flips', '.. py:function:: foo(aaaa)\n', {'maximum_signature_line_length': 8}),
+    ('pyconf', 'wrap_retann_counts', '.. py:function:: foo(a) -> int\n', {'maximum_signature_line_length': 12}),
+    ('pyconf', 'wrap_retann_equal_no_flip', '.. py:function:: foo(a) -> int\n', {'maximum_signature_line_length': 13}),
+    ('pyconf', 'wrap_prefix_counts', '.. py:function:: Klass.foo(a)\n', {'maximum_signature_line_length': 11}),
+    ('pyconf', 'wrap_whitespace_stripped', '.. py:function::    foo(aaaa)   \n', {'maximum_signature_line_length': 9}),
+    ('pyconf', 'wrap_tp_span_subtracted', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 10}),
+    ('pyconf', 'wrap_both_flip', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 7}),
+    ('pyconf', 'wrap_neither_flips', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 11}),
+    ('pyconf', 'wrap_python_key_wins_high', '.. py:function:: foo(aaaa)\n', {'python_maximum_signature_line_length': 1000, 'maximum_signature_line_length': 1}),
+    ('pyconf', 'wrap_python_key_wins_low', '.. py:function:: foo(aaaa)\n', {'python_maximum_signature_line_length': 1, 'maximum_signature_line_length': 1000}),
+    ('pyconf', 'wrap_global_fallback', '.. py:function:: foo(aaaa)\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'wrap_falsy_zero_fallthrough', '.. py:function:: foo(aaaa)\n', {'python_maximum_signature_line_length': 0, 'maximum_signature_line_length': 1}),
+    ('pyconf', 'wrap_defaults_never_flip', '.. py:function:: foo(aaaa)\n'),
+    ('pyconf', 'single_line_parameter_list_option', '.. py:function:: foo[T](aaaa)\n   :single-line-parameter-list:\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'single_line_type_parameter_list_option', '.. py:function:: foo[T](aaaa)\n   :single-line-type-parameter-list:\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'trailing_comma_attr_both_lists', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'trailing_comma_off', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 1, 'python_trailing_comma_in_multi_line_signatures': False}),
+    ('pyconf', 'annotation_qualified_default', '.. py:function:: f(x: pkg.Cls) -> pkg.Cls\n'),
+    ('pyconf', 'unqualified_type_names', '.. py:function:: f(x: pkg.Cls) -> pkg.Cls\n', {'python_use_unqualified_type_names': True}),
+    ('pyconf', 'short_literal_types', ".. py:function:: f(x: Literal['a', 'b'] = 'a')\n", {'python_display_short_literal_types': True}),
+    ('pyconf', 'field_unqualified_type_names', '.. py:function:: f(x)\n\n   :param x: thing\n   :type x: pkg.Cls\n', {'python_use_unqualified_type_names': True}),
+    # T2 ledger closure: the add_function_parentheses seam pinned at the
+    # full parse_rst level (BlockParser -> inline roles), not just in the
+    # role unit tests.
+    ('pyconf', 'func_role_parens_off', 'Call :py:func:`mymod.myfunc` now.\n', {'add_function_parentheses': False}),
+    ('pyconf', 'func_role_written_parens_removed', 'Call :py:func:`mymod.myfunc()` now.\n', {'add_function_parentheses': False}),
+    ('pyconf', 'index_entry_parens_invariant', '.. py:function:: myfunc(x)\n\n   Body.\n', {'add_function_parentheses': False}),
+    ('pyconf', 'toc_show_parents_hide', '.. py:class:: C\n\n   .. py:method:: m(x)\n', {'toc_object_entries_show_parents': 'hide'}),
+    ('pyconf', 'toc_show_parents_all', '.. py:class:: C\n\n   .. py:method:: m(x)\n', {'toc_object_entries_show_parents': 'all'}),
+    ('pyconf', 'toc_object_entries_off', '.. py:function:: f(x)\n', {'toc_object_entries': False}),
+    ('pyconf', 'add_module_names_off', '.. py:function:: f(x)\n   :module: optmod\n', {'add_module_names': False}),
+    ('pyconf', 'strip_signature_backslash_on', '.. py:function:: f(a\\, b)\n', {'strip_signature_backslash': True}),
 ]
 
 
@@ -876,6 +932,8 @@ def main() -> int:
         "sx_roles": 6,
         "sx_std": 12,
         "py": 30,
+        "pysig": 12,
+        "pyconf": 10,
     }
     counts: dict = {}
     for case in CASES:
