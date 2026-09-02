@@ -5,6 +5,8 @@
 //! read. The directives themselves land on top of this file in the next
 //! task; nothing here walks a doctree.
 
+pub mod expr;
+
 #[cfg(test)]
 mod tests;
 
