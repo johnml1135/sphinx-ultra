@@ -532,6 +532,153 @@ pub fn resolve_any_xref<'a>(
     results
 }
 
+// ---------------------------------------------------------------------------
+// py-modindex ([PY §4]: `PythonModuleIndex.generate`, `__init__.py:620-717`)
+// ---------------------------------------------------------------------------
+
+/// One py-modindex row — Sphinx's 7-field `IndexEntry` NamedTuple
+/// (`sphinx/domains/_index.py:17-52`). `subtype`: 0 = top-level module,
+/// 1 = group head (a parent with listed submodules — possibly a dummy with
+/// every other field empty), 2 = submodule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModindexEntry {
+    pub name: String,
+    pub subtype: u8,
+    pub docname: String,
+    pub anchor: String,
+    pub extra: String,
+    pub qualifier: String,
+    pub descr: String,
+}
+
+/// One first-letter group of the module index.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModindexGroup {
+    pub letter: String,
+    pub entries: Vec<ModindexEntry>,
+}
+
+/// `PythonModuleIndex.generate()`'s `(sorted_content, collapse)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct PyModindex {
+    pub groups: Vec<ModindexGroup>,
+    pub collapse: bool,
+}
+
+/// `PythonModuleIndex.generate` (`__init__.py:628-717`), verbatim:
+/// `modindex_common_prefix` sorted longest-first (stable, so equal lengths
+/// keep config order); modules sorted by `lower()` (stable over
+/// registration order); the FIRST matching prefix is stripped (and
+/// restored when it swallowed the whole name, clearing `stripped`);
+/// letter buckets key on the first character of the *stripped* name,
+/// lowercased; a submodule (`package != modname` on the stripped name)
+/// gets subtype 2, promoting the bucket's previous entry to a group head
+/// when it IS the parent, or inserting an all-empty dummy parent when no
+/// `prev_modname.startswith(package)` entry preceded it; display names
+/// keep the stripped prefix (`stripped + modname`); `collapse` iff
+/// submodules outnumber top-levels; groups come out letter-sorted.
+pub fn generate_modindex(data: &PyDomainData, common_prefix: &[String]) -> PyModindex {
+    let mut ignores: Vec<&str> = common_prefix.iter().map(String::as_str).collect();
+    ignores.sort_by_key(|prefix| std::cmp::Reverse(prefix.len()));
+
+    let mut modules: Vec<(&str, &PyModuleEntry)> = data
+        .modules
+        .iter()
+        .map(|(name, entry)| (name.as_str(), entry))
+        .collect();
+    modules.sort_by_key(|(name, _)| name.to_lowercase());
+
+    let mut content: BTreeMap<String, Vec<ModindexEntry>> = BTreeMap::new();
+    let mut prev_modname = String::new();
+    let mut num_top_levels = 0usize;
+    for (full_name, module) in &modules {
+        let mut modname = *full_name;
+        let mut stripped = "";
+        for ignore in &ignores {
+            if let Some(rest) = modname.strip_prefix(ignore) {
+                modname = rest;
+                stripped = ignore;
+                break;
+            }
+        }
+        // "we stripped the whole module name?"
+        if modname.is_empty() {
+            (modname, stripped) = (stripped, "");
+        }
+
+        // `modname[0].lower()` — Python would IndexError on a name that is
+        // still empty (an empty module name cannot register here; the guard
+        // is the defensive stand-in).
+        let Some(first) = modname.chars().next() else {
+            continue;
+        };
+        let entries = content
+            .entry(first.to_lowercase().collect::<String>())
+            .or_default();
+
+        let package = modname.split('.').next().unwrap_or(modname);
+        let subtype = if package != modname {
+            // it's a submodule
+            if prev_modname == package {
+                // first submodule - make parent a group head
+                if let Some(last) = entries.last_mut() {
+                    last.subtype = 1;
+                }
+            } else if !prev_modname.starts_with(package) {
+                // submodule without parent in list, add dummy entry
+                entries.push(ModindexEntry {
+                    name: format!("{stripped}{package}"),
+                    subtype: 1,
+                    docname: String::new(),
+                    anchor: String::new(),
+                    extra: String::new(),
+                    qualifier: String::new(),
+                    descr: String::new(),
+                });
+            }
+            2
+        } else {
+            num_top_levels += 1;
+            0
+        };
+
+        entries.push(ModindexEntry {
+            name: format!("{stripped}{modname}"),
+            subtype,
+            docname: module.docname.clone(),
+            anchor: module.node_id.clone(),
+            extra: module.platform.clone(),
+            qualifier: if module.deprecated {
+                "Deprecated".to_string()
+            } else {
+                String::new()
+            },
+            descr: module.synopsis.clone(),
+        });
+        prev_modname = modname.to_string();
+    }
+
+    // "only collapse if number of toplevel modules is larger than number
+    // of submodules".
+    let collapse = modules.len() - num_top_levels < num_top_levels;
+
+    PyModindex {
+        // `sorted(content.items())`: BTreeMap iteration is byte order,
+        // which equals Python's codepoint order for UTF-8 strings.
+        groups: content
+            .into_iter()
+            .map(|(letter, entries)| ModindexGroup { letter, entries })
+            .collect(),
+        collapse,
+    }
+}
+
+/// The `py_modindex` slice of the environment snapshot, mirroring
+/// [`crate::env::genindex::snapshot`]'s serde shape.
+pub fn modindex_snapshot(modindex: &PyModindex) -> serde_json::Value {
+    serde_json::to_value(modindex).unwrap_or(serde_json::Value::Null)
+}
+
 /// The names `inspect.isclass(getattr(builtins, name, None))` accepts under
 /// the pinned oracle toolchain (CPython 3.12, the interpreter every fixture
 /// oracle is generated with): every built-in class, exceptions included —
@@ -1266,6 +1413,180 @@ mod tests {
         );
         let results = resolve_any_xref(&data, None, None, "syn");
         assert_eq!(results[0].1.reftitle, "syn: The syn module.");
+    }
+
+    // ---- generate_modindex ([PY §4]) -----------------------------------
+
+    /// One probe dump row: `(name, subtype, docname, anchor, extra,
+    /// qualifier, descr)`.
+    type ModindexRow<'a> = (&'a str, u8, &'a str, &'a str, &'a str, &'a str, &'a str);
+
+    /// The rows of each letter group, in the probe dumps' tuple shape.
+    fn modindex_rows(modindex: &PyModindex) -> Vec<(&str, Vec<ModindexRow<'_>>)> {
+        modindex
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.letter.as_str(),
+                    group
+                        .entries
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.name.as_str(),
+                                e.subtype,
+                                e.docname.as_str(),
+                                e.anchor.as_str(),
+                                e.extra.as_str(),
+                                e.qualifier.as_str(),
+                                e.descr.as_str(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn modindex_module(
+        docname: &str,
+        name: &str,
+        synopsis: &str,
+        platform: &str,
+        deprecated: bool,
+    ) -> PyModuleEntry {
+        PyModuleEntry {
+            docname: docname.to_string(),
+            node_id: format!("module-{name}"),
+            synopsis: synopsis.to_string(),
+            platform: platform.to_string(),
+            deprecated,
+        }
+    }
+
+    /// The [PY §4] `modindex_shapes` probe, tuple-exact: lower()-sorted
+    /// walk, parent promotion to subtype 1, the dummy `orphan` parent, and
+    /// `collapse=False` (5 modules, 2 top-levels: 3 < 2 is false).
+    #[test]
+    fn modindex_shapes_reproduces_the_probe_tuples() {
+        let mut data = PyDomainData::default();
+        for (name, synopsis, platform, deprecated) in [
+            ("pkg", "", "", false),
+            ("pkg.sub", "Sub synopsis.", "", false),
+            ("pkg.sub2", "", "Windows", false),
+            ("orphan.child", "", "", false),
+            ("zzz", "", "", true),
+        ] {
+            data.note_module(
+                name,
+                modindex_module("index", name, synopsis, platform, deprecated),
+            );
+        }
+        let modindex = generate_modindex(&data, &[]);
+        assert!(!modindex.collapse);
+        assert_eq!(
+            modindex_rows(&modindex),
+            vec![
+                (
+                    "o",
+                    vec![
+                        ("orphan", 1, "", "", "", "", ""),
+                        (
+                            "orphan.child",
+                            2,
+                            "index",
+                            "module-orphan.child",
+                            "",
+                            "",
+                            ""
+                        ),
+                    ]
+                ),
+                (
+                    "p",
+                    vec![
+                        ("pkg", 1, "index", "module-pkg", "", "", ""),
+                        (
+                            "pkg.sub",
+                            2,
+                            "index",
+                            "module-pkg.sub",
+                            "",
+                            "",
+                            "Sub synopsis."
+                        ),
+                        ("pkg.sub2", 2, "index", "module-pkg.sub2", "Windows", "", ""),
+                    ]
+                ),
+                (
+                    "z",
+                    vec![("zzz", 0, "index", "module-zzz", "", "Deprecated", "")]
+                ),
+            ]
+        );
+    }
+
+    /// The [PY §4] `modindex_common_prefix` probe: prefix-stripped modules
+    /// keep their full display name but sort/bucket by the stripped name
+    /// and count as top-level — `collapse=True` (3 − 3 = 0 < 3).
+    #[test]
+    fn modindex_common_prefix_strips_for_bucketing_but_displays_full_names() {
+        let mut data = PyDomainData::default();
+        for name in ["pkg.aaa", "pkg.bbb", "other"] {
+            data.note_module(name, modindex_module("index", name, "", "", false));
+        }
+        let modindex = generate_modindex(&data, &["pkg.".to_string()]);
+        assert!(modindex.collapse);
+        assert_eq!(
+            modindex_rows(&modindex),
+            vec![
+                (
+                    "a",
+                    vec![("pkg.aaa", 0, "index", "module-pkg.aaa", "", "", "")]
+                ),
+                (
+                    "b",
+                    vec![("pkg.bbb", 0, "index", "module-pkg.bbb", "", "", "")]
+                ),
+                ("o", vec![("other", 0, "index", "module-other", "", "", "")]),
+            ]
+        );
+    }
+
+    /// A prefix that swallows a whole module name is restored with
+    /// `stripped` cleared, and the longest prefix wins (stable sort by
+    /// length, descending) — probe `restore_and_longest`, tuple-exact.
+    #[test]
+    fn modindex_prefix_stripping_restores_emptied_names_and_prefers_longer() {
+        let mut data = PyDomainData::default();
+        for name in ["pkg", "pkgx", "pkg.deep.mod"] {
+            data.note_module(name, modindex_module("index", name, "", "", false));
+        }
+        let modindex = generate_modindex(&data, &["pkg".to_string(), "pkg.deep.".to_string()]);
+        assert_eq!(
+            modindex_rows(&modindex),
+            vec![
+                (
+                    "m",
+                    vec![(
+                        "pkg.deep.mod",
+                        0,
+                        "index",
+                        "module-pkg.deep.mod",
+                        "",
+                        "",
+                        ""
+                    )]
+                ),
+                ("p", vec![("pkg", 0, "index", "module-pkg", "", "", "")]),
+                ("x", vec![("pkgx", 0, "index", "module-pkgx", "", "", "")]),
+            ],
+            "pkg.deep.mod strips the longer prefix; pkg empties and restores \
+             (bucketed under 'p', not dummy-parented); pkgx buckets under \
+             its stripped 'x'"
+        );
+        assert!(modindex.collapse, "3 - 3 = 0 < 3");
     }
 
     // ---- builtin_resolver ([PY §3.5]) ----------------------------------

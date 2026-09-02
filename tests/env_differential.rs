@@ -2798,7 +2798,8 @@ fn toc_probe_expected(class: &str, method: &str, function: &str) -> String {
 /// `toctree_includes`.
 #[test]
 fn toc_object_entries_match_the_probe_for_all_five_config_variants() {
-    let variants: &[(&str, &dyn Fn(&mut BuildConfig), String, u64)] = &[
+    type Variant<'a> = (&'a str, &'a dyn Fn(&mut BuildConfig), String, u64);
+    let variants: &[Variant<'_>] = &[
         (
             "defaults",
             &|_| {},
@@ -2906,5 +2907,56 @@ fn a_leading_object_entry_takes_the_empty_anchorname() {
     );
     assert_eq!(env["toc_num_entries"]["mod"].as_u64().unwrap(), 3);
     assert_eq!(env["toc_num_entries"]["index"].as_u64().unwrap(), 1);
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+// ---------------------------------------------------------------------------
+// py-modindex: `PythonModuleIndex.generate` (`__init__.py:620-717`) through
+// the whole build, pinned to the probe_modindex.py two_module dump
+// (sphinx 9.1.0, 2026-09-02).
+// ---------------------------------------------------------------------------
+
+/// A submodule promotes its parent to a group head (subtype 1), carries
+/// the module options into the entry fields, and two modules with one
+/// top-level do not collapse (2 − 1 = 1 < 1 is false).
+#[test]
+fn py_modindex_snapshot_matches_the_two_module_probe() {
+    let (env, warnings) = env_build(
+        &[(
+            "index",
+            "Head\n====\n\n.. py:module:: pkg\n   :synopsis: Top package.\n\n\
+             .. py:module:: pkg.sub\n   :platform: Unix\n",
+        )],
+        &|_, _| {},
+    );
+    assert_eq!(
+        env["py_modindex"],
+        serde_json::json!({
+            "collapse": false,
+            "groups": [{
+                "letter": "p",
+                "entries": [
+                    {
+                        "name": "pkg",
+                        "subtype": 1,
+                        "docname": "index",
+                        "anchor": "module-pkg",
+                        "extra": "",
+                        "qualifier": "",
+                        "descr": "Top package.",
+                    },
+                    {
+                        "name": "pkg.sub",
+                        "subtype": 2,
+                        "docname": "index",
+                        "anchor": "module-pkg.sub",
+                        "extra": "Unix",
+                        "qualifier": "",
+                        "descr": "",
+                    },
+                ],
+            }],
+        })
+    );
     assert_eq!(warnings, Vec::<String>::new());
 }

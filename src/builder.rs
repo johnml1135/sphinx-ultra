@@ -16,6 +16,7 @@ use crate::env::dependencies as env_dependencies;
 use crate::env::genindex as env_genindex;
 use crate::env::metadata as env_metadata;
 use crate::env::numbers as env_numbers;
+use crate::env::py_domain as env_py_domain;
 use crate::env::resolve as env_resolve;
 use crate::env::std_domain as env_std;
 use crate::env::toctree as env_toctree;
@@ -139,6 +140,10 @@ pub struct SphinxBuilder {
     /// output derived from the environment plus the builder's own uri
     /// scheme, not environment state.
     genindex: Mutex<Vec<env_genindex::IndexGroup>>,
+    /// The Python module index (`PythonModuleIndex.generate`), build output
+    /// exactly like [`Self::genindex`] — sphinx assembles it while the HTML
+    /// builder writes the `py-modindex` page.
+    py_modindex: Mutex<env_py_domain::PyModindex>,
     /// The cross-project inventories `intersphinx_mapping` names, loaded
     /// once per build. Empty (and inert) unless a mapping is configured.
     intersphinx: Intersphinx,
@@ -291,6 +296,7 @@ impl SphinxBuilder {
             env,
             resolved: Mutex::new(BTreeMap::new()),
             genindex: Mutex::new(Vec::new()),
+            py_modindex: Mutex::new(env_py_domain::PyModindex::default()),
             intersphinx: Intersphinx::default(),
         })
     }
@@ -1200,6 +1206,7 @@ impl SphinxBuilder {
 
         self.xref_phase(env, results);
         self.genindex_phase(env, &sources);
+        self.py_modindex_phase(env);
 
         if let Err(e) = env.save(self.cache.cache_dir()) {
             log::warn!(
@@ -1234,6 +1241,18 @@ impl SphinxBuilder {
             self.add_warning(message.into_warning(&source));
         }
         *self.genindex.lock().unwrap() = groups;
+    }
+
+    /// Assemble the Python module index (`PythonModuleIndex.generate`).
+    ///
+    /// Like [`Self::genindex_phase`], Sphinx only runs this from an HTML
+    /// build (`write_domain_indices`) — the environment oracle calls
+    /// `generate()` explicitly after its dummy build, so this too runs
+    /// unconditionally at the end of the resolve phase. It raises no
+    /// diagnostics of its own.
+    fn py_modindex_phase(&self, env: &BuildEnvironment) {
+        *self.py_modindex.lock().unwrap() =
+            env_py_domain::generate_modindex(&env.py, &self.config.modindex_common_prefix);
     }
 
     /// Cross-reference resolution (`ReferencesResolver`, run per document as
@@ -1730,6 +1749,10 @@ impl SphinxBuilder {
             object.insert(
                 "genindex".to_string(),
                 env_genindex::snapshot(&self.genindex.lock().unwrap()),
+            );
+            object.insert(
+                "py_modindex".to_string(),
+                env_py_domain::modindex_snapshot(&self.py_modindex.lock().unwrap()),
             );
         }
         snapshot
