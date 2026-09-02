@@ -208,6 +208,10 @@ pub(crate) struct BlockParser {
     /// The py-domain configuration the read phase consumes (see
     /// [`super::ParseOptions::py`]).
     pub(crate) py: crate::py::PySigConfig,
+    /// The project source directory (see [`super::ParseOptions::srcdir`]):
+    /// `Some` switches the `include` directive to sphinx-mode path
+    /// resolution and turns its `included`/`dependencies` recording on.
+    pub(crate) srcdir: Option<std::path::PathBuf>,
     /// `.. highlight::` state consumed by later code-blocks in the same
     /// document (sphinx env.temp_data\['highlight_language'\]).
     highlight_language: Option<String>,
@@ -306,6 +310,7 @@ impl BlockParser {
             found_docs: None,
             exclude_patterns: Vec::new(),
             py: crate::py::PySigConfig::default(),
+            srcdir: None,
             highlight_language: None,
             program: None,
             py_module: None,
@@ -496,6 +501,7 @@ impl BlockParser {
         sub.found_docs = self.found_docs.clone();
         sub.exclude_patterns = self.exclude_patterns.clone();
         sub.py = self.py.clone();
+        sub.srcdir = self.srcdir.clone();
         sub.highlight_language = self.highlight_language.clone();
         sub.program = self.program.clone();
         // The py ref_context flows in like `program` (state changes made
@@ -10517,6 +10523,7 @@ mod tests {
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: None,
             },
         );
@@ -10556,6 +10563,7 @@ mod tests {
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: None,
             },
         );
@@ -10586,6 +10594,7 @@ mod tests {
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: None,
             },
         )
@@ -10603,6 +10612,7 @@ mod tests {
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: None,
             },
         )
@@ -10728,6 +10738,7 @@ mod tests {
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: None,
             },
         );
@@ -11200,6 +11211,7 @@ mod py_desc_tests {
             exclude_patterns: Vec::new(),
             py,
             found_docs: None,
+            srcdir: None,
         }
     }
 
@@ -12462,6 +12474,7 @@ mod py_docfield_tests {
             exclude_patterns: Vec::new(),
             py,
             found_docs: None,
+            srcdir: None,
         };
         parse_rst_full(src, &opts).doctree.root.pformat()
     }

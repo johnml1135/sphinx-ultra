@@ -33,6 +33,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::doctree::{kinds, AttrValue, Doctree, Node};
+use crate::utils::relfn2path;
 
 use super::BuildEnvironment;
 
@@ -64,45 +65,6 @@ pub fn note(uri: &str, docname: &str, srcdir: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(relfn2path(uri, docname, srcdir))
-}
-
-/// `BuildEnvironment.relfn2path` (`environment/__init__.py:378-400`): a
-/// filename written in a document resolves relative to that document's
-/// directory, unless it is written absolute (`/pic.png`), in which case it
-/// is relative to the source directory. The result is normalized (`.` and
-/// `..` collapsed, Sphinx's `os.path.normpath`) and joined onto srcdir.
-fn relfn2path(uri: &str, docname: &str, srcdir: &Path) -> PathBuf {
-    let relative = match uri.strip_prefix('/') {
-        Some(rooted) => rooted.to_string(),
-        None => match docname.rsplit_once('/') {
-            Some((dir, _)) => format!("{dir}/{uri}"),
-            None => uri.to_string(),
-        },
-    };
-
-    let mut segments: Vec<&str> = Vec::new();
-    for segment in relative.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                // `normpath` only drops a `..` that has something to undo;
-                // a leading one stays and walks out of the source tree,
-                // which is a path that simply will not exist.
-                if matches!(segments.last(), Some(&last) if last != "..") {
-                    segments.pop();
-                } else {
-                    segments.push("..");
-                }
-            }
-            other => segments.push(other),
-        }
-    }
-
-    let mut path = srcdir.to_path_buf();
-    for segment in segments {
-        path.push(segment);
-    }
-    path
 }
 
 /// Walk the doctree for every node that names a file. `figure` needs no

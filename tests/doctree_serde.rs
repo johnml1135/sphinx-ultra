@@ -34,6 +34,7 @@ fn round_trip_fixture(raw: &str, sphinx: bool, source: &str) {
                 docname: "index".into(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: None,
             },
         );

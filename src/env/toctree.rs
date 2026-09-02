@@ -1004,6 +1004,7 @@ mod tests {
                 docname: docname.to_string(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: Some(std::sync::Arc::new(found.clone())),
             },
         )

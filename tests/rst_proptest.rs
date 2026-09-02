@@ -12,6 +12,7 @@ fn opts() -> ParseOptions {
         docname: "index".into(),
         exclude_patterns: Vec::new(),
         py: Default::default(),
+        srcdir: None,
         found_docs: None,
     }
 }

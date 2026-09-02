@@ -255,7 +255,7 @@ impl SphinxBuilder {
         // --source paths (including the default ".") fail strip_prefix later.
         let source_dir = source_dir.canonicalize().unwrap_or(source_dir);
 
-        let parser = Parser::new(&config)?;
+        let parser = Parser::new(&config)?.with_srcdir(source_dir.clone());
 
         let parallel_jobs = config.parallel_jobs.unwrap_or_else(|| {
             std::thread::available_parallelism()

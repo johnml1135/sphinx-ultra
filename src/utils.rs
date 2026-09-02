@@ -1,6 +1,77 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// `BuildEnvironment.relfn2path` (`environment/__init__.py:454-478`): a
+/// filename written in a document resolves relative to that document's
+/// directory, unless it is written absolute (`/pic.png`), in which case it
+/// is relative to the source directory. The result is normalized (`.` and
+/// `..` collapsed, Sphinx's `os.path.normpath`) and joined onto srcdir.
+///
+/// Shared home (wave 4.5): the image dependency collector
+/// ([`crate::env::dependencies`]) and the `include` directive's sphinx-mode
+/// path rewrite (`sphinx/directives/other.py:413-416`) both resolve through
+/// this port.
+pub fn relfn2path(uri: &str, docname: &str, srcdir: &Path) -> PathBuf {
+    let mut path = srcdir.to_path_buf();
+    for segment in relfn2path_rel(uri, docname).split('/') {
+        if !segment.is_empty() {
+            path.push(segment);
+        }
+    }
+    path
+}
+
+/// The srcdir-relative half of [`relfn2path`]: the normalized posix path
+/// (relative to the source directory) that `uri` written in `docname`
+/// refers to. Sphinx's `rel_fn` return value.
+pub fn relfn2path_rel(uri: &str, docname: &str) -> String {
+    let relative = match uri.strip_prefix('/') {
+        Some(rooted) => rooted.to_string(),
+        None => match docname.rsplit_once('/') {
+            Some((dir, _)) => format!("{dir}/{uri}"),
+            None => uri.to_string(),
+        },
+    };
+    normalize_dot_segments(&relative)
+}
+
+/// `os.path.normpath` over a posix-separated relative path: `.` and inner
+/// `..` collapse; a leading `..` stays and walks out of the tree (a path
+/// that simply will not exist).
+pub fn normalize_dot_segments(relative: &str) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in relative.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                // `normpath` only drops a `..` that has something to undo.
+                if matches!(segments.last(), Some(&last) if last != "..") {
+                    segments.pop();
+                } else {
+                    segments.push("..");
+                }
+            }
+            other => segments.push(other),
+        }
+    }
+    segments.join("/")
+}
+
+/// `Project.path2doc` (`sphinx/project.py:114-128`) against Sphinx's
+/// *default* `source_suffix` — `{'.rst': 'restructuredtext'}`
+/// (`config.py:243`): the docname a source file under `srcdir` maps to, or
+/// `None` for anything else.
+///
+/// Deliberately narrower than this crate's discovery (which also admits
+/// `.md`/`.txt`): the consumers — `env.included` bookkeeping and the orphan
+/// check behind it — must match what Sphinx records, and Sphinx's default
+/// project never maps a `.txt` include target to a document.
+pub fn path2doc(path: &Path, srcdir: &Path) -> Option<String> {
+    let rel = path.strip_prefix(srcdir).ok()?;
+    let rel = rel.to_str()?.replace('\\', "/");
+    Some(rel.strip_suffix(".rst")?.to_string())
+}
 
 #[derive(Debug)]
 pub struct ProjectStats {
@@ -283,4 +354,55 @@ pub async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn relfn2path_rel_resolves_docname_relative_and_rooted_forms() {
+        assert_eq!(
+            relfn2path_rel("part.rst", "chapters/intro"),
+            "chapters/part.rst"
+        );
+        assert_eq!(
+            relfn2path_rel("/sub/abs.rst", "chapters/intro"),
+            "sub/abs.rst"
+        );
+        assert_eq!(
+            relfn2path_rel("../img/./pic.png", "chapters/intro"),
+            "img/pic.png"
+        );
+        assert_eq!(relfn2path_rel("x.rst", "index"), "x.rst");
+        // A leading `..` walks out of the tree and stays.
+        assert_eq!(relfn2path_rel("../outside.rst", "index"), "../outside.rst");
+    }
+
+    #[test]
+    fn relfn2path_joins_the_rel_half_onto_srcdir() {
+        assert_eq!(
+            relfn2path("part.rst", "chapters/intro", Path::new("/src")),
+            PathBuf::from("/src/chapters/part.rst")
+        );
+    }
+
+    /// Sphinx's default `source_suffix` is `.rst` alone; this crate's wider
+    /// discovery (`.md`/`.txt`) deliberately does not leak into the
+    /// `env.included` bookkeeping this helper feeds.
+    #[test]
+    fn path2doc_maps_rst_under_srcdir_and_nothing_else() {
+        let srcdir = Path::new("/src");
+        assert_eq!(
+            path2doc(Path::new("/src/part.rst"), srcdir),
+            Some("part".into())
+        );
+        assert_eq!(
+            path2doc(Path::new("/src/sub/abs_part.rst"), srcdir),
+            Some("sub/abs_part".into())
+        );
+        assert_eq!(path2doc(Path::new("/src/data.txt"), srcdir), None);
+        assert_eq!(path2doc(Path::new("/src/notes.md"), srcdir), None);
+        assert_eq!(path2doc(Path::new("/elsewhere/part.rst"), srcdir), None);
+    }
 }

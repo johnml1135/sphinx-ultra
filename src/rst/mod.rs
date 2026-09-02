@@ -47,6 +47,18 @@ pub struct ParseOptions {
     /// signature-wrapping and TOC-entry keys too. Defaults to sphinx's own
     /// defaults, so a parse without a project behaves like a default one.
     pub py: crate::py::PySigConfig,
+    /// The project source directory (sphinx `env.srcdir`), which the
+    /// `include` directive's sphinx-mode path rewrite resolves against
+    /// (`sphinx/directives/other.py:413-416` runs `env.relfn2path` on every
+    /// include argument before docutils sees it) and which the parse-time
+    /// `included`/`dependencies` records are spelled relative to.
+    ///
+    /// `None` — the default — means "parsed without a project": include
+    /// arguments then resolve the docutils way, relative to the directory
+    /// of the *containing file*, and no records are made. Standalone
+    /// parses (the differential harnesses, `parse_rst` callers) keep their
+    /// current behavior.
+    pub srcdir: Option<std::path::PathBuf>,
 }
 
 impl Default for ParseOptions {
@@ -58,6 +70,7 @@ impl Default for ParseOptions {
             found_docs: None,
             exclude_patterns: Vec::new(),
             py: crate::py::PySigConfig::default(),
+            srcdir: None,
         }
     }
 }
@@ -298,6 +311,7 @@ pub fn parse_rst_full(source: &str, opts: &ParseOptions) -> ParseOutput {
     parser.found_docs = opts.found_docs.clone();
     parser.exclude_patterns = opts.exclude_patterns.clone();
     parser.py = opts.py.clone();
+    parser.srcdir = opts.srcdir.clone();
     parser.parse_document_full()
 }
 

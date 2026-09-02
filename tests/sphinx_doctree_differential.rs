@@ -187,6 +187,7 @@ fn matches_sphinx_oracle_pformat() {
                     exclude_patterns: Vec::new(),
                     py,
                     found_docs: None,
+                    srcdir: None,
                 },
             )
             .root

@@ -33,6 +33,11 @@ pub struct Parser {
     /// consumes (see [`crate::rst::ParseOptions::py`]), projected out of the
     /// build configuration once instead of per document.
     py: crate::py::PySigConfig,
+    /// The project source directory (see
+    /// [`crate::rst::ParseOptions::srcdir`]): the build path sets it via
+    /// [`Parser::with_srcdir`] so the `include` directive resolves paths
+    /// sphinx-style; a bare `Parser::new` keeps standalone behavior.
+    srcdir: Option<std::path::PathBuf>,
 }
 
 /// Everything one source file's parse produces: the pipeline's [`Document`]
@@ -49,7 +54,16 @@ impl Parser {
         Ok(Self {
             exclude_patterns: config.exclude_patterns.clone(),
             py: crate::py::PySigConfig::from(config),
+            srcdir: None,
         })
+    }
+
+    /// Attach the project source directory (sphinx `env.srcdir`), enabling
+    /// the `include` directive's sphinx-mode path resolution and its
+    /// `included`/`dependencies` recording.
+    pub fn with_srcdir(mut self, srcdir: std::path::PathBuf) -> Self {
+        self.srcdir = Some(srcdir);
+        self
     }
 
     pub fn parse(&self, file_path: &Path, content: &str, docname: &str) -> Result<Document> {
@@ -123,6 +137,7 @@ impl Parser {
                 found_docs,
                 exclude_patterns: self.exclude_patterns.clone(),
                 py: self.py.clone(),
+                srcdir: self.srcdir.clone(),
             },
         );
         {
@@ -393,6 +408,7 @@ mod tests {
                 docname: "index".to_string(),
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
                 found_docs: None,
             },
         );

@@ -1841,6 +1841,7 @@ mod tests {
                 found_docs: None,
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
+                srcdir: None,
             },
         )
     }
