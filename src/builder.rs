@@ -1301,9 +1301,12 @@ impl SphinxBuilder {
         }
 
         if unresolvable_domain_refs > 0 {
+            // References into domains this build has no resolver for —
+            // `refdomain` outside `{"", "std", "py"}` (`c:`, `cpp:`, `js:`,
+            // ...) — counted by the resolver rather than warned about.
             info!(
-                "{unresolvable_domain_refs} python-domain reference(s) not validated \
-                 (no object inventory until M5)"
+                "{unresolvable_domain_refs} cross-domain reference(s) not validated \
+                 (domain not implemented until M5)"
             );
         }
     }

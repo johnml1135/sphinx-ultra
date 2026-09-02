@@ -1059,9 +1059,6 @@ fn resolve_py(
             .with_category(Some(format!("ref.{reftype}"))),
         );
     }
-    // A dangling py ref still feeds the build's skip-notice counter until
-    // the notice itself is retired for the py domain.
-    out.unresolvable_domain_refs += 1;
     children.fallback(out, line, path)
 }
 

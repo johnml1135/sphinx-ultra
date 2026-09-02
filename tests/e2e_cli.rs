@@ -1296,29 +1296,52 @@ fn nitpicky_flags_broken_refs() {
 }
 
 #[test]
-fn nitpicky_skips_python_and_external_refs() {
+fn nitpicky_resolves_python_refs_and_counts_cross_domain_ones() {
     let src = temp_source(
-        "nitpicky-skips",
+        "nitpicky-py-domain",
         &[(
             "index.rst",
-            "Title\n=====\n\nCall :py:func:`missing.fn` and :func:`also.missing`.\nSee `docs <https://example.com>`_ and :doc:`https://example.com/page`.\n",
+            "Title\n=====\n\n.. py:function:: real.fn()\n\nCall :py:func:`real.fn` and :py:func:`missing.fn` and :func:`also.missing` and :c:func:`cfn`.\nSee `docs <https://example.com>`_ and :doc:`https://example.com/page`.\n",
         )],
     );
-    let out = out_dir("nitpicky-skips");
+    let out = out_dir("nitpicky-py-domain");
     let result = sphinx_build(&[src.to_str().unwrap(), out.to_str().unwrap(), "-n"]);
 
     assert!(result.status.success(), "stderr: {}", stderr_of(&result));
     let stderr = stderr_of(&result);
+    // (a) A defined py ref RESOLVES: under -n an unresolved one would have
+    // to warn, so its absence from the warning stream is the proof.
     assert!(
-        !stderr.contains("unknown document") && !stderr.contains("undefined label"),
-        "python-domain and external refs must not be reported broken, stderr: {stderr}"
+        !stderr.contains("real.fn"),
+        "the defined py ref must resolve silently, stderr: {stderr}"
     );
-    let aggregate_count = stderr
-        .matches("python-domain reference(s) not validated")
-        .count();
+    // (b) A missing py ref warns in sphinx's exact non-std shape — through
+    // the domain-prefixed `:py:func:` role and the bare `:func:` role alike
+    // (primary_domain defaults to `py`).
+    assert!(
+        stderr.contains(
+            "index.rst:6: WARNING: py:func reference target not found: missing.fn [ref.func]"
+        ),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "index.rst:6: WARNING: py:func reference target not found: also.missing [ref.func]"
+        ),
+        "stderr: {stderr}"
+    );
+    // (c) A `:c:func:` ref trips the cross-domain counter exactly once, and
+    // the URL-shaped `:doc:` keeps the M1 carve-out (no `unknown document`).
+    assert!(
+        !stderr.contains("unknown document"),
+        "URL doc refs must stay exempt, stderr: {stderr}"
+    );
     assert_eq!(
-        aggregate_count, 1,
-        "the unvalidatable-python-refs notice appears exactly once, stderr: {stderr}"
+        stderr
+            .matches("1 cross-domain reference(s) not validated (domain not implemented until M5)")
+            .count(),
+        1,
+        "the cross-domain notice appears exactly once, stderr: {stderr}"
     );
 }
 
