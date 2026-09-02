@@ -127,6 +127,55 @@ pub struct ProgramOptionRecord {
     pub node_id: String,
 }
 
+/// One `PythonDomain.note_object` call the parse layer made
+/// (`PyObject.add_target_and_index`, `domains/python/_object.py:415-437`,
+/// or `PyModule.run`, `__init__.py:522`) — the fullname → `ObjectEntry`
+/// registration the env layer replays, plus the provenance the
+/// duplicate-description warning needs.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PyObjectRecord {
+    /// Module-qualified full object name (`mymod.C.meth`), or the canonical
+    /// name for an `aliased` record.
+    pub fullname: String,
+    /// The desc's objtype AFTER directive-name aliasing (`py:classmethod`
+    /// registers `method`, `py:decorator` registers `function`).
+    pub objtype: String,
+    pub node_id: String,
+    /// `:canonical:` alias registrations carry `true` (`_object.py:427-437`)
+    /// — resolve-time disambiguation prefers non-aliased entries.
+    pub aliased: bool,
+    /// Source-table index of the registering signature. Deliberately not
+    /// `#[serde(default)]` (cache-shape rule, see
+    /// [`RegistryExport::program_options`]).
+    pub source: u16,
+    /// 1-based line of the signature node (`location=signode`).
+    pub lineno: u32,
+}
+
+/// One `PythonDomain.note_module` call (`PyModule.run`,
+/// `domains/python/__init__.py:515-521`) — the modname → `ModuleEntry`
+/// registration feeding the env layer and, later, the py-modindex.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PyModuleRecord {
+    pub name: String,
+    /// `module-<name>` (or its `module-<n>` collision serial).
+    pub node_id: String,
+    /// `:synopsis:` option, `''` when absent. (A bare `:synopsis:` with no
+    /// value is Python `None` in sphinx's identity-lambda option spec; it is
+    /// recorded as `''` here — probe `module_synopsis_bare`.)
+    pub synopsis: String,
+    /// `:platform:` option, `''` when absent.
+    pub platform: String,
+    /// `:deprecated:` flag.
+    pub deprecated: bool,
+    /// Source-table index of the directive. Deliberately not
+    /// `#[serde(default)]` (cache-shape rule, see
+    /// [`RegistryExport::program_options`]).
+    pub source: u16,
+    /// 1-based line of the directive marker.
+    pub lineno: u32,
+}
+
 /// One `StandardDomain.note_object` call the parse layer made
 /// (`GenericObject`/`ConfigurationValue.add_target_and_index`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -187,6 +236,17 @@ pub struct RegistryExport {
     /// See [`Self::program_options`] — including why this is not
     /// `#[serde(default)]` either.
     pub std_objects: Vec<ObjectRegistration>,
+    /// The py-domain object registrations (`PythonDomain.note_object`), in
+    /// document order. Same rationale and cache-shape rule as
+    /// [`Self::program_options`]: the program state analog here is the
+    /// parser's `py:module`/`py:class` ref_context, which no doctree node
+    /// carries, and a `:no-typesetting:` py object registers and then
+    /// vanishes from the tree.
+    pub py_objects: Vec<PyObjectRecord>,
+    /// The py-domain module registrations (`PythonDomain.note_module`), in
+    /// document order. Not `#[serde(default)]` — see
+    /// [`Self::program_options`].
+    pub py_modules: Vec<PyModuleRecord>,
     /// Diagnostics the parse raised through Sphinx's *logger* rather than
     /// into the tree, which have nowhere else to go: docutils turns a
     /// directive error into a `system_message` node, but a Sphinx directive
@@ -255,18 +315,30 @@ mod tests {
     #[test]
     fn a_registry_written_before_the_std_records_existed_fails_to_decode() {
         let complete = r#"{"nameids":[],"index_serial":0,"program_options":[],
-            "std_objects":[],"log_warnings":[]}"#;
+            "std_objects":[],"py_objects":[],"py_modules":[],"log_warnings":[]}"#;
         serde_json::from_str::<RegistryExport>(complete).expect("the current shape decodes");
 
         for missing in [
-            r#"{"nameids":[],"index_serial":0,"std_objects":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"std_objects":[],"py_objects":[],
+                "py_modules":[],"log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"py_objects":[],
+                "py_modules":[],"log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "py_objects":[],"py_modules":[]}"#,
+            // A wave-4 registry (no py record streams at all) must MISS: a
+            // defaulted empty vector would leave every py xref in the
+            // project dangling on a warm rebuild.
+            r#"{"nameids":[],"index_serial":0,"program_options":[],
+                "std_objects":[],"log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],
+                "std_objects":[],"py_objects":[],"log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],
+                "std_objects":[],"py_modules":[],"log_warnings":[]}"#,
             r#"{"nameids":[],"index_serial":0}"#,
         ] {
             assert!(
                 serde_json::from_str::<RegistryExport>(missing).is_err(),
-                "a registry missing a std-record field must fail to decode: {missing}"
+                "a registry missing a record field must fail to decode: {missing}"
             );
         }
     }
@@ -280,17 +352,31 @@ mod tests {
         let with_source = r#"{"nameids":[],"index_serial":0,
             "program_options":[{"source":0,"program":null,"name":"-f","node_id":"a"}],
             "std_objects":[{"source":0,"objtype":"envvar","name":"P","node_id":"b","line":1}],
+            "py_objects":[{"fullname":"m.f","objtype":"function","node_id":"m.f",
+                "aliased":false,"source":0,"lineno":1}],
+            "py_modules":[{"name":"m","node_id":"module-m","synopsis":"","platform":"",
+                "deprecated":false,"source":0,"lineno":1}],
             "log_warnings":[{"source":0,"message":"m","line":2}]}"#;
         serde_json::from_str::<RegistryExport>(with_source).expect("the current shape decodes");
 
         for stale in [
             r#"{"nameids":[],"index_serial":0,
                 "program_options":[{"program":null,"name":"-f","node_id":"a"}],
-                "std_objects":[],"log_warnings":[]}"#,
+                "std_objects":[],"py_objects":[],"py_modules":[],"log_warnings":[]}"#,
             r#"{"nameids":[],"index_serial":0,"program_options":[],
                 "std_objects":[{"objtype":"envvar","name":"P","node_id":"b","line":1}],
+                "py_objects":[],"py_modules":[],"log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "py_objects":[{"fullname":"m.f","objtype":"function","node_id":"m.f",
+                    "aliased":false,"lineno":1}],
+                "py_modules":[],"log_warnings":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "py_objects":[],
+                "py_modules":[{"name":"m","node_id":"module-m","synopsis":"",
+                    "platform":"","deprecated":false,"lineno":1}],
                 "log_warnings":[]}"#,
             r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "py_objects":[],"py_modules":[],
                 "log_warnings":[{"message":"m","line":2}]}"#,
         ] {
             assert!(

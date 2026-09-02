@@ -223,16 +223,30 @@ impl IdRegistry {
         n
     }
 
-    /// sphinx `util.nodes.make_id(env, document, prefix, term)` (`:610-637`)
-    /// with `prefix` always non-empty (every caller in this crate names one):
-    /// `_make_id(f'{prefix}-{term}')`, rejected when it collapses to just the
-    /// prefix, then `f'{prefix}-{env.new_serialno(prefix)}'` until the id is
-    /// free. Sphinx does NOT register the result in `document.ids` here —
+    /// sphinx `util.nodes.make_id(env, document, prefix, term)` (`:610-637`),
+    /// both prefix regimes:
+    ///
+    /// - non-empty prefix: candidate `_make_id(f'{prefix}-{term}')`, rejected
+    ///   when it collapses to just the prefix, then serial fallback
+    ///   `f'{prefix}-{env.new_serialno(prefix)}'` until the id is free;
+    /// - EMPTY prefix (the py domain's object ids, `domains/python/
+    ///   _object.py:420`): `idformat` becomes `(id_prefix or 'id') + '%s'`
+    ///   with the Sphinx-pinned `id_prefix=''`, so the candidate is the bare
+    ///   `_make_id(term)` — dots, underscores and capitals survive, making
+    ///   `mymod.C.meth` its own node id — rejected when empty, and the
+    ///   serial fallback is `id{n}` (`id0`, `id1`, …) with the counter still
+    ///   keyed by the empty prefix.
+    ///
+    /// Sphinx does NOT register the result in `document.ids` here —
     /// `note_explicit_target` → `document.set_id` does, which is
     /// [`Self::note_explicit_id`].
     pub fn sphinx_make_id(&mut self, prefix: &str, term: &str) -> String {
         let mut node_id = if term.is_empty() {
             None
+        } else if prefix.is_empty() {
+            let candidate = sphinx_make_id(term);
+            // `if not node_id: node_id = None` — empty term hash.
+            (!candidate.is_empty()).then_some(candidate)
         } else {
             let candidate = sphinx_make_id(&format!("{prefix}-{term}"));
             // "*term* is not good to generate a node_id."
@@ -246,7 +260,11 @@ impl IdRegistry {
             let counter = self.serialnos.entry(prefix.to_string()).or_insert(0);
             let serial = *counter;
             *counter += 1;
-            node_id = Some(format!("{prefix}-{serial}"));
+            node_id = Some(if prefix.is_empty() {
+                format!("id{serial}")
+            } else {
+                format!("{prefix}-{serial}")
+            });
         }
     }
 
@@ -548,6 +566,28 @@ mod tests {
         // generate a node_id" and goes straight to the serial; the counter
         // is per prefix.
         assert_eq!(reg.sphinx_make_id("cmdoption", "!!!"), "cmdoption-0");
+    }
+
+    /// The empty-prefix regime the py domain's `make_id(env, doc, '',
+    /// fullname)` calls hit (research spec [PY §1.5]): the candidate is the
+    /// bare `_make_id(term)` — dots and capitals survive, so the id IS the
+    /// fullname — and the serial fallback switches to `id{n}` starting at
+    /// `id0` (probe `duplicate_functions`: second `dup` gets `id0`).
+    #[test]
+    fn sphinx_registry_make_id_empty_prefix_keeps_fullname_and_serials_as_id_n() {
+        let mut reg = IdRegistry::new();
+        assert_eq!(reg.sphinx_make_id("", "mymod.C.meth"), "mymod.C.meth");
+        reg.note_explicit_id("mymod.C.meth");
+        assert_eq!(reg.sphinx_make_id("", "mymod.C.meth"), "id0");
+        reg.note_explicit_id("id0");
+        assert_eq!(reg.sphinx_make_id("", "mymod.C.meth"), "id1");
+        // A term whose hash is empty goes straight to the serial; the
+        // counter is shared per prefix ('' here), not per term.
+        reg.note_explicit_id("id1");
+        assert_eq!(reg.sphinx_make_id("", "!!!"), "id2");
+        // Empty term likewise.
+        reg.note_explicit_id("id2");
+        assert_eq!(reg.sphinx_make_id("", ""), "id3");
     }
 
     #[test]

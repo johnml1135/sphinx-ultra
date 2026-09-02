@@ -214,6 +214,20 @@ pub(crate) struct BlockParser {
     /// `.. program::` state consumed by later `.. option::` directives in
     /// the same document (sphinx `env.ref_context['std:program']`).
     program: Option<String>,
+    /// sphinx `env.ref_context['py:module']` — set by `py:module`/
+    /// `py:currentmodule` and pushed/popped by an object's `:module:`
+    /// option (`domains/python/_object.py:477-480`, `498-503`).
+    py_module: Option<String>,
+    /// sphinx `env.ref_context['py:modules']` — the `:module:` option's
+    /// push/pop stack (entries may be `None`: the module in scope when the
+    /// option pushed).
+    py_modules: Vec<Option<String>>,
+    /// sphinx `env.ref_context['py:class']` — the innermost class scope
+    /// (`_object.py:449-503`).
+    py_class: Option<String>,
+    /// sphinx `env.ref_context['py:classes']` — the `allow_nesting`
+    /// (class/exception) nesting stack.
+    py_classes: Vec<String>,
     /// Sphinx-mode class/rst-class pending classes (the ClassAttribute
     /// transform effect applied inline).
     pending_classes: Option<Vec<String>>,
@@ -229,6 +243,11 @@ pub(crate) struct BlockParser {
     /// doctree cannot carry them).
     program_option_records: Vec<super::ProgramOptionRecord>,
     std_object_records: Vec<super::ObjectRegistration>,
+    /// The py-domain registrations (`PythonDomain.note_object` /
+    /// `note_module` calls), in document order — see
+    /// [`super::RegistryExport::py_objects`].
+    py_object_records: Vec<super::PyObjectRecord>,
+    py_module_records: Vec<super::PyModuleRecord>,
     /// `logger.warning` diagnostics raised while running directives (see
     /// [`super::ParseLogWarning`]).
     log_warnings: Vec<super::ParseLogWarning>,
@@ -281,6 +300,10 @@ impl BlockParser {
             py: crate::py::PySigConfig::default(),
             highlight_language: None,
             program: None,
+            py_module: None,
+            py_modules: Vec::new(),
+            py_class: None,
+            py_classes: Vec::new(),
             pending_classes: None,
             equation_serial: 0,
             directive_records: Vec::new(),
@@ -288,6 +311,8 @@ impl BlockParser {
             toctree_records: Vec::new(),
             program_option_records: Vec::new(),
             std_object_records: Vec::new(),
+            py_object_records: Vec::new(),
+            py_module_records: Vec::new(),
             log_warnings: Vec::new(),
             substitution_ctx: None,
             substitution_names_seen: Vec::new(),
@@ -307,6 +332,8 @@ impl BlockParser {
             index_serial: self.registry.index_serial(),
             program_options: std::mem::take(&mut self.program_option_records),
             std_objects: std::mem::take(&mut self.std_object_records),
+            py_objects: std::mem::take(&mut self.py_object_records),
+            py_modules: std::mem::take(&mut self.py_module_records),
             log_warnings: std::mem::take(&mut self.log_warnings),
         };
         super::ParseOutput {
@@ -453,6 +480,13 @@ impl BlockParser {
         sub.py = self.py.clone();
         sub.highlight_language = self.highlight_language.clone();
         sub.program = self.program.clone();
+        // The py ref_context flows in like `program` (state changes made
+        // inside a detached parse stay local, matching the wave-4
+        // convention); the record streams flow back out below.
+        sub.py_module = self.py_module.clone();
+        sub.py_modules = self.py_modules.clone();
+        sub.py_class = self.py_class.clone();
+        sub.py_classes = self.py_classes.clone();
         let top = std::mem::take(&mut sub.top);
         let nodes = sub.parse_elements(&top);
         self.sources = sub.sources;
@@ -463,6 +497,8 @@ impl BlockParser {
         self.program_option_records
             .append(&mut sub.program_option_records);
         self.std_object_records.append(&mut sub.std_object_records);
+        self.py_object_records.append(&mut sub.py_object_records);
+        self.py_module_records.append(&mut sub.py_module_records);
         self.log_warnings.append(&mut sub.log_warnings);
         nodes
     }
