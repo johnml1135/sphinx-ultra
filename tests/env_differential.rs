@@ -2708,3 +2708,203 @@ fn any_ambiguity_candidates_render_module_reftitles_verbatim() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// TOC object entries: `TocTreeCollector.build_toc`'s object branch
+// (`collectors/toctree.py:125-160`) over py descriptions, byte-pinned to
+// the [SIG §A.2] probe_toc.py outputs (sphinx 9.1.0).
+// ---------------------------------------------------------------------------
+
+/// Build one project and return the environment snapshot plus warnings,
+/// both srcdir-normalized — the toc tests read `tocs_pformat`,
+/// `toc_num_entries` and `toctree_includes` off it.
+fn env_build(
+    files: &[(&str, &str)],
+    configure: &dyn Fn(&Path, &mut BuildConfig),
+) -> (serde_json::Value, Vec<String>) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    for (docname, body) in files {
+        write(&source_dir, docname, body);
+    }
+    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let mut config = BuildConfig::default();
+    configure(&source_dir, &mut config);
+    let mut builder =
+        SphinxBuilder::new(config, source_dir.clone(), tmp.path().join("out")).unwrap();
+    let stats = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(builder.build())
+        .unwrap();
+    let root = source_dir.to_string_lossy().into_owned();
+    let warnings = normalize_warnings(&stats.warning_details, &root);
+    (normalize_snapshot(&builder.snapshot_env(), &root), warnings)
+}
+
+/// The [SIG §A.2] two-document probe project.
+const TOC_PROBE_FILES: &[(&str, &str)] = &[
+    ("index", "Index\n=====\n\n.. toctree::\n\n   mod\n"),
+    (
+        "mod",
+        "Mod\n===\n\n.. py:module:: pkg.mymod\n\n.. py:class:: MyClass\n\n   Class body.\n\n   \
+         .. py:method:: my_method(arg)\n\n      Method body.\n\n.. py:function:: my_func(x)\n\n   \
+         Function body.\n",
+    ),
+];
+
+/// `env.tocs['mod']` for the class/method/function texts a variant renders
+/// — the nesting (method under class via `memo_parents`), the shared
+/// anchorname counter and `skip_section_number` stamps are common to all.
+fn toc_probe_expected(class: &str, method: &str, function: &str) -> String {
+    format!(
+        concat!(
+            "<bullet_list>\n",
+            "    <list_item>\n",
+            "        <compact_paragraph>\n",
+            "            <reference anchorname=\"\" internal=\"1\" refuri=\"mod\">\n",
+            "                Mod\n",
+            "        <bullet_list>\n",
+            "            <list_item>\n",
+            "                <compact_paragraph skip_section_number=\"1\">\n",
+            "                    <reference anchorname=\"#pkg.mymod.MyClass\" internal=\"1\" \
+             refuri=\"mod\">\n",
+            "                        <literal>\n",
+            "                            {class}\n",
+            "                <bullet_list>\n",
+            "                    <list_item>\n",
+            "                        <compact_paragraph skip_section_number=\"1\">\n",
+            "                            <reference anchorname=\"#pkg.mymod.MyClass.my_method\" \
+             internal=\"1\" refuri=\"mod\">\n",
+            "                                <literal>\n",
+            "                                    {method}\n",
+            "            <list_item>\n",
+            "                <compact_paragraph skip_section_number=\"1\">\n",
+            "                    <reference anchorname=\"#pkg.mymod.my_func\" internal=\"1\" \
+             refuri=\"mod\">\n",
+            "                        <literal>\n",
+            "                            {function}\n",
+        ),
+        class = class,
+        method = method,
+        function = function,
+    )
+}
+
+/// All five [SIG §A.2] config variants, `env.tocs['mod']` byte-verbatim,
+/// plus the shared-counter `toc_num_entries` and the untouched
+/// `toctree_includes`.
+#[test]
+fn toc_object_entries_match_the_probe_for_all_five_config_variants() {
+    let variants: &[(&str, &dyn Fn(&mut BuildConfig), String, u64)] = &[
+        (
+            "defaults",
+            &|_| {},
+            toc_probe_expected("MyClass", "MyClass.my_method()", "my_func()"),
+            4,
+        ),
+        (
+            "show_parents='hide'",
+            &|config| config.toc_object_entries_show_parents = "hide".to_string(),
+            toc_probe_expected("MyClass", "my_method()", "my_func()"),
+            4,
+        ),
+        (
+            "show_parents='all'",
+            &|config| config.toc_object_entries_show_parents = "all".to_string(),
+            toc_probe_expected(
+                "pkg.mymod.MyClass",
+                "pkg.mymod.MyClass.my_method()",
+                "pkg.mymod.my_func()",
+            ),
+            4,
+        ),
+        (
+            "toc_object_entries=False",
+            &|config| config.toc_object_entries = false,
+            concat!(
+                "<bullet_list>\n",
+                "    <list_item>\n",
+                "        <compact_paragraph>\n",
+                "            <reference anchorname=\"\" internal=\"1\" refuri=\"mod\">\n",
+                "                Mod\n",
+            )
+            .to_string(),
+            1,
+        ),
+        (
+            "add_function_parentheses=False",
+            &|config| config.add_function_parentheses = false,
+            toc_probe_expected("MyClass", "MyClass.my_method", "my_func"),
+            4,
+        ),
+    ];
+    for (label, configure, expected_toc, expected_num) in variants {
+        let (env, warnings) = env_build(TOC_PROBE_FILES, &|_, config| configure(config));
+        assert_eq!(
+            env["tocs_pformat"]["mod"].as_str().unwrap(),
+            expected_toc,
+            "{label}"
+        );
+        assert_eq!(
+            env["toc_num_entries"]["mod"].as_u64().unwrap(),
+            *expected_num,
+            "{label}"
+        );
+        assert_eq!(
+            env["toc_num_entries"]["index"].as_u64().unwrap(),
+            1,
+            "{label}"
+        );
+        assert_eq!(
+            env["toctree_includes"],
+            serde_json::json!({ "index": ["mod"] }),
+            "{label}: toctree_includes is unaffected in every mode"
+        );
+        assert_eq!(warnings, Vec::<String>::new(), "{label}");
+    }
+}
+
+/// A document whose FIRST collected entry is a top-level desc: sections
+/// and objects share the `numentries` counter, so the object gets
+/// `anchorname=""` and the later section starts at `#` — byte-pinned to
+/// the probe (toc_first_entry_desc, 2026-09-02).
+#[test]
+fn a_leading_object_entry_takes_the_empty_anchorname() {
+    let (env, warnings) = env_build(
+        &[
+            ("index", "Head\n====\n\n.. toctree::\n\n   mod\n"),
+            (
+                "mod",
+                ".. py:function:: lead()\n\nBody.\n\nLater\n=====\n\n.. py:function:: trail()\n",
+            ),
+        ],
+        &|_, _| {},
+    );
+    assert_eq!(
+        env["tocs_pformat"]["mod"].as_str().unwrap(),
+        concat!(
+            "<bullet_list>\n",
+            "    <list_item>\n",
+            "        <compact_paragraph skip_section_number=\"1\">\n",
+            "            <reference anchorname=\"\" internal=\"1\" refuri=\"mod\">\n",
+            "                <literal>\n",
+            "                    lead()\n",
+            "    <list_item>\n",
+            "        <compact_paragraph>\n",
+            "            <reference anchorname=\"#later\" internal=\"1\" refuri=\"mod\">\n",
+            "                Later\n",
+            "        <bullet_list>\n",
+            "            <list_item>\n",
+            "                <compact_paragraph skip_section_number=\"1\">\n",
+            "                    <reference anchorname=\"#trail\" internal=\"1\" refuri=\"mod\">\n",
+            "                        <literal>\n",
+            "                            trail()\n",
+        )
+    );
+    assert_eq!(env["toc_num_entries"]["mod"].as_u64().unwrap(), 3);
+    assert_eq!(env["toc_num_entries"]["index"].as_u64().unwrap(), 1);
+    assert_eq!(warnings, Vec::<String>::new());
+}
