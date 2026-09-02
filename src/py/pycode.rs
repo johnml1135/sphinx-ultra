@@ -59,6 +59,23 @@
 //!   BEFORE lines are split, and line splitting is `str.splitlines(True)`, both
 //!   mirrored here so line numbers agree (probe `formfeed`).
 //!
+//! Three places where the scanner is knowingly coarser than `tokenize`, none of
+//! which can change a tag in a file that is valid Python:
+//!
+//! - number munching is greedy over alphanumerics, so `1if x else 2` becomes
+//!   ONE `NUMBER` where CPython emits `NUMBER 1` + `NAME if`. Nothing the
+//!   finder keys on (`def`/`class`/`@`/`:`) can be swallowed that way, since a
+//!   number never precedes them at a header's top level;
+//! - a name of 1-2 letters from `rRbBuUfF` immediately before a quote is taken
+//!   for a string prefix, so an INVALID combination (`bb"x"`, `uu'y'`) is lexed
+//!   as one `STRING` where CPython emits `NAME` + `STRING`. Such a file is a
+//!   syntax error in Python, so sphinx warns on it anyway (the
+//!   tokenizes-but-does-not-parse class below);
+//! - the dedent branch checks CPython's two conditions in CPython's order —
+//!   unindent-matches-no-outer-level first, tab inconsistency second — so which
+//!   failure fires is faithful; only the rendered detail differs, since sphinx
+//!   surfaces them wrapped in `IndentationError`/`TabError` reprs (below).
+//!
 //! ## Errors, and the divergence they carry
 //!
 //! Sphinx's `Parser.parse()` runs `ast.parse` BEFORE `DefinitionFinder`
@@ -89,9 +106,16 @@
 //!   cookie); this interface takes the reader's already-decoded text, so a
 //!   non-UTF-8 file with a coding cookie and no `:encoding:` option differs;
 //! - the reader has already applied `:tab-width:` expansion when it hands the
-//!   text over, while sphinx re-reads the raw file — line numbers are
-//!   unaffected (expansion never changes the line count), only the
-//!   tabs-vs-spaces consistency check can differ;
+//!   text over (`read_file`, `SP/directives/code.py:221-240`), while sphinx's
+//!   analyzer re-reads the RAW file. Expansion never changes the line COUNT,
+//!   but at a `tab-width` other than 8 it can change the indentation COLUMNS
+//!   this scanner measures, and with them the block structure and every end
+//!   line derived from it: a `\t` is column 8 to CPython's tokenizer but four
+//!   spaces after `expandtabs(4)`, so against a six-space line it flips from
+//!   deeper to shallower — an `INDENT` where sphinx sees a `DEDENT`, or a
+//!   clean parse here where sphinx raises `IndentationError`. Triggering it
+//!   takes all three of `:tab-width:` (≠ 8), `:pyobject:`, and a file that
+//!   mixes tab and space indentation;
 //! - PEP 701 f-strings that reuse the outer quote inside a replacement field
 //!   (`f"{"a"}"`) are lexed here as pre-3.12 string literals.
 
@@ -1398,9 +1422,11 @@ mod tests {
 
     proptest::proptest! {
         /// Arbitrary text must never panic and must keep the tag invariants
-        /// the reader's slice depends on: `1 <= start <= end`.
+        /// the reader's slice depends on: `1 <= start <= end`. `(?s)` is
+        /// load-bearing — without it `.` excludes `\n` and the sweep never
+        /// leaves a single logical line.
         #[test]
-        fn arbitrary_source_never_panics(src in ".{0,400}") {
+        fn arbitrary_source_never_panics(src in "(?s).{0,400}") {
             if let Ok(map) = find_tags(&src) {
                 for (_, (_, start, end)) in map {
                     proptest::prop_assert!(start >= 1);
