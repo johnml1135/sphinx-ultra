@@ -1897,6 +1897,7 @@
       "rst": "See :confval:`my_setting` here.\n"
     }
   ],
+  "conf_semantics": "a case's optional 'conf' dict is confoverrides applied on top of the base settings above; absent = defaults. The consumer maps every key onto ParseOptions.py and errors on unmapped keys.",
   "docutils_version": "0.22.4",
   "generator": "tools/gen_sphinx_fixture.py",
   "harness": "sphinx.util.docutils._parse_str_to_doctree with env.settings + registry transforms (probes-doc 'harness3'; byte-identical to a full dummy-builder build + env.get_doctree)",

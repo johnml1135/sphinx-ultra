@@ -110,6 +110,20 @@ Provenance: cases whose (family, name) mirror a case of
 tests/fixtures/doctree_differential.json reuse that case's exact rst input;
 three inputs are new (marked). Never remove or rename existing cases; later
 waves only EXTEND the corpus and SUPPORTED_KINDS.
+
+PER-CASE CONFOVERRIDES (wave-4.5 task 8): a case tuple may carry a fourth
+element, a dict of confoverrides applied ON TOP of the fixed CONFOVERRIDES
+base (smartquotes/keep_warnings are never overridden per-case). One
+SphinxTestApp is constructed per DISTINCT conf dict (cases grouped by their
+JSON-serialized conf, mirroring the [SIG] appendix probe scripts) so fifty
+conf cases do not spin fifty apps; the base settings assertions run against
+every app. The fixture schema emits "conf" on a case ONLY when non-empty —
+absent means defaults — and the Rust consumer maps every conf key onto
+ParseOptions.py (PySigConfig), ERRORING on unmapped keys so a future conf
+addition here fails loudly there instead of silently parsing under defaults.
+
+WAVE-4.5 EXCLUSIONS (py-domain corpus; every entry in EXCLUDED below carries
+its reason and the assert keeps CASES disjoint from it — see that dict).
 """
 
 import io
@@ -582,18 +596,88 @@ CASES = [
 ]
 
 
-def make_app(base: Path) -> SphinxTestApp:
+# Wave-4.5 exclusion ledger: py-domain candidate cases this corpus must NOT
+# carry, each with the evidence for why. The assert in main() keeps CASES
+# disjoint from this set; removing an entry requires re-probing the reason.
+EXCLUDED = {
+    # -- PropagateTargets-visible module shapes (plan §Scope-3: docutils
+    #    PropagateTargets is a transform this crate deliberately does not run
+    #    until wave 5; the sphinx pformat moves the module target's id onto
+    #    the NEXT body node, ours keeps it on the target) --
+    "py.module_basic": (
+        "PropagateTargets folds ids='module-mymod' onto the following desc "
+        "(target keeps refid) — propagation-visible, wave 5 [PY §1.6]"
+    ),
+    "py.module_content_and_sections": (
+        "PropagateTargets moves the module id onto the first content "
+        "paragraph AND py:module content parses with "
+        "allow_section_headings=True (nested sections unrepresentable in "
+        "this parser's nested contexts, T6 deviation 4) [PY §1.6]"
+    ),
+    "py.duplicate_modules": (
+        "PropagateTargets folds the first target's id onto the second "
+        "(sphinx: <target ids='module-0 module-dupmod'>) — propagation-"
+        "visible; the module-0 serial registration is pinned by the Rust "
+        "unit test duplicate_modules_take_the_module_0_serial in "
+        "src/rst/block.rs instead [PY §5]"
+    ),
+    # -- T6 documented divergence: retann ending in ')' --
+    "py.function_greedy_retann": (
+        "f(x) -> (int, str): py_sig_re swallows the parenthesized retann "
+        "into the arglist; sphinx's def-wrapped grammar then treats the "
+        "stray ')' as closing the def and KEEPS params [x], our arglist "
+        "grammar rejects it (silent Syntax) and pseudo-parses — documented "
+        "T6 deviation 2, node-shape divergence"
+    ),
+    # -- T5 documented conservative divergences (src/py/arglist.rs module
+    #    docs): expression forms outside the task-3 unparser subset --
+    "py.function_default_complex": (
+        "f(x=1 + 2j): complex literals are outside the task-3 expression "
+        "subset -> Err(Syntax) -> pseudo fallback renders the raw text "
+        "where sphinx ast_unparse renders '1 + 2j' — TEXTUAL divergence "
+        "(T5 report)"
+    ),
+    "py.function_default_exotic_exprs": (
+        "lambda / comparison / slice / f-string / dict-unpack defaults: "
+        "sphinx renders (or warns via NotImplementedError/ValueError) "
+        "where our expression parser errs silently into the pseudo "
+        "fallback — silent-vs-warn + shape divergence (T5 report)"
+    ),
+    # -- T3 documented conservative divergences (src/py/expr.rs) --
+    "py.function_default_exotic_strings": (
+        r"\N{...} escapes and lone-surrogate \u escapes in string "
+        "defaults: unsupported by the task-3 unparser -> Err -> pseudo "
+        "fallback (T3 report)"
+    ),
+    "py.function_sig_complexity_budget": (
+        "expressions beyond the 200-node MAX_DEPTH complexity budget err "
+        "into the fallback where CPython/sphinx succeed (T3 review fix 2)"
+    ),
+    # -- real sphinx crashes: nothing to record --
+    "sx_std.confval_bad_type_markup": (
+        ".. confval:: t + :type: *bad — the one-child system_message "
+        "inside the generated field_list CRASHES sphinx 9.1.0 "
+        "(DocFieldTransformer 'assert len(field) == 2'); no oracle output "
+        "exists by definition (T7 report)"
+    ),
+}
+
+
+def make_app(base: Path, conf: dict) -> SphinxTestApp:
     if base.exists():
         shutil.rmtree(base)
     base.mkdir(parents=True)
     (base / "conf.py").write_text(CONF_PY, encoding="utf-8")
     (base / "index.rst").write_text("Placeholder\n===========\n", encoding="utf-8")
+    assert not (set(conf) & set(CONFOVERRIDES)), (
+        f"per-case conf must not override the fixture base settings: {conf}"
+    )
     return SphinxTestApp(
         buildername="dummy",
         srcdir=base,
         status=io.StringIO(),
         warning=io.StringIO(),
-        confoverrides=dict(CONFOVERRIDES),
+        confoverrides={**CONFOVERRIDES, **conf},
     )
 
 
@@ -669,10 +753,23 @@ def check_effective_settings(app: SphinxTestApp, doctree) -> dict:
     return effective
 
 
+def case_parts(case):
+    """A case tuple is (family, name, rst[, conf]); absent conf = defaults."""
+    family, name, rst = case[0], case[1], case[2]
+    conf = case[3] if len(case) == 4 else {}
+    assert isinstance(conf, dict), f"{family}.{name}: conf must be a dict"
+    return family, name, rst, conf
+
+
 def main() -> int:
-    names = [f"{family}.{name}" for family, name, _ in CASES]
+    names = [f"{c[0]}.{c[1]}" for c in CASES]
     assert len(names) == len(set(names)), "family-qualified case names must be unique"
     assert len(CASES) >= 40, f"corpus degenerated: {len(CASES)} cases"
+
+    for reason in EXCLUDED.values():
+        assert reason.strip(), "every exclusion entry needs its reason"
+    hit = set(names) & set(EXCLUDED)
+    assert not hit, f"excluded cases must not join the corpus: {sorted(hit)}"
 
     floors = {
         "sx_plain": 15,
@@ -684,60 +781,85 @@ def main() -> int:
         "sx_std": 12,
     }
     counts: dict = {}
-    for family, _, _ in CASES:
-        counts[family] = counts.get(family, 0) + 1
+    for case in CASES:
+        counts[case[0]] = counts.get(case[0], 0) + 1
     assert set(counts) == set(floors), f"unexpected families: {sorted(counts)}"
     for family, floor in floors.items():
         assert counts.get(family, 0) >= floor, (
             f"family {family}: {counts.get(family, 0)} < floor {floor}"
         )
 
-    # resolve(): on macOS mkdtemp returns /var/... while Sphinx resolves the
-    # srcdir to /private/var/...; the path-normalization replace must match.
-    base = Path(tempfile.mkdtemp(prefix="sphinx_oracle_srcdir_")).resolve() / "src"
+    # Group cases by DISTINCT conf: one SphinxTestApp per group (mirrors the
+    # [SIG] appendix probe scripts without spinning one app per case). The
+    # default group ({}) always exists and provides the settings header.
+    groups: dict = {}  # conf_key -> (conf, [(family, name, rst), ...])
+    for case in CASES:
+        family, name, rst, conf = case_parts(case)
+        key = json.dumps(conf, sort_keys=True)
+        groups.setdefault(key, (conf, []))[1].append((family, name, rst))
+    assert "{}" in groups, "the default-conf group must exist"
 
-    with docutils_namespace(), patch_docutils(str(base)):
-        app = make_app(base)
-        try:
-            settings_record = check_effective_settings(app, probe(app, base, "sanity\n"))
+    settings_record = None
+    results: dict = {}  # "family.name" -> case record
+    bad = []
+    for key in sorted(groups, key=lambda k: (k != "{}", k)):
+        conf, group_cases = groups[key]
+        # resolve(): on macOS mkdtemp returns /var/... while Sphinx resolves
+        # the srcdir to /private/var/...; path normalization must match.
+        base = Path(tempfile.mkdtemp(prefix="sphinx_oracle_srcdir_")).resolve() / "src"
+        with docutils_namespace(), patch_docutils(str(base)):
+            app = make_app(base, conf)
+            try:
+                # The base settings assertions hold for EVERY app: per-case
+                # conf keys never touch the pinned docutils settings.
+                record = check_effective_settings(app, probe(app, base, "sanity\n"))
+                if key == "{}":
+                    settings_record = record
 
-            out_cases = []
-            bad = []
-            for family, name, rst in CASES:
-                doctree = probe(app, base, rst)
-                stray = {node.tagname for node in doctree.findall()} - SUPPORTED_KINDS
-                if stray:
-                    bad.append(f"{family}.{name}: unsupported kinds {sorted(stray)}")
-                    continue
-                pseudo = normalize(doctree.pformat(), base)
-                assert pseudo.startswith(f'<document source="{SOURCE_TOKEN}">\n'), (
-                    f"{family}.{name}: unexpected document start tag:\n{pseudo}"
-                )
-                out_cases.append(
-                    {
+                for family, name, rst in group_cases:
+                    doctree = probe(app, base, rst)
+                    stray = {n.tagname for n in doctree.findall()} - SUPPORTED_KINDS
+                    if stray:
+                        bad.append(f"{family}.{name}: unsupported kinds {sorted(stray)}")
+                        continue
+                    pseudo = normalize(doctree.pformat(), base)
+                    assert pseudo.startswith(f'<document source="{SOURCE_TOKEN}">\n'), (
+                        f"{family}.{name}: unexpected document start tag:\n{pseudo}"
+                    )
+                    record_case = {
                         "name": f"{family}.{name}",
                         "family": family,
                         "rst": rst,
                         "pseudo_xml": pseudo,
                     }
-                )
-            if bad:
-                print("CORPUS SCOPE VIOLATIONS:", file=sys.stderr)
-                for b in bad:
-                    print(f"  {b}", file=sys.stderr)
-                return 1
+                    if conf:
+                        record_case["conf"] = conf
+                    results[f"{family}.{name}"] = record_case
 
-            # In-process determinism check: a second full pass over the corpus
-            # must be byte-identical (catches cross-case env leakage).
-            for case in out_cases:
-                again = normalize(probe(app, base, case["rst"]).pformat(), base)
-                assert again == case["pseudo_xml"], (
-                    f"{case['name']}: second parse differs (cross-case state leak?)\n"
-                    f"--- first ---\n{case['pseudo_xml']}\n--- second ---\n{again}"
-                )
-        finally:
-            app.cleanup()
-            shutil.rmtree(base.parent, ignore_errors=True)
+                # In-process determinism check: a second pass over the group
+                # must be byte-identical (catches cross-case env leakage).
+                for family, name, rst in group_cases:
+                    case_name = f"{family}.{name}"
+                    if case_name not in results:
+                        continue  # scope violation above
+                    again = normalize(probe(app, base, rst).pformat(), base)
+                    assert again == results[case_name]["pseudo_xml"], (
+                        f"{case_name}: second parse differs (cross-case state "
+                        f"leak?)\n--- first ---\n{results[case_name]['pseudo_xml']}"
+                        f"\n--- second ---\n{again}"
+                    )
+            finally:
+                app.cleanup()
+                shutil.rmtree(base.parent, ignore_errors=True)
+
+    if bad:
+        print("CORPUS SCOPE VIOLATIONS:", file=sys.stderr)
+        for b in bad:
+            print(f"  {b}", file=sys.stderr)
+        return 1
+
+    # Emit in CASES order regardless of the conf grouping above.
+    out_cases = [results[name] for name in names]
 
     fixture = {
         "docutils_version": docutils.__version__,
@@ -749,6 +871,11 @@ def main() -> int:
             "full dummy-builder build + env.get_doctree)"
         ),
         "settings": settings_record,
+        "conf_semantics": (
+            "a case's optional 'conf' dict is confoverrides applied on top "
+            "of the base settings above; absent = defaults. The consumer "
+            "maps every key onto ParseOptions.py and errors on unmapped keys."
+        ),
         "normalizations": [
             f"srcdir index.rst absolute path -> {SOURCE_TOKEN}",
             "document translation_progress attribute stripped "
