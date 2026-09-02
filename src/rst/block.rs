@@ -756,8 +756,8 @@ impl BlockParser {
             if let Some(start) = section {
                 self.open_section(start, &mut root, &mut stack);
             }
-            // A directive just asked for new lines at the cursor (T12's
-            // include; only a test directive this wave).
+            // A directive just asked for new lines at the cursor (the
+            // `include` directive's insert mode).
             if let Some(request) = self.pending_splice.take() {
                 self.apply_splice(&mut lines, pos, request);
             }
@@ -3787,8 +3787,20 @@ impl BlockParser {
                     _ => 1,
                 };
                 let text = text.strip_suffix('\n').unwrap_or(&text);
+                // Unlike :code: mode, literal mode sizes the number
+                // column from the REAL line count (`lastline = firstline
+                // + len(text.splitlines())`, `misc.py:173-176`).
+                //
+                // Nano-edge, accepted: the rendered lines come from
+                // `split('\n')` while docutils' count uses `splitlines()`
+                // — for text containing a bare `\v`/`\f`/NEL/LS/PS the
+                // two disagree (splitlines splits there, '\n'.split does
+                // not), so the width could differ by a line or two. Those
+                // characters survive into literal text only via decode
+                // (no string2lines pass here); not worth modeling.
                 let code_lines: Vec<String> = text.split('\n').map(String::from).collect();
-                push_number_lines(&mut node, &code_lines, firstline, input.span);
+                let content_len = code_lines.len();
+                push_number_lines(&mut node, &code_lines, firstline, content_len, input.span);
             }
             None => node.children.push(Node::text_node(text, input.span)),
         }
@@ -3836,7 +3848,12 @@ impl BlockParser {
             rawsource: input.rawsource,
         };
         let code_lines: Vec<String> = text.split('\n').map(String::from).collect();
-        self.run_code_with_lines(&sub_input, code_lines, Some(display), out);
+        // `content_len` = 1: docutils hands CodeBlock the whole file as a
+        // SINGLE content element (`[text.removesuffix('\n')]`,
+        // `misc.py:187-205`), so `body.py:194`'s `endline = startline +
+        // len(self.content)` is `startline + 1` and the number column
+        // comes out ragged. Faithful quirk — see [`push_number_lines`].
+        self.run_code_with_lines(&sub_input, code_lines, Some(display), 1, out);
     }
 
     /// `.. program::` (`domains/std/__init__.py:333-348`): pure
@@ -6594,18 +6611,26 @@ impl BlockParser {
             .iter()
             .map(|l| self.sources.line_text(*l).to_string())
             .collect();
-        self.run_code_with_lines(&input, code_lines, None, out);
+        // The directive's own content is one list element per line, so
+        // `len(self.content)` is the real line count here.
+        let content_len = code_lines.len();
+        self.run_code_with_lines(&input, code_lines, None, content_len, out);
     }
 
     /// The `code` node construction shared by the directive itself and the
     /// `include` directive's `:code:` mode (which passes its file text as
     /// the lines and its path as the `source` attribute —
     /// `CodeBlock.run`'s "if called from include" branch).
+    ///
+    /// `content_len` is docutils' `len(self.content)` — the number of
+    /// content LIST ELEMENTS, which sizes the `number-lines` column (see
+    /// [`push_number_lines`]; the include-called path passes 1).
     fn run_code_with_lines(
         &mut self,
         input: &DirectiveInput<'_>,
         code_lines: Vec<String>,
         source_attr: Option<&str>,
+        content_len: usize,
         out: &mut Vec<Node>,
     ) {
         if !input.arguments.is_empty() {
@@ -6651,7 +6676,9 @@ impl BlockParser {
         }
         node.set("xml:space", AttrValue::Str("preserve".to_string()));
         match number_lines {
-            Some(start) => push_number_lines(&mut node, &code_lines, start, input.span),
+            Some(start) => {
+                push_number_lines(&mut node, &code_lines, start, content_len, input.span)
+            }
             None => {
                 node.children
                     .push(Node::text_node(code_lines.join("\n"), input.span));
@@ -9845,9 +9872,23 @@ fn py_utf8_error_text(bytes: &[u8], error: std::str::Utf8Error) -> String {
 }
 
 /// NumberLines (docutils/utils/code_analyzer.py): a padded 'ln' inline
-/// before every line; the number width comes from the last line's number.
-fn push_number_lines(node: &mut Node, code_lines: &[String], start: i64, span: Span) {
-    let endline = start.saturating_add(code_lines.len() as i64);
+/// before every line. The number-column width comes from
+/// `start + content_len` — docutils computes `endline = startline +
+/// len(self.content)` (`body.py:194`), where `content_len` is the number
+/// of CONTENT LIST ELEMENTS the caller received, not necessarily the
+/// number of rendered lines: the include-called CodeBlock gets its whole
+/// file as ONE element (`[text.removesuffix('\n')]`, `misc.py:187-205`),
+/// so its column is sized for `start + 1` and comes out ragged
+/// (probe-pinned: a 12-line `:code:` `:number-lines:` include renders
+/// `1 `…`9 `, `10 ` with no padding). Faithful bug, reproduced.
+fn push_number_lines(
+    node: &mut Node,
+    code_lines: &[String],
+    start: i64,
+    content_len: usize,
+    span: Span,
+) {
+    let endline = start.saturating_add(content_len as i64);
     let width = endline.to_string().len();
     for (i, line) in code_lines.iter().enumerate() {
         let lineno = start.saturating_add(i as i64);
@@ -15384,6 +15425,84 @@ mod include_tests {
             pf.contains("<inline classes=\"ln\">\n            5 \n"),
             "{pf}"
         );
+    }
+
+    /// The include-called CodeBlock receives its whole file as ONE
+    /// content element (`[text.removesuffix('\n')]`, misc.py:187-205), so
+    /// body.py:194's `endline = startline + len(self.content)` is
+    /// `startline + 1` and the number column is sized for THAT — probed
+    /// verbatim against docutils 0.22.4 this session: a 12-line file with
+    /// a bare `:number-lines:` renders `1 `..`9 `, then `10 `..`12 ` with
+    /// no padding (ragged width-1 column), where the plain `code`
+    /// directive over the same 12 lines pads to width 2 (` 1 `).
+    #[test]
+    fn code_mode_number_column_width_comes_from_the_single_content_element() {
+        let tmp = tempfile::tempdir().unwrap();
+        let twelve: String = (1..=12).map(|i| format!("line{i}\n")).collect();
+        write(tmp.path(), "inc.rst", &twelve);
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :code:\n   :number-lines:\n",
+        );
+        let pf = tree.root.pformat();
+        // endline = 1 + 1 = 2 -> width 1: no padding anywhere, even for
+        // the two-digit numbers.
+        for n in [1, 9, 10, 12] {
+            assert!(
+                pf.contains(&format!("<inline classes=\"ln\">\n            {n} \n")),
+                "{pf}"
+            );
+        }
+        assert!(
+            !pf.contains("\n             1 \n"),
+            "a width-2 padded column would be the real-count shape: {pf}"
+        );
+
+        // Contrast case crossing the digit boundary the other way:
+        // 3 lines from 8 -> endline = 8 + 1 = 9 -> width 1 ("8 ", "9 ",
+        // "10 "), where :literal: (real count: lastline 11) pads to
+        // width 2 (" 8 ") — probed verbatim.
+        let tmp2 = tempfile::tempdir().unwrap();
+        write(tmp2.path(), "inc.rst", "L1\nL2\nL3\n");
+        let code = parse_sphinx(
+            tmp2.path(),
+            "main",
+            ".. include:: inc.rst\n   :code:\n   :number-lines: 8\n",
+        )
+        .root
+        .pformat();
+        for n in [8, 9, 10] {
+            assert!(
+                code.contains(&format!("<inline classes=\"ln\">\n            {n} \n")),
+                "{code}"
+            );
+        }
+        assert!(!code.contains("\n             8 \n"), "{code}");
+    }
+
+    /// The include log is document-level state: an include running inside
+    /// a DETACHED sub-parse (a csv-table cell) must still see the outer
+    /// open inclusion, so circularity is detected across the boundary.
+    #[test]
+    fn circularity_is_detected_across_a_detached_parse_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.rst",
+            "in a\n\n.. csv-table::\n\n   \".. include:: a.rst\"\n",
+        );
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: a.rst\n");
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1, "{}", tree.root.pformat());
+        assert_eq!(msgs[0].0, 2);
+        assert_eq!(
+            msgs[0].3, "circular inclusion in \"include\" directive:\na.rst\n> a.rst\n> main.rst",
+            "the cell's sub-parser saw the outer log entry"
+        );
+        // ...and the log transferred back out: the outer marker still
+        // pops cleanly, so a sequential re-include stays legal.
+        assert_eq!(paragraphs_of(&tree), vec!["in a".to_string()]);
     }
 
     #[test]
