@@ -71,6 +71,15 @@ fails (assertion) if any occurrence of the raw srcdir path survives. Both the
 as-returned `mkdtemp()` path and its `.resolve()`d form are checked (macOS
 resolves `/var/...` to `/private/var/...`; Sphinx internally uses the
 resolved form, per the same gotcha documented in gen_sphinx_fixture.py).
+Since wave 4.5 (plan Scope-8) the CWD-RELATIVE spelling of the srcdir is
+replaced too: docutils' `adapt_path` spells every path of *included* content
+relative to the process cwd (node `source` attrs, circular-inclusion chain
+bodies, SEVERE error texts, the double-parse warning duplicates), which is
+environment-dependent in exactly the way the absolute path is. The consumer
+(tests/env_differential.rs) applies the mirror normalization to sphinx-ultra's
+own srcdir-relative spellings by collapsing `<project>/` on both sides of the
+warning and resolved-pformat comparisons, making "srcdir-relative" the
+canonical spelling for both.
 
 Value shapes: Python `tuple`s (relations entries excepted, which are already
 plain lists) are converted to JSON lists; `set`s (`files_to_rebuild` values)
@@ -91,6 +100,7 @@ Never remove or rename an existing project name; later tasks only extend.
 
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -133,7 +143,13 @@ CONF_PY = (
 # ---------------------------------------------------------------------------
 # Corpus: one project per axis. `conf` holds extra confoverrides merged over
 # BASE_CONFOVERRIDES; `files` maps docname -> rst source (nested docnames
-# like "sub/b" get written to sub/b.rst).
+# like "sub/b" get written to sub/b.rst). An optional `data_files` map
+# (relative path -> literal text) ships non-document members -- the .py /
+# .inc / .png files the include and literalinclude projects read. Data
+# files must NOT use the .rst/.md/.txt suffixes: sphinx-ultra's discovery
+# is wider than Sphinx's default `source_suffix` (it also admits .md and
+# .txt), so a .txt member would become a document on one side only and the
+# resolved-document key sets would diverge by construction.
 # ---------------------------------------------------------------------------
 
 PROJECTS = [
@@ -687,19 +703,42 @@ Leaf content for sub/c.
 ]
 
 
-def write_project_files(base: Path, files: dict) -> None:
+def write_project_files(base: Path, files: dict, data_files: dict) -> None:
     for docname, text in files.items():
         path = base / f"{docname}.rst"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    for relpath, text in data_files.items():
+        path = base / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def srcdir_spellings(base: Path) -> list:
+    """Every spelling of the srcdir that can leak into captured text.
+
+    Absolute forms (raw + resolved) plus the CWD-RELATIVE forms (Scope-8):
+    docutils' `adapt_path` (`utils.relative_path(None, path)`) spells the
+    paths of included content relative to `os.getcwd()`, so an include
+    project's warnings, chain bodies and node `source` attributes carry a
+    `../../..`-style prefix down into the tmp srcdir. Longest-first so an
+    overlapping pair (`/var/...` inside macOS's resolved `/private/var/...`)
+    cannot leave a mangled half-replacement behind.
+    """
+    forms = {
+        str(base),
+        str(base.resolve()),
+        os.path.relpath(str(base)),
+        os.path.relpath(str(base.resolve())),
+    }
+    return sorted(forms, key=len, reverse=True)
 
 
 def normalize(text: str, base: Path) -> str:
-    for form in {str(base), str(base.resolve())}:
+    for form in srcdir_spellings(base):
         text = text.replace(form, SOURCE_TOKEN)
-    assert str(base) not in text and str(base.resolve()) not in text, (
-        f"srcdir path leaked into captured text:\n{text}"
-    )
+    for form in srcdir_spellings(base):
+        assert form not in text, f"srcdir path leaked into captured text:\n{text}"
     return text
 
 
@@ -753,6 +792,92 @@ def dump_std(env) -> dict:
     }
 
 
+def dump_py(env) -> tuple:
+    """`domaindata['py']` as record lists, in REGISTRATION order.
+
+    The dict insertion order IS oracle data: `PythonDomain.objects` /
+    `.modules` iterate in registration order and the fuzzy resolution pass
+    (`find_obj` searchmode 1) takes the first match, so these lists must not
+    be sorted. Field names follow the `ObjectEntry` / `ModuleEntry`
+    NamedTuples (`sphinx/domains/python/__init__.py`).
+    """
+    data = env.domaindata.get("py", {})
+    py_objects = [
+        {
+            "name": name,
+            "docname": entry.docname,
+            "node_id": entry.node_id,
+            "objtype": entry.objtype,
+            "aliased": entry.aliased,
+        }
+        for name, entry in data.get("objects", {}).items()
+    ]
+    py_modules = [
+        {
+            "name": name,
+            "docname": entry.docname,
+            "node_id": entry.node_id,
+            "synopsis": entry.synopsis,
+            "platform": entry.platform,
+            "deprecated": entry.deprecated,
+        }
+        for name, entry in data.get("modules", {}).items()
+    ]
+    return py_objects, py_modules
+
+
+def dump_py_modindex(env) -> dict:
+    """`PythonModuleIndex(py_domain).generate()` -> `(content, collapse)`,
+    the exact tuples the py-modindex page is rendered from. Entries are the
+    7-field `IndexEntry` NamedTuple (`sphinx/domains/_index.py`)."""
+    from sphinx.domains.python import PythonModuleIndex
+
+    content, collapse = PythonModuleIndex(env.get_domain("py")).generate()
+    return {
+        "collapse": collapse,
+        "groups": [
+            {
+                "letter": letter,
+                "entries": [
+                    {
+                        "name": entry.name,
+                        "subtype": entry.subtype,
+                        "docname": entry.docname,
+                        "anchor": entry.anchor,
+                        "extra": str(entry.extra),
+                        "qualifier": str(entry.qualifier),
+                        "descr": str(entry.descr),
+                    }
+                    for entry in entries
+                ],
+            }
+            for letter, entries in content
+        ],
+    }
+
+
+def dump_dependencies(env, base: Path) -> dict:
+    """`env.dependencies` -- absolute `_StrPath`s under the srcdir,
+    normalized to `<project>/...` and sorted. Only documents that actually
+    have dependencies get an entry (Sphinx's defaultdict never holds an
+    empty set after `clear_doc`)."""
+    return {
+        docname: sorted(normalize(str(dep), base) for dep in deps)
+        for docname, deps in sorted(env.dependencies.items())
+        if deps
+    }
+
+
+def dump_included(env) -> dict:
+    """`env.included` -- docname -> the docnames it textually includes
+    (`note_included`), values sorted for a deterministic fixture."""
+    return {
+        docname: sorted(str(doc) for doc in docs)
+        for docname, docs in sorted(env.included.items())
+        if docs
+    }
+
+
 def dump_index_entries(env) -> dict:
     entries = env.domaindata.get("index", {}).get("entries", {})
     return {
@@ -785,7 +910,7 @@ def build_project(entry: dict) -> dict:
     base = Path(tempfile.mkdtemp(prefix="env_oracle_srcdir_")).resolve() / "src"
     base.mkdir(parents=True)
     (base / "conf.py").write_text(CONF_PY, encoding="utf-8")
-    write_project_files(base, entry["files"])
+    write_project_files(base, entry["files"], entry.get("data_files", {}))
 
     confoverrides = {**BASE_CONFOVERRIDES, **entry.get("conf", {})}
 
@@ -848,6 +973,7 @@ def build_project(entry: dict) -> dict:
                 docname: normalize(text, base)
                 for docname, text in resolved_raw.items()
             }
+            py_objects, py_modules = dump_py(env)
 
             expect = {
                 "toctree_includes": dict(env.toctree_includes),
@@ -876,6 +1002,11 @@ def build_project(entry: dict) -> dict:
                 "std": dump_std(env),
                 "index_entries": dump_index_entries(env),
                 "genindex": dump_genindex(genindex),
+                "py_objects": py_objects,
+                "py_modules": py_modules,
+                "py_modindex": dump_py_modindex(env),
+                "dependencies": dump_dependencies(env, base),
+                "included": dump_included(env),
                 "resolved_pformat": resolved_pformat,
                 "warnings": warnings,
             }
@@ -883,12 +1014,15 @@ def build_project(entry: dict) -> dict:
             app.cleanup()
             shutil.rmtree(base.parent, ignore_errors=True)
 
-    return {
+    out = {
         "name": entry["name"],
         "conf": confoverrides,
         "files": entry["files"],
         "expect": expect,
     }
+    if entry.get("data_files"):
+        out["data_files"] = entry["data_files"]
+    return out
 
 
 def generate_all() -> dict:

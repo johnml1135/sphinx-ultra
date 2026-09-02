@@ -65,6 +65,13 @@ pub struct Project {
     /// docname -> rst source. Nested docnames (e.g. "sub/b") map to
     /// "sub/b.rst" when materialized.
     pub files: BTreeMap<String, String>,
+    /// relative path -> literal text of a non-document member (the `.py` /
+    /// `.inc` / `.png` files the include and literalinclude projects read),
+    /// written verbatim beside the sources. Never `.rst`/`.md`/`.txt`: this
+    /// crate's discovery is wider than Sphinx's default `source_suffix`, so
+    /// a `.txt` member would become a document on our side only.
+    #[serde(default)]
+    pub data_files: BTreeMap<String, String>,
     pub expect: Expect,
 }
 
@@ -87,8 +94,67 @@ pub struct Expect {
     /// docname -> list of (entry_type, value, target_id, main, category_key).
     pub index_entries: BTreeMap<String, Vec<IndexEntryTuple>>,
     pub genindex: Vec<GenIndexGroup>,
+    /// `domaindata['py']['objects']` as records in REGISTRATION order —
+    /// the order is oracle data (Sphinx's fuzzy resolution iterates it),
+    /// so unlike the std lists it is never sorted on either side.
+    pub py_objects: Vec<PyObjectExpect>,
+    /// `domaindata['py']['modules']`, registration-ordered like
+    /// [`Self::py_objects`].
+    pub py_modules: Vec<PyModuleExpect>,
+    /// `PythonModuleIndex(py_domain).generate()` — the exact
+    /// `(content, collapse)` tuples the py-modindex page renders.
+    pub py_modindex: PyModindexExpect,
+    /// `env.dependencies`: docname -> the files the document is built from
+    /// besides its own source, `<project>`-normalized and sorted. Only
+    /// documents with dependencies appear.
+    pub dependencies: BTreeMap<String, Vec<String>>,
+    /// `env.included`: docname -> the docnames it textually includes
+    /// (`note_included`), values sorted.
+    pub included: BTreeMap<String, Vec<String>>,
     pub resolved_pformat: BTreeMap<String, String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Debug, PartialEq, Eq)]
+pub struct PyObjectExpect {
+    pub name: String,
+    pub docname: String,
+    pub node_id: String,
+    pub objtype: String,
+    pub aliased: bool,
+}
+
+#[derive(serde::Deserialize, Debug, PartialEq, Eq)]
+pub struct PyModuleExpect {
+    pub name: String,
+    pub docname: String,
+    pub node_id: String,
+    pub synopsis: String,
+    pub platform: String,
+    pub deprecated: bool,
+}
+
+#[derive(serde::Deserialize, Debug, PartialEq, Eq)]
+pub struct PyModindexExpect {
+    pub collapse: bool,
+    pub groups: Vec<PyModindexGroup>,
+}
+
+#[derive(serde::Deserialize, Debug, PartialEq, Eq)]
+pub struct PyModindexGroup {
+    pub letter: String,
+    pub entries: Vec<PyModindexEntry>,
+}
+
+#[derive(serde::Deserialize, Debug, PartialEq, Eq)]
+pub struct PyModindexEntry {
+    pub name: String,
+    pub subtype: u8,
+    pub docname: String,
+    pub anchor: String,
+    pub extra: String,
+    pub qualifier: String,
+    pub descr: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -207,6 +273,26 @@ fn normalize_source_paths(rendered: &str, root: &str) -> String {
     out
 }
 
+/// §Scope-8 canonicalization, applied to BOTH sides of the `warnings` and
+/// `resolved_pformat` comparisons: collapse the `<project>/` prefix so the
+/// canonical spelling of every in-srcdir path is srcdir-relative.
+///
+/// Sphinx spells the paths of *included* content cwd-relative (docutils'
+/// `adapt_path`) and everything else absolute; this crate deliberately
+/// spells included-content provenance srcdir-relative (node `source`
+/// attrs, circular-inclusion chains, SEVERE error texts, in-include
+/// warning locations — see `resolve_include_target` in src/rst/block.rs)
+/// and everything else absolute. The generator already rewrites both
+/// sphinx spellings to `<project>/...`; collapsing the token here maps our
+/// absolute spellings AND sphinx's onto the same srcdir-relative form the
+/// srcdir-relative spellings already use. Because the same transformation
+/// runs on both sides, the only divergence class it can mask is
+/// prefix-presence itself — exactly the class §Scope-8 sanctions; any
+/// difference in the path *below* the srcdir still diverges.
+fn canon_scope8(text: &str) -> String {
+    text.replace(concat!("<project>", "/"), "")
+}
+
 /// [`normalize_source_paths`] over a build's rendered warnings.
 fn normalize_warnings(warnings: &[BuildWarning], root: &str) -> Vec<String> {
     warnings
@@ -263,6 +349,13 @@ fn build_project(project: &Project) -> Built {
 
     for (docname, body) in &project.files {
         let path = source_dir.join(format!("{docname}.rst"));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, body).unwrap();
+    }
+    for (relpath, body) in &project.data_files {
+        let path = source_dir.join(relpath);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -335,17 +428,38 @@ fn config_of(project: &Project) -> BuildConfig {
 
 /// One conf value rendered as the string a `-D` override carries.
 ///
-/// A `-D` value is a single scalar, so a list-valued (or nested, or null)
-/// conf entry has no faithful spelling here: stringifying it would hand
+/// A `-D` value is a single scalar, so most non-scalar (nested, or null)
+/// conf entries have no faithful spelling here: stringifying one would hand
 /// `apply_override` something like `["a","b"]`, which its `Value::Array`
 /// arm cheerfully splits on commas into `["[\"a\"", "\"b\"]"]` and stores
 /// — a silently *differently* configured build compared against the
-/// oracle. Rejected outright instead, naming the key, so a future fixture
-/// project carrying such a value fails here rather than diverging quietly.
+/// oracle. The one expressible non-scalar is an array of comma-free
+/// strings (`modindex_common_prefix = ['pkg.']`): `apply_override` splits
+/// the `-D` value on commas, so joining the elements with commas round-trips
+/// exactly — asserted per element, because an element *containing* a comma
+/// would silently split into two (the divergence the paragraph above
+/// guards against). Everything else is rejected outright, naming the key,
+/// so a future fixture project carrying such a value fails here rather
+/// than diverging quietly.
 fn scalar_override(project: &str, key: &str, value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => text.clone(),
         serde_json::Value::Bool(_) | serde_json::Value::Number(_) => value.to_string(),
+        serde_json::Value::Array(items) => {
+            let elements: Vec<&str> = items
+                .iter()
+                .map(|item| match item {
+                    serde_json::Value::String(text) if !text.contains(',') => text.as_str(),
+                    other => panic!(
+                        "project {project:?}: conf key {key:?} has array element {other}, \
+                         which the comma-joined -D form cannot carry faithfully (only \
+                         comma-free strings round-trip through apply_override's \
+                         comma-split)"
+                    ),
+                })
+                .collect();
+            elements.join(",")
+        }
         other => panic!(
             "project {project:?}: conf key {key:?} has the non-scalar value {other}, which \
              -D cannot express — teach the harness to apply it (or prove it inert and add \
@@ -611,6 +725,44 @@ fn source_paths_normalize_across_separators() {
     );
 }
 
+/// The one non-scalar `-D` form the harness can express: an array of
+/// comma-free strings renders comma-joined, which `apply_override`'s
+/// comma-split turns back into exactly the same elements. Scalars render as
+/// before; an element carrying a comma would silently split into two, so it
+/// panics instead (pinned via the round-trip's behavior being asserted, not
+/// via `should_panic` — the panic message names the key).
+#[test]
+fn conf_arrays_of_comma_free_strings_render_as_the_comma_joined_override() {
+    assert_eq!(
+        scalar_override("p", "modindex_common_prefix", &serde_json::json!(["pkg."])),
+        "pkg."
+    );
+    assert_eq!(
+        scalar_override(
+            "p",
+            "modindex_common_prefix",
+            &serde_json::json!(["a.", "b."])
+        ),
+        "a.,b."
+    );
+    // And the round trip through the real override machinery lands the
+    // exact elements, which is the property the comma-free assert protects.
+    let mut config = BuildConfig::default();
+    config
+        .apply_override("modindex_common_prefix", "a.,b.")
+        .unwrap();
+    assert_eq!(config.modindex_common_prefix, vec!["a.", "b."]);
+
+    assert_eq!(
+        scalar_override("p", "nitpicky", &serde_json::json!(true)),
+        "true"
+    );
+    assert_eq!(
+        scalar_override("p", "numfig_secnum_depth", &serde_json::json!(2)),
+        "2"
+    );
+}
+
 #[test]
 fn fixture_loads_and_meets_floor() {
     let fixture = load_fixture();
@@ -809,8 +961,20 @@ fn warnings_match_oracle() {
     let mut visited_gaps: Vec<&str> = Vec::new();
 
     for project in &fixture.projects {
-        let actual = &built_of(project).warnings;
-        let matches = *actual == project.expect.warnings;
+        // Both sides pass through the §Scope-8 canonicalization; see
+        // [`canon_scope8`] for why this is comparison-preserving.
+        let actual: Vec<String> = built_of(project)
+            .warnings
+            .iter()
+            .map(|warning| canon_scope8(warning))
+            .collect();
+        let expected: Vec<String> = project
+            .expect
+            .warnings
+            .iter()
+            .map(|warning| canon_scope8(warning))
+            .collect();
+        let matches = actual == expected;
 
         match known_warning_gap(&project.name) {
             Some(why) => {
@@ -823,8 +987,8 @@ fn warnings_match_oracle() {
                 );
             }
             None if !matches => divergences.push(format!(
-                "[{}] warnings\n  expected: {:#?}\n  actual:   {actual:#?}",
-                project.name, project.expect.warnings
+                "[{}] warnings\n  expected: {expected:#?}\n  actual:   {actual:#?}",
+                project.name
             )),
             None => {}
         }
@@ -1008,6 +1172,91 @@ fn index_and_genindex_match_oracle() {
     report(&divergences, "index_entries, genindex");
 }
 
+// ---------------------------------------------------------------------------
+// Live: wave-4.5 task 14 keys
+// ---------------------------------------------------------------------------
+
+/// `env.domaindata['py']` — objects and modules as registration-ordered
+/// record lists — and the py-modindex `PythonModuleIndex.generate()`
+/// derives from them. The record ORDER is part of the comparison: Sphinx's
+/// fuzzy resolution pass iterates the registry in insertion order and takes
+/// the first match, so a re-sorted registry would resolve differently.
+#[test]
+fn py_domain_registries_and_modindex_match_oracle() {
+    let fixture = load_fixture();
+    let mut divergences = Vec::new();
+
+    for project in &fixture.projects {
+        let env = env_of(project);
+
+        let objects: Vec<PyObjectExpect> = snapshot_field(env, "py_objects");
+        if objects != project.expect.py_objects {
+            divergences.push(format!(
+                "[{}] py_objects\n  expected: {:#?}\n  actual:   {objects:#?}",
+                project.name, project.expect.py_objects
+            ));
+        }
+
+        let modules: Vec<PyModuleExpect> = snapshot_field(env, "py_modules");
+        if modules != project.expect.py_modules {
+            divergences.push(format!(
+                "[{}] py_modules\n  expected: {:#?}\n  actual:   {modules:#?}",
+                project.name, project.expect.py_modules
+            ));
+        }
+
+        let modindex: PyModindexExpect = snapshot_field(env, "py_modindex");
+        if modindex != project.expect.py_modindex {
+            divergences.push(format!(
+                "[{}] py_modindex\n  expected: {:#?}\n  actual:   {modindex:#?}",
+                project.name, project.expect.py_modindex
+            ));
+        }
+    }
+
+    report(&divergences, "py_objects, py_modules, py_modindex");
+}
+
+/// `env.dependencies` and `env.included` — which files each document is
+/// built from besides its own source, and which documents each document
+/// textually includes.
+///
+/// Dependency paths are compared `<project>`-normalized. The value lists
+/// are order-insensitive on both sides (the oracle sorts normalized
+/// strings, this side's `BTreeSet<PathBuf>` sorts by component), so ours
+/// are re-sorted as strings before the comparison — set membership, not
+/// ordering, is the oracle data here.
+#[test]
+fn dependencies_and_included_match_oracle() {
+    let fixture = load_fixture();
+    let mut divergences = Vec::new();
+
+    for project in &fixture.projects {
+        let env = env_of(project);
+
+        let mut dependencies: BTreeMap<String, Vec<String>> = snapshot_field(env, "dependencies");
+        for paths in dependencies.values_mut() {
+            paths.sort_unstable();
+        }
+        if dependencies != project.expect.dependencies {
+            divergences.push(format!(
+                "[{}] dependencies\n  expected: {:?}\n  actual:   {dependencies:?}",
+                project.name, project.expect.dependencies
+            ));
+        }
+
+        let included: BTreeMap<String, Vec<String>> = snapshot_field(env, "included");
+        if included != project.expect.included {
+            divergences.push(format!(
+                "[{}] included\n  expected: {:?}\n  actual:   {included:?}",
+                project.name, project.expect.included
+            ));
+        }
+    }
+
+    report(&divergences, "dependencies, included");
+}
+
 /// `env.get_and_resolve_doctree(docname, builder)` as pseudo-XML — every
 /// document's doctree after cross-reference resolution.
 ///
@@ -1035,9 +1284,11 @@ fn resolved_doctrees_match_oracle() {
         );
 
         for (docname, expected) in &project.expect.resolved_pformat {
-            let expected = expected.replace(TRANSLATION_PROGRESS_ATTR, "");
-            let actual = &resolved[docname];
-            let matches = *actual == expected;
+            // Both sides pass through the §Scope-8 canonicalization; see
+            // [`canon_scope8`] for why this is comparison-preserving.
+            let expected = canon_scope8(&expected.replace(TRANSLATION_PROGRESS_ATTR, ""));
+            let actual = canon_scope8(&resolved[docname]);
+            let matches = actual == expected;
 
             match known_resolved_gap(&project.name, docname) {
                 Some(why) => {
