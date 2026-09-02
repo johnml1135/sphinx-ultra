@@ -3347,6 +3347,7 @@ impl BlockParser {
                 let outcome = self.run_include(input, out);
                 self.finish_directive(outcome);
             }
+            DirectiveKind::LiteralInclude => self.run_literalinclude(input, out),
             DirectiveKind::ProgramDir => self.run_program(input),
             // `DefaultDomain.run` sets `env.current_document.default_domain`
             // and returns []. This crate implements no domain whose
@@ -3856,6 +3857,305 @@ impl BlockParser {
         self.run_code_with_lines(&sub_input, code_lines, Some(display), 1, out);
     }
 
+    // ------------------------------------------------------------------
+    // literalinclude glue (SP/directives/code.py LiteralInclude.run)
+    // ------------------------------------------------------------------
+
+    /// The `literalinclude` directive (`SP/directives/code.py:447-506`):
+    /// resolve → `note_dependency` → reader chain → node anatomy. Every
+    /// reader error funnels into ONE reporter warning at the directive
+    /// line whose message is the error text (`code.py:505-506`); the
+    /// reader's logger-channel warnings ride `log_warnings` with the
+    /// doc2path-doubled rendered location and never enter the tree
+    /// ([INC §3.4]). `settings.file_insertion_enabled` is not modeled
+    /// (always true — this crate has no docutils settings surface).
+    fn run_literalinclude(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
+        let path_arg = input.arguments.first().cloned().unwrap_or_default();
+        let (rel, filename) = self.literalinclude_resolve(&path_arg, input.span.source);
+        // `env.note_dependency(rel_filename)` runs BEFORE the file is
+        // read (`code.py:463-464`) — an unreadable file still records,
+        // and so does an option-conflict error (the reader is constructed
+        // after). The `:diff:` file is deliberately NOT recorded.
+        if self.sphinx && self.srcdir.is_some() {
+            self.dependency_records.push(rel);
+        }
+        let options = self.literalinclude_options(&input);
+        let mut reader = match LiteralIncludeReader::new(filename.clone(), options.clone()) {
+            Ok(reader) => reader,
+            Err(text) => {
+                out.push(self.msg(messages::WARNING, &text, input.span.source, input.lineno));
+                return;
+            }
+        };
+        let result = reader.read();
+        // Logger-channel warnings surface whether or not the read
+        // succeeded (probed: `:lines: 99` warns out-of-range AND errs
+        // no-lines-pulled — both reach the stream).
+        for message in reader.take_warnings() {
+            self.push_literalinclude_log_warning(message, &input);
+        }
+        let (text, lines) = match result {
+            Ok(pair) => pair,
+            Err(text) => {
+                out.push(self.msg(messages::WARNING, &text, input.span.source, input.lineno));
+                return;
+            }
+        };
+
+        let mut lb = Node::elem(kinds::LITERAL_BLOCK, input.span);
+        lb.set("force", AttrValue::Int(i64::from(options.force)));
+        // `language`: 'udiff' in diff mode, else the option verbatim —
+        // and absent entirely otherwise: NO highlight_language fallback
+        // (`code.py:472-475`; contrast CodeBlock, which always sets it).
+        if options.diff.is_some() {
+            lb.set("language", AttrValue::Str("udiff".to_string()));
+        } else if let Some(language) = &options.language {
+            lb.set("language", AttrValue::Str(language.clone()));
+        }
+        // `linenos` is stamped only when one of the three numbering
+        // options asks for it (probed: absent otherwise, `True` → "1").
+        if options.linenos || options.lineno_start.is_some() || options.lineno_match {
+            lb.set("linenos", AttrValue::Int(1));
+        }
+        lb.attrs.classes.extend(options.classes.iter().cloned());
+        // `highlight_args`: `hl_lines` first when `:emphasize-lines:` is
+        // given (1-based, filtered to the post-filter count — which is
+        // also the out-of-range denominator), `linenostart`
+        // UNCONDITIONAL (`code.py:483-494`).
+        let mut hl_lines: Option<Vec<i64>> = None;
+        if let Some(spec_text) = &options.emphasize_lines {
+            let total = lines as i64;
+            match parse_line_num_spec(spec_text, total) {
+                Ok(spec) => {
+                    if spec.any_out_of_range(total) {
+                        self.push_literalinclude_log_warning(
+                            format!(
+                                "line number spec is out of range(1-{}): {}",
+                                total,
+                                py_repr(Some(spec_text))
+                            ),
+                            &input,
+                        );
+                    }
+                    hl_lines = Some(spec.in_range_values(total).iter().map(|x| x + 1).collect());
+                }
+                Err(text) => {
+                    // An invalid spec replaces the WHOLE block with the
+                    // reporter warning (the run()-except funnel).
+                    out.push(self.msg(messages::WARNING, &text, input.span.source, input.lineno));
+                    return;
+                }
+            }
+        }
+        let linenostart = reader.lineno_start;
+        let highlight_args = match &hl_lines {
+            Some(values) => format!(
+                "{{'hl_lines': [{}], 'linenostart': {linenostart}}}",
+                values
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None => format!("{{'linenostart': {linenostart}}}"),
+        };
+        lb.set("highlight_args", AttrValue::Str(highlight_args));
+        // The `source` ATTRIBUTE is the included file's absolute path
+        // (what pformat shows, `code.py:469`); the node's span keeps the
+        // rst file + directive line (`set_source_info`).
+        lb.set("source", AttrValue::Str(filename.display().to_string()));
+        lb.set("xml:space", AttrValue::Str("preserve".to_string()));
+        if !text.is_empty() {
+            lb.children.push(Node::text_node(text, input.span));
+        }
+
+        match &options.caption {
+            Some(caption_option) => {
+                // `caption = self.options.get('caption') or self.arguments[0]`
+                // (`code.py:496-498`): the EMPTY `:caption:` falls back to
+                // the include path as written.
+                let caption_text = if caption_option.is_empty() {
+                    path_arg.as_str()
+                } else {
+                    caption_option.as_str()
+                };
+                match self.literalinclude_container(caption_text, lb, &input, out) {
+                    Ok(container) => out.push(container),
+                    Err(text) => out.push(self.msg(
+                        messages::WARNING,
+                        &text,
+                        input.span.source,
+                        input.lineno,
+                    )),
+                }
+            }
+            None => {
+                self.directive_add_name(
+                    &mut lb,
+                    &input.options,
+                    input.span.source,
+                    input.lineno,
+                    out,
+                );
+                out.push(lb);
+            }
+        }
+    }
+
+    /// `container_wrapper` (`code.py:78-96`) plus the read-phase
+    /// `AutoNumbering` id: the caption parses as RST — a leading
+    /// `system_message` raises the `Invalid caption` ValueError into the
+    /// reporter funnel; otherwise the first node's children become the
+    /// caption (everything after it is discarded, exactly as sphinx keeps
+    /// only `parsed[0]`).
+    fn literalinclude_container(
+        &mut self,
+        caption: &str,
+        literal_node: Node,
+        input: &DirectiveInput<'_>,
+        out: &mut Vec<Node>,
+    ) -> Result<Node, String> {
+        let parsed = self.parse_detached(caption, 1, input.span.source, "caption");
+        let first = parsed.into_iter().next();
+        if let Some(node) = &first {
+            if node.kind == kinds::SYSTEM_MESSAGE {
+                // `'Invalid caption: %s' % node.astext()` — the message
+                // renders through system_message.astext()'s
+                // `source:line: (TYPE/level)` prefix (probed).
+                return Err(format!("Invalid caption: {}", system_message_astext(node)));
+            }
+        }
+        let mut container = Node::elem("container", input.span);
+        container
+            .attrs
+            .classes
+            .push("literal-block-wrapper".to_string());
+        container.set("literal_block", AttrValue::Int(1));
+        let mut caption_node = Node::elem("caption", input.span);
+        if let Some(node) = first {
+            caption_node.children = node.children;
+        }
+        container.children.push(caption_node);
+        container.children.push(literal_node);
+        // `add_name` lands on the CONTAINER (`code.py:502`); without a
+        // name, Sphinx's `AutoNumbering` transform (priority 210) hands
+        // the captioned enumerable node an implicit id via
+        // `note_implicit_target` (`SP/transforms/__init__.py:200-214` —
+        // probed `ids="id1"`, no name). Stamped here at parse time: the
+        // transform pipeline has no AutoNumbering pass (the known
+        // labelled-figure gap — only the unlabelled case is handled), so
+        // the shared auto-id serial is allocated in document order rather
+        // than after the parse; the two orders only diverge in a document
+        // that also allocates auto ids elsewhere.
+        self.directive_add_name(
+            &mut container,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
+        if container.attrs.ids.is_empty() {
+            let id = self.registry.allocate_auto_id();
+            container.attrs.ids.push(id);
+        }
+        Ok(container)
+    }
+
+    /// Path resolution for the literalinclude argument and its `:diff:`
+    /// file: sphinx's docname-relative `env.relfn2path` when a project is
+    /// attached (`code.py:454-456`, `:463`), else the containing-file
+    /// fallback (a parse without an environment — the directive is
+    /// sphinx-registered only, but the parser stays total). Returns
+    /// `(rel_filename, io path)` — the srcdir-relative half is what
+    /// `note_dependency` records.
+    fn literalinclude_resolve(
+        &self,
+        path_arg: &str,
+        at_source: u16,
+    ) -> (String, std::path::PathBuf) {
+        if self.sphinx {
+            if let Some(srcdir) = &self.srcdir {
+                return (
+                    crate::utils::relfn2path_rel(path_arg, &self.docname),
+                    crate::utils::relfn2path(path_arg, &self.docname, srcdir),
+                );
+            }
+        }
+        let source_path = self.sources.path(at_source);
+        let base = match source_path.rsplit_once('/') {
+            Some((dir, _)) => dir,
+            None => "",
+        };
+        let joined = if path_arg.starts_with('/') || base.is_empty() {
+            path_arg.to_string()
+        } else {
+            format!("{base}/{path_arg}")
+        };
+        let display = if let Some(rest) = joined.strip_prefix('/') {
+            format!("/{}", crate::utils::normalize_dot_segments(rest))
+        } else {
+            crate::utils::normalize_dot_segments(&joined)
+        };
+        (display.clone(), std::path::PathBuf::from(display))
+    }
+
+    /// The converted directive options, retyped for the reader.
+    fn literalinclude_options(&self, input: &DirectiveInput<'_>) -> LiteralIncludeOptions {
+        let get_str = |name: &str| match opt_get(&input.options, name) {
+            Some(OptVal::Str(s)) => Some(s.clone()),
+            _ => None,
+        };
+        LiteralIncludeOptions {
+            dedent: match opt_get(&input.options, "dedent") {
+                Some(OptVal::Null) => Some(None),
+                Some(OptVal::Int(n)) => Some(Some(*n)),
+                // A beyond-i64 value keeps canonical digits as a string;
+                // saturation strips the same everything a Python cut of
+                // that size would.
+                Some(OptVal::Str(s)) => Some(Some(saturating_i64(s))),
+                _ => None,
+            },
+            linenos: opt_get(&input.options, "linenos").is_some(),
+            lineno_start: opt_i64(&input.options, "lineno-start"),
+            lineno_match: opt_get(&input.options, "lineno-match").is_some(),
+            tab_width: opt_i64(&input.options, "tab-width"),
+            language: get_str("language"),
+            force: opt_get(&input.options, "force").is_some(),
+            encoding: get_str("encoding"),
+            pyobject: get_str("pyobject"),
+            lines: get_str("lines"),
+            start_after: get_str("start-after"),
+            end_before: get_str("end-before"),
+            start_at: get_str("start-at"),
+            end_at: get_str("end-at"),
+            prepend: get_str("prepend"),
+            append: get_str("append"),
+            emphasize_lines: get_str("emphasize-lines"),
+            caption: get_str("caption"),
+            classes: match opt_get(&input.options, "class") {
+                Some(OptVal::StrList(classes)) => classes.clone(),
+                _ => Vec::new(),
+            },
+            // `run()` makes the diff file absolute via `env.relfn2path`
+            // BEFORE the reader is built (`code.py:454-456`).
+            diff: get_str("diff").map(|d| self.literalinclude_resolve(&d, input.span.source).1),
+        }
+    }
+
+    /// One literalinclude logger-channel warning ([INC §3.4]): rides
+    /// `log_warnings` with the doc2path-doubled rendered location (see
+    /// [`super::ParseLogWarning::rendered_path`]), never the tree. The
+    /// location is the directive's `(source, line)` tuple — under an
+    /// include, the included file's own provenance.
+    fn push_literalinclude_log_warning(&mut self, message: String, input: &DirectiveInput<'_>) {
+        self.log_warnings.push(super::ParseLogWarning {
+            source: input.span.source,
+            message,
+            line: input.lineno,
+            doc2path_location: true,
+        });
+    }
+
     /// `.. program::` (`domains/std/__init__.py:333-348`): pure
     /// `env.ref_context` state, no nodes. The literal argument `None` pops
     /// the scope rather than naming a program called "None".
@@ -4338,6 +4638,7 @@ impl BlockParser {
                         py_repr(Some(potential))
                     ),
                     line: lineno,
+                    doc2path_location: false,
                 });
                 continue;
             };
@@ -4632,6 +4933,7 @@ impl BlockParser {
                         py_repr(Some(tp_list))
                     ),
                     line: input.lineno,
+                    doc2path_location: false,
                 }),
             }
         }
@@ -4667,6 +4969,7 @@ impl BlockParser {
                                 py_repr(Some(arglist))
                             ),
                             line: input.lineno,
+                            doc2path_location: false,
                         });
                         signode
                             .children
@@ -7639,6 +7942,10 @@ enum DirectiveKind {
     /// `.. include::` (`DU/parsers/rst/directives/misc.py:42-267`; the
     /// sphinx override only rewrites the path and records env state).
     Include,
+    /// `.. literalinclude::` (`SP/directives/code.py:413-506`): a
+    /// SIBLING of include — it produces a literal_block node, never a
+    /// splice.
+    LiteralInclude,
     /// `.. program::` (`domains/std/__init__.py:333-348`).
     ProgramDir,
     /// `.. default-domain::` (`directives/__init__.py:353-366`).
@@ -7797,6 +8104,33 @@ const CODE_BLOCK_OPTS: &[(&str, Conv)] = &[
 const HIGHLIGHT_OPTS: &[(&str, Conv)] =
     &[("linenothreshold", Conv::PyIntAny), ("force", Conv::Flag)];
 
+/// The literalinclude option spec (`SP/directives/code.py:423-445`).
+/// `caption` is `unchanged` — the EMPTY value is meaningful; `lineno-start`
+/// and `tab-width` are plain Python `int` (negatives allowed).
+const LITERALINCLUDE_OPTS: &[(&str, Conv)] = &[
+    ("dedent", Conv::OptionalInt),
+    ("linenos", Conv::Flag),
+    ("lineno-start", Conv::PyIntAny),
+    ("lineno-match", Conv::Flag),
+    ("tab-width", Conv::PyIntAny),
+    ("language", Conv::UnchangedRequired),
+    ("force", Conv::Flag),
+    ("encoding", Conv::Encoding),
+    ("pyobject", Conv::UnchangedRequired),
+    ("lines", Conv::UnchangedRequired),
+    ("start-after", Conv::UnchangedRequired),
+    ("end-before", Conv::UnchangedRequired),
+    ("start-at", Conv::UnchangedRequired),
+    ("end-at", Conv::UnchangedRequired),
+    ("prepend", Conv::UnchangedRequired),
+    ("append", Conv::UnchangedRequired),
+    ("emphasize-lines", Conv::UnchangedRequired),
+    ("caption", Conv::Unchanged),
+    ("class", Conv::ClassOption),
+    ("name", Conv::Unchanged),
+    ("diff", Conv::UnchangedRequired),
+];
+
 /// sphinx.util.parselinenos: 1-based spec ('1,3-5', open ends '-4'/'4-')
 /// against `nlines` total lines; invalid or reversed specs raise. Range
 /// materialization is clamped to nlines so a huge upper bound cannot
@@ -7910,6 +8244,14 @@ fn sphinx_directive_spec(lower: &str) -> Option<DirectiveSpec> {
             has_content: false,
             option_spec: NAME_ONLY_OPTS,
             kind: DirectiveKind::IndexDir,
+        }),
+        "literalinclude" => Some(DirectiveSpec {
+            required_arguments: 1,
+            optional_arguments: 0,
+            final_argument_whitespace: true,
+            has_content: false,
+            option_spec: LITERALINCLUDE_OPTS,
+            kind: DirectiveKind::LiteralInclude,
         }),
         "hlist" => Some(DirectiveSpec {
             required_arguments: 0,
@@ -9488,6 +9830,10 @@ enum Conv {
     Figwidth,
     /// Plain Python int() — negatives allowed (sphinx maxdepth).
     PyIntAny,
+    /// sphinx `optional_int` (`SP/directives/__init__.py:32-41`): a bare
+    /// option is Python None, else a non-negative int — the
+    /// literalinclude `:dedent:`.
+    OptionalInt,
     SingleCharOrUnicode,
     SingleCharOrWhitespaceOrUnicode,
     /// value_or(('auto', 'grid'), positive_int_list) — the table :widths:.
@@ -9868,6 +10214,928 @@ fn py_utf8_error_text(bytes: &[u8], error: std::str::Utf8Error) -> String {
             start + len - 1,
             reason
         )
+    }
+}
+
+// ----------------------------------------------------------------------
+// literalinclude (SP/directives/code.py LiteralInclude + reader)
+// ----------------------------------------------------------------------
+
+/// Python `str.splitlines(keepends=True)`: the full boundary set (incl.
+/// `\v\f\x1c-\x1e\x85\u{2028}\u{2029}`), `\r\n` kept as one line ending.
+fn py_splitlines_keepends(text: &str) -> Vec<String> {
+    let is_boundary = |c: char| {
+        matches!(
+            c,
+            '\n' | '\r'
+                | '\x0b'
+                | '\x0c'
+                | '\x1c'
+                | '\x1d'
+                | '\x1e'
+                | '\u{85}'
+                | '\u{2028}'
+                | '\u{2029}'
+        )
+    };
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if is_boundary(c) {
+            let mut end = i + c.len_utf8();
+            if c == '\r' {
+                if let Some(&(j, '\n')) = chars.peek() {
+                    chars.next();
+                    end = j + 1;
+                }
+            }
+            out.push(text[start..end].to_string());
+            start = end;
+        }
+    }
+    if start < text.len() {
+        out.push(text[start..].to_string());
+    }
+    out
+}
+
+/// Python 3.12 `textwrap.dedent` (the probes' interpreter — 3.13 rewrote
+/// it with `str.isspace` line-blanking; 3.12's regexes blank `[ \t]`-only
+/// lines):
+///
+/// 1. `^[ \t]+$` (MULTILINE) segments — whitespace-only between `\n`
+///    boundaries — are emptied BEFORE the margin is computed.
+/// 2. The margin is the common `[ \t]` prefix of every segment with a
+///    character beyond its prefix, reduced pairwise.
+/// 3. `(?m)^margin` is stripped; a segment not starting with the margin
+///    is left untouched (CPython's consistency assert is dead code).
+fn py_textwrap_dedent(text: &str) -> String {
+    let cleaned: Vec<&str> = text
+        .split('\n')
+        .map(|seg| {
+            if !seg.is_empty() && seg.chars().all(|c| c == ' ' || c == '\t') {
+                ""
+            } else {
+                seg
+            }
+        })
+        .collect();
+    let mut margin: Option<&str> = None;
+    for seg in &cleaned {
+        let prefix_end = seg.find(|c| c != ' ' && c != '\t').unwrap_or(seg.len());
+        if prefix_end == seg.len() {
+            continue; // nothing beyond the prefix — not a margin witness
+        }
+        let indent = &seg[..prefix_end];
+        margin = Some(match margin {
+            None => indent,
+            Some(current) if indent.starts_with(current) => current,
+            Some(current) if current.starts_with(indent) => indent,
+            Some(current) => {
+                // First disagreement truncates (one side is never a
+                // prefix of the other here, so a mismatch exists).
+                let common = current
+                    .bytes()
+                    .zip(indent.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                &current[..common]
+            }
+        });
+    }
+    let margin = margin.unwrap_or("");
+    cleaned
+        .iter()
+        .map(|seg| seg.strip_prefix(margin).unwrap_or(seg))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One comma-part of a parsed `:lines:`/`:emphasize-lines:` spec.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LineSpecPart {
+    /// One 0-based index. May be negative: `0` parses to −1 (Python's
+    /// `int('0') - 1`), which the selection then wraps Python-style.
+    Single(i64),
+    /// The half-open 0-based range `start..end` — never empty (`A > B`
+    /// raises at parse), `start` can be −1 (`0-N`), `end` can exceed the
+    /// file (open `A-` ranges use `max(A, total)`).
+    Range(i64, i64),
+}
+
+/// `sphinx.util._lines.parse_line_num_spec`'s result, kept as parts
+/// instead of the materialized list Python builds — `1-999999999` would
+/// otherwise allocate the whole range only for everything past the file
+/// end to be dropped. Every consumer question (first member, contiguity,
+/// out-of-range presence, in-range values in written order) is answered
+/// from the parts with identical semantics.
+struct LineSpec {
+    parts: Vec<LineSpecPart>,
+}
+
+impl LineSpec {
+    /// `linelist[0]` — the parse guarantees at least one part and no part
+    /// is empty, so a parsed spec always has a first member.
+    fn first(&self) -> i64 {
+        match self.parts[0] {
+            LineSpecPart::Single(n) => n,
+            LineSpecPart::Range(a, _) => a,
+        }
+    }
+
+    /// `all(first + i == n for i, n in enumerate(linelist))` — including
+    /// out-of-range members, exactly like Python (`code.py:305-312`).
+    fn is_contiguous(&self) -> bool {
+        let mut expected = self.first();
+        for part in &self.parts {
+            match *part {
+                LineSpecPart::Single(n) => {
+                    if n != expected {
+                        return false;
+                    }
+                    expected = n + 1;
+                }
+                LineSpecPart::Range(a, b) => {
+                    if a != expected {
+                        return false;
+                    }
+                    expected = b;
+                }
+            }
+        }
+        true
+    }
+
+    /// `any(i >= total for i in linelist)`.
+    fn any_out_of_range(&self, total: i64) -> bool {
+        self.parts.iter().any(|part| match *part {
+            LineSpecPart::Single(n) => n >= total,
+            LineSpecPart::Range(_, b) => b > total,
+        })
+    }
+
+    /// The members `< total`, in written order with duplicates preserved
+    /// (`[n for n in linelist if n < total]`) — negative members included,
+    /// the way Python's filter keeps them.
+    fn in_range_values(&self, total: i64) -> Vec<i64> {
+        let mut out = Vec::new();
+        for part in &self.parts {
+            match *part {
+                LineSpecPart::Single(n) => {
+                    if n < total {
+                        out.push(n);
+                    }
+                }
+                LineSpecPart::Range(a, b) => {
+                    let mut n = a;
+                    while n < b.min(total) {
+                        out.push(n);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// `parse_line_num_spec` (`SP/util/_lines.py:4-29`): comma-separated
+/// parts, `N` → the 0-based `N-1`, `A-B` → `range(A-1, B)` with `A`
+/// defaulting to 1 and `B` to `max(A, total)` (open ranges), `A > B` or a
+/// bare `-` → `ValueError(f'invalid line number spec: {spec!r}')`.
+fn parse_line_num_spec(spec: &str, total: i64) -> Result<LineSpec, String> {
+    let invalid = || format!("invalid line number spec: {}", py_repr(Some(spec)));
+    let mut parts = Vec::new();
+    for part in spec.split(',') {
+        let stripped = part.trim();
+        let begend: Vec<&str> = stripped.split('-').collect();
+        if begend == [""; 2] {
+            return Err(invalid());
+        }
+        match begend.len() {
+            1 => {
+                let n = py_int(begend[0]).ok_or_else(invalid)?;
+                parts.push(LineSpecPart::Single(n - 1));
+            }
+            2 => {
+                let start = if begend[0].is_empty() {
+                    1
+                } else {
+                    py_int(begend[0]).ok_or_else(invalid)?
+                };
+                let end = if begend[1].is_empty() {
+                    start.max(total)
+                } else {
+                    py_int(begend[1]).ok_or_else(invalid)?
+                };
+                if start > end {
+                    return Err(invalid());
+                }
+                parts.push(LineSpecPart::Range(start - 1, end));
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(LineSpec { parts })
+}
+
+/// `dedent_lines` (`SP/directives/code.py:59-75`): `None` (a bare
+/// `:dedent:`) is a full `textwrap.dedent` over the joined text; an
+/// integer cuts `line[dedent:]` per line (character slice), preserving a
+/// bare `'\n'` for lines that become empty, warning once when any cut
+/// prefix held non-whitespace.
+fn dedent_lines(
+    lines: Vec<String>,
+    dedent: Option<i64>,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let Some(dedent) = dedent else {
+        return py_splitlines_keepends(&py_textwrap_dedent(&lines.concat()));
+    };
+    let dedent = dedent.max(0) as usize;
+    if lines
+        .iter()
+        .any(|line| line.chars().take(dedent).any(|c| !c.is_whitespace()))
+    {
+        warnings.push("non-whitespace stripped by dedent".to_string());
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let new_line: String = line.chars().skip(dedent).collect();
+            if line.ends_with('\n') && new_line.is_empty() {
+                "\n".to_string()
+            } else {
+                new_line
+            }
+        })
+        .collect()
+}
+
+/// difflib opcode tags.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum OpTag {
+    Replace,
+    Delete,
+    Insert,
+    Equal,
+}
+
+type Opcode = (OpTag, usize, usize, usize, usize);
+
+/// `difflib.SequenceMatcher` over line sequences — exactly the subset
+/// `unified_diff` constructs (`isjunk=None`, `autojunk=True`), opcode for
+/// opcode against CPython 3.12's difflib. `show_diff` feeds it whole
+/// files (`SP/directives/code.py:261-266`).
+struct PySequenceMatcher<'a> {
+    a: &'a [String],
+    b: &'a [String],
+    /// element → ascending indices in `b`; `__chain_b`'s autojunk purge
+    /// removes popular elements (> n/100 + 1 occurrences once `b` has ≥
+    /// 200 lines) so they cannot SEED a match — the extension loops in
+    /// `find_longest_match` still grow a match across them, exactly like
+    /// CPython (whose extension loops test `bjunk`, empty here, not
+    /// `bpopular`).
+    b2j: std::collections::HashMap<&'a str, Vec<usize>>,
+}
+
+impl<'a> PySequenceMatcher<'a> {
+    fn new(a: &'a [String], b: &'a [String]) -> Self {
+        let mut b2j: std::collections::HashMap<&'a str, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, elt) in b.iter().enumerate() {
+            b2j.entry(elt.as_str()).or_default().push(i);
+        }
+        let n = b.len();
+        if n >= 200 {
+            let ntest = n / 100 + 1;
+            b2j.retain(|_, indices| indices.len() <= ntest);
+        }
+        PySequenceMatcher { a, b, b2j }
+    }
+
+    /// `find_longest_match` with an empty junk set: the two pairs of
+    /// extension while-loops collapse into one. Returns `(i, j, size)`.
+    fn find_longest_match(
+        &self,
+        alo: usize,
+        ahi: usize,
+        blo: usize,
+        bhi: usize,
+    ) -> (usize, usize, usize) {
+        let mut besti = alo;
+        let mut bestj = blo;
+        let mut bestsize = 0usize;
+        let mut j2len: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for i in alo..ahi {
+            let mut newj2len: std::collections::HashMap<usize, usize> =
+                std::collections::HashMap::new();
+            if let Some(indices) = self.b2j.get(self.a[i].as_str()) {
+                for &j in indices {
+                    if j < blo {
+                        continue;
+                    }
+                    if j >= bhi {
+                        break;
+                    }
+                    let k = if j == 0 {
+                        1
+                    } else {
+                        j2len.get(&(j - 1)).copied().unwrap_or(0) + 1
+                    };
+                    newj2len.insert(j, k);
+                    if k > bestsize {
+                        besti = i + 1 - k;
+                        bestj = j + 1 - k;
+                        bestsize = k;
+                    }
+                }
+            }
+            j2len = newj2len;
+        }
+        while besti > alo && bestj > blo && self.a[besti - 1] == self.b[bestj - 1] {
+            besti -= 1;
+            bestj -= 1;
+            bestsize += 1;
+        }
+        while besti + bestsize < ahi
+            && bestj + bestsize < bhi
+            && self.a[besti + bestsize] == self.b[bestj + bestsize]
+        {
+            bestsize += 1;
+        }
+        (besti, bestj, bestsize)
+    }
+
+    /// `get_matching_blocks`: queue-driven recursion then adjacent-block
+    /// merging, terminated by the `(la, lb, 0)` sentinel.
+    fn get_matching_blocks(&self) -> Vec<(usize, usize, usize)> {
+        let la = self.a.len();
+        let lb = self.b.len();
+        let mut queue = vec![(0usize, la, 0usize, lb)];
+        let mut blocks: Vec<(usize, usize, usize)> = Vec::new();
+        while let Some((alo, ahi, blo, bhi)) = queue.pop() {
+            let (i, j, k) = self.find_longest_match(alo, ahi, blo, bhi);
+            if k > 0 {
+                blocks.push((i, j, k));
+                if alo < i && blo < j {
+                    queue.push((alo, i, blo, j));
+                }
+                if i + k < ahi && j + k < bhi {
+                    queue.push((i + k, ahi, j + k, bhi));
+                }
+            }
+        }
+        blocks.sort_unstable();
+        let mut non_adjacent: Vec<(usize, usize, usize)> = Vec::new();
+        let (mut i1, mut j1, mut k1) = (0usize, 0usize, 0usize);
+        for (i2, j2, k2) in blocks {
+            if i1 + k1 == i2 && j1 + k1 == j2 {
+                k1 += k2;
+            } else {
+                if k1 > 0 {
+                    non_adjacent.push((i1, j1, k1));
+                }
+                (i1, j1, k1) = (i2, j2, k2);
+            }
+        }
+        if k1 > 0 {
+            non_adjacent.push((i1, j1, k1));
+        }
+        non_adjacent.push((la, lb, 0));
+        non_adjacent
+    }
+
+    fn get_opcodes(&self) -> Vec<Opcode> {
+        let mut i = 0usize;
+        let mut j = 0usize;
+        let mut answer: Vec<Opcode> = Vec::new();
+        for (ai, bj, size) in self.get_matching_blocks() {
+            let tag = if i < ai && j < bj {
+                Some(OpTag::Replace)
+            } else if i < ai {
+                Some(OpTag::Delete)
+            } else if j < bj {
+                Some(OpTag::Insert)
+            } else {
+                None
+            };
+            if let Some(tag) = tag {
+                answer.push((tag, i, ai, j, bj));
+            }
+            i = ai + size;
+            j = bj + size;
+            if size > 0 {
+                answer.push((OpTag::Equal, ai, i, bj, j));
+            }
+        }
+        answer
+    }
+
+    /// `get_grouped_opcodes(n)`: leading/trailing equal runs trimmed to
+    /// `n` context lines, groups split at equal runs longer than `2n`.
+    fn get_grouped_opcodes(&self, n: usize) -> Vec<Vec<Opcode>> {
+        let mut codes = self.get_opcodes();
+        if codes.is_empty() {
+            codes.push((OpTag::Equal, 0, 1, 0, 1));
+        }
+        if codes[0].0 == OpTag::Equal {
+            let (tag, i1, i2, j1, j2) = codes[0];
+            codes[0] = (
+                tag,
+                i1.max(i2.saturating_sub(n)),
+                i2,
+                j1.max(j2.saturating_sub(n)),
+                j2,
+            );
+        }
+        let last = codes.len() - 1;
+        if codes[last].0 == OpTag::Equal {
+            let (tag, i1, i2, j1, j2) = codes[last];
+            codes[last] = (tag, i1, i2.min(i1 + n), j1, j2.min(j1 + n));
+        }
+        let nn = n + n;
+        let mut groups: Vec<Vec<Opcode>> = Vec::new();
+        let mut group: Vec<Opcode> = Vec::new();
+        for (tag, i1, i2, j1, j2) in codes {
+            if tag == OpTag::Equal && i2 - i1 > nn {
+                group.push((tag, i1, (i1 + n).min(i2), j1, (j1 + n).min(j2)));
+                groups.push(std::mem::take(&mut group));
+                group.push((
+                    tag,
+                    i1.max(i2.saturating_sub(n)),
+                    i2,
+                    j1.max(j2.saturating_sub(n)),
+                    j2,
+                ));
+            } else {
+                group.push((tag, i1, i2, j1, j2));
+            }
+        }
+        if !group.is_empty() && !(group.len() == 1 && group[0].0 == OpTag::Equal) {
+            groups.push(group);
+        }
+        groups
+    }
+}
+
+/// `difflib.unified_diff(a, b, fromfile, tofile)` — no timestamps, three
+/// context lines, `\n` line terminator: the exact call `show_diff` makes.
+fn py_unified_diff(a: &[String], b: &[String], fromfile: &str, tofile: &str) -> Vec<String> {
+    /// `_format_range_unified`: 1-based start, `start,length` with the
+    /// single-line shorthand and empty ranges starting one line early.
+    fn format_range_unified(start: usize, stop: usize) -> String {
+        let beginning = start + 1;
+        let length = stop - start;
+        if length == 1 {
+            return beginning.to_string();
+        }
+        let beginning = if length == 0 {
+            beginning - 1
+        } else {
+            beginning
+        };
+        format!("{beginning},{length}")
+    }
+    let matcher = PySequenceMatcher::new(a, b);
+    let mut out = Vec::new();
+    let mut started = false;
+    for group in matcher.get_grouped_opcodes(3) {
+        if !started {
+            started = true;
+            out.push(format!("--- {fromfile}\n"));
+            out.push(format!("+++ {tofile}\n"));
+        }
+        let first = group[0];
+        let last = group[group.len() - 1];
+        let file1_range = format_range_unified(first.1, last.2);
+        let file2_range = format_range_unified(first.3, last.4);
+        out.push(format!("@@ -{file1_range} +{file2_range} @@\n"));
+        for (tag, i1, i2, j1, j2) in group {
+            match tag {
+                OpTag::Equal => {
+                    for line in &a[i1..i2] {
+                        out.push(format!(" {line}"));
+                    }
+                }
+                OpTag::Replace => {
+                    for line in &a[i1..i2] {
+                        out.push(format!("-{line}"));
+                    }
+                    for line in &b[j1..j2] {
+                        out.push(format!("+{line}"));
+                    }
+                }
+                OpTag::Delete => {
+                    for line in &a[i1..i2] {
+                        out.push(format!("-{line}"));
+                    }
+                }
+                OpTag::Insert => {
+                    for line in &b[j1..j2] {
+                        out.push(format!("+{line}"));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// docutils `system_message.astext()` (`DU/nodes.py`): the location
+/// prefix `'{source}:{line}: ({type}/{level}) '` plus the element text —
+/// children joined with `'\n\n'` (`Element.child_text_separator`). The
+/// `Invalid caption` message body renders through this (probed).
+fn system_message_astext(node: &Node) -> String {
+    let source = match node.get("source") {
+        Some(AttrValue::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let line = match node.get("line") {
+        Some(AttrValue::Int(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    let msg_type = match node.get("type") {
+        Some(AttrValue::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let level = match node.get("level") {
+        Some(AttrValue::Int(n)) => *n,
+        _ => 0,
+    };
+    let body = node
+        .children
+        .iter()
+        .map(Node::astext)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("{source}:{line}: ({msg_type}/{level}) {body}")
+}
+
+/// `LiteralIncludeReader.INVALID_OPTIONS_PAIR` (`code.py:189-203`), in
+/// list order — the first present pair names the error.
+const LITERALINCLUDE_INVALID_PAIRS: &[(&str, &str)] = &[
+    ("lineno-match", "lineno-start"),
+    ("lineno-match", "append"),
+    ("lineno-match", "prepend"),
+    ("start-after", "start-at"),
+    ("end-before", "end-at"),
+    ("diff", "pyobject"),
+    ("diff", "lineno-start"),
+    ("diff", "lineno-match"),
+    ("diff", "lines"),
+    ("diff", "start-after"),
+    ("diff", "end-before"),
+    ("diff", "start-at"),
+    ("diff", "end-at"),
+];
+
+/// The literalinclude option bundle, typed the way the reader consumes
+/// it. Built by `run_literalinclude` from the converted directive
+/// options; unit tests construct it directly — the reader never touches
+/// the parser.
+#[derive(Clone, Default)]
+struct LiteralIncludeOptions {
+    /// `Some(None)` is a bare `:dedent:` (full `textwrap.dedent`); the
+    /// converter (`optional_int`) rejects negatives.
+    dedent: Option<Option<i64>>,
+    linenos: bool,
+    lineno_start: Option<i64>,
+    lineno_match: bool,
+    tab_width: Option<i64>,
+    language: Option<String>,
+    force: bool,
+    /// Validated by the option converter. `None` means sphinx's
+    /// `source_encoding` config default, `'utf-8-sig'` (probe-pinned in
+    /// the default-encoding error text).
+    encoding: Option<String>,
+    pyobject: Option<String>,
+    lines: Option<String>,
+    start_after: Option<String>,
+    end_before: Option<String>,
+    start_at: Option<String>,
+    end_at: Option<String>,
+    prepend: Option<String>,
+    append: Option<String>,
+    emphasize_lines: Option<String>,
+    /// `directives.unchanged` — the EMPTY caption is meaningful (it falls
+    /// back to the include path as written). `:name:` has no field: the
+    /// glue's `directive_add_name` reads it from the raw options.
+    caption: Option<String>,
+    classes: Vec<String>,
+    /// Already absolute — `run()` rewrites the `:diff:` value through
+    /// `env.relfn2path` before the reader sees it (`code.py:454-456`).
+    diff: Option<std::path::PathBuf>,
+}
+
+impl LiteralIncludeOptions {
+    /// `option in self.options` for the INVALID_OPTIONS_PAIR names.
+    fn has(&self, name: &str) -> bool {
+        match name {
+            "lineno-match" => self.lineno_match,
+            "lineno-start" => self.lineno_start.is_some(),
+            "append" => self.append.is_some(),
+            "prepend" => self.prepend.is_some(),
+            "start-after" => self.start_after.is_some(),
+            "start-at" => self.start_at.is_some(),
+            "end-before" => self.end_before.is_some(),
+            "end-at" => self.end_at.is_some(),
+            "diff" => self.diff.is_some(),
+            "pyobject" => self.pyobject.is_some(),
+            "lines" => self.lines.is_some(),
+            _ => false,
+        }
+    }
+}
+
+/// `LiteralIncludeReader` (`SP/directives/code.py:205-410`): the pure
+/// read/filter half of the directive — no parser access, unit-testable
+/// against a fixture file. Errors are the exact `ValueError`/`OSError`
+/// texts `run()`'s broad `except` turns into ONE reporter warning;
+/// logger-channel diagnostics accumulate in `warnings` for the caller to
+/// route ([INC §3.4]).
+struct LiteralIncludeReader {
+    /// Absolute path (`run()` resolves via `env.relfn2path` first).
+    filename: std::path::PathBuf,
+    options: LiteralIncludeOptions,
+    /// Resolved encoding name — the `%r` in the decode-error text.
+    encoding: String,
+    /// `options.get('lineno-start', 1)`, then adjusted by pyobject /
+    /// start / lines filters under `lineno-match`; the node's
+    /// unconditional `highlight_args['linenostart']`.
+    lineno_start: i64,
+    /// Logger-channel warning texts in emit order (out-of-range line
+    /// specs, dedent stripping) — never part of an error return.
+    warnings: Vec<String>,
+}
+
+impl LiteralIncludeReader {
+    /// Construction runs `parse_options` — the INVALID_OPTIONS_PAIR
+    /// check (`code.py:215-219`).
+    fn new(filename: std::path::PathBuf, options: LiteralIncludeOptions) -> Result<Self, String> {
+        for (option1, option2) in LITERALINCLUDE_INVALID_PAIRS {
+            if options.has(option1) && options.has(option2) {
+                return Err(format!(
+                    "Cannot use both \"{option1}\" and \"{option2}\" options"
+                ));
+            }
+        }
+        let encoding = options
+            .encoding
+            .clone()
+            .unwrap_or_else(|| "utf-8-sig".to_string());
+        let lineno_start = options.lineno_start.unwrap_or(1);
+        Ok(LiteralIncludeReader {
+            filename,
+            options,
+            encoding,
+            lineno_start,
+            warnings: Vec::new(),
+        })
+    }
+
+    fn filename_str(&self) -> String {
+        self.filename.display().to_string()
+    }
+
+    fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
+
+    /// `read` (`code.py:242-259`): diff mode short-circuits the chain;
+    /// otherwise the filters run IN THIS ORDER, and the returned count is
+    /// post-filter (prepend/append included) — the `emphasize-lines`
+    /// denominator.
+    fn read(&mut self) -> Result<(String, usize), String> {
+        let lines = if self.options.diff.is_some() {
+            self.show_diff()?
+        } else {
+            let mut lines = self.read_file(&self.filename.clone())?;
+            lines = self.pyobject_filter(lines)?;
+            lines = self.start_filter(lines)?;
+            lines = self.end_filter(lines)?;
+            lines = self.lines_filter(lines)?;
+            lines = self.dedent_filter(lines);
+            lines = self.prepend_filter(lines);
+            lines = self.append_filter(lines);
+            lines
+        };
+        Ok((lines.concat(), lines.len()))
+    }
+
+    /// `read_file` (`code.py:221-240`): open + decode + expandtabs +
+    /// `splitlines(True)`, with both probe-pinned error texts.
+    fn read_file(&self, filename: &std::path::Path) -> Result<Vec<String>, String> {
+        let bytes = std::fs::read(filename).map_err(|_| {
+            format!(
+                "Include file '{}' not found or reading it failed",
+                filename.display()
+            )
+        })?;
+        // The converter validated the name; the default is always known.
+        let encoding = lookup_encoding(&self.encoding).unwrap_or(IncludeEncoding::Utf8Sig);
+        let mut text = decode_include_bytes(&bytes, encoding).map_err(|_| {
+            format!(
+                "Encoding {} used for reading included file '{}' seems to be wrong, \
+                 try giving an :encoding: option",
+                py_repr(Some(&self.encoding)),
+                filename.display()
+            )
+        })?;
+        // Universal newlines: sphinx opens in text mode (newline=None).
+        if text.contains('\r') {
+            text = text.replace("\r\n", "\n").replace('\r', "\n");
+        }
+        if let Some(tab_width) = self.options.tab_width {
+            text = py_expandtabs(&text, tab_width);
+        }
+        Ok(py_splitlines_keepends(&text))
+    }
+
+    /// `show_diff` (`code.py:261-266`): current file first, then the (already
+    /// absolute) `:diff:` file — the read order decides which missing-file
+    /// error fires when both are gone.
+    fn show_diff(&self) -> Result<Vec<String>, String> {
+        let new_lines = self.read_file(&self.filename.clone())?;
+        let old_filename = self
+            .options
+            .diff
+            .clone()
+            .expect("show_diff runs only with the diff option present");
+        let old_lines = self.read_file(&old_filename)?;
+        Ok(py_unified_diff(
+            &old_lines,
+            &new_lines,
+            &old_filename.display().to_string(),
+            &self.filename_str(),
+        ))
+    }
+
+    /// `pyobject_filter` (`code.py:268-289`): the FIRST chain slot.
+    ///
+    /// TODO(T15): `crate::py::pycode::find_tags` is a stub that always
+    /// errs with an honest not-yet-supported text through the standard
+    /// except→reporter channel; T15 replaces the stub with the
+    /// `DefinitionFinder` port and this slot's slice/lineno arithmetic
+    /// goes live (sphinx: `lines[start-1:end]`, 1-based inclusive tags;
+    /// `lineno-match` ASSIGNS `lineno_start = start`).
+    fn pyobject_filter(&mut self, lines: Vec<String>) -> Result<Vec<String>, String> {
+        let Some(pyobject) = self.options.pyobject.clone() else {
+            return Ok(lines);
+        };
+        let tags = crate::py::pycode::find_tags(&lines.concat()).map_err(|e| e.to_string())?;
+        match tags.get(pyobject.as_str()) {
+            Some(&(_, start, end)) => {
+                let (from, to) = py_slice(
+                    lines.len(),
+                    Some(i64::from(start) - 1),
+                    Some(i64::from(end)),
+                );
+                if self.options.lineno_match {
+                    self.lineno_start = i64::from(start);
+                }
+                Ok(lines[from..to].to_vec())
+            }
+            None => Err(format!(
+                "Object named {} not found in include file _StrPath({})",
+                py_repr(Some(&pyobject)),
+                py_repr(Some(&self.filename_str()))
+            )),
+        }
+    }
+
+    /// `start_filter` (`code.py:324-355`): substring match, first match
+    /// wins; `start-at` keeps the matched line, `start-after` drops
+    /// through it, each with its own `lineno-match` bias.
+    fn start_filter(&mut self, lines: Vec<String>) -> Result<Vec<String>, String> {
+        let (start, drop_match) = if let Some(s) = self.options.start_at.clone() {
+            (s, false)
+        } else if let Some(s) = self.options.start_after.clone() {
+            (s, true)
+        } else {
+            return Ok(lines);
+        };
+        for (lineno, line) in lines.iter().enumerate() {
+            if line.contains(start.as_str()) {
+                return if drop_match {
+                    if self.options.lineno_match {
+                        self.lineno_start += lineno as i64 + 1;
+                    }
+                    Ok(lines[lineno + 1..].to_vec())
+                } else {
+                    if self.options.lineno_match {
+                        self.lineno_start += lineno as i64;
+                    }
+                    Ok(lines[lineno..].to_vec())
+                };
+            }
+        }
+        Err(if drop_match {
+            format!("start-after pattern not found: {start}")
+        } else {
+            format!("start-at pattern not found: {start}")
+        })
+    }
+
+    /// `end_filter` (`code.py:357-384`): substring match, first match
+    /// wins — except `end-before` IGNORES a match on the very first line
+    /// of the current list and keeps scanning (`:375-376`); a first-line
+    /// match with no later one therefore raises not-found.
+    fn end_filter(&mut self, lines: Vec<String>) -> Result<Vec<String>, String> {
+        let (end, keep_match) = if let Some(e) = self.options.end_at.clone() {
+            (e, true)
+        } else if let Some(e) = self.options.end_before.clone() {
+            (e, false)
+        } else {
+            return Ok(lines);
+        };
+        for (lineno, line) in lines.iter().enumerate() {
+            if line.contains(end.as_str()) {
+                if keep_match {
+                    return Ok(lines[..lineno + 1].to_vec());
+                } else if lineno != 0 {
+                    return Ok(lines[..lineno].to_vec());
+                }
+                // end-before ignores first line
+            }
+        }
+        Err(if keep_match {
+            format!("end-at pattern not found: {end}")
+        } else {
+            format!("end-before pattern not found: {end}")
+        })
+    }
+
+    /// `lines_filter` (`code.py:291-322`): warn-then-drop out-of-range
+    /// members, the lineno-match contiguity gate, Python's negative-index
+    /// wrap on selection, and the `_StrPath`-flavored empty-result error
+    /// (the class repr leaks into the byte-exact text — hardcoded
+    /// wrapper, [INC §3.4]).
+    fn lines_filter(&mut self, lines: Vec<String>) -> Result<Vec<String>, String> {
+        let Some(linespec) = self.options.lines.clone() else {
+            return Ok(lines);
+        };
+        let total = lines.len() as i64;
+        let spec = parse_line_num_spec(&linespec, total)?;
+        if spec.any_out_of_range(total) {
+            self.warnings.push(format!(
+                "line number spec is out of range(1-{}): {}",
+                total,
+                py_repr(Some(&linespec))
+            ));
+        }
+        if self.options.lineno_match {
+            if spec.is_contiguous() {
+                self.lineno_start += spec.first();
+            } else {
+                return Err(
+                    "Cannot use \"lineno-match\" with a disjoint set of \"lines\"".to_string(),
+                );
+            }
+        }
+        let mut selected = Vec::new();
+        for n in spec.in_range_values(total) {
+            // Python `lines[n]`: negatives wrap from the end; too far
+            // negative is an IndexError whose str() reaches the funnel.
+            let index = if n < 0 { n + total } else { n };
+            if index < 0 {
+                return Err("list index out of range".to_string());
+            }
+            selected.push(lines[index as usize].clone());
+        }
+        if selected.is_empty() {
+            return Err(format!(
+                "Line spec {}: no lines pulled from include file _StrPath({})",
+                py_repr(Some(&linespec)),
+                py_repr(Some(&self.filename_str()))
+            ));
+        }
+        Ok(selected)
+    }
+
+    /// `dedent_filter` (`code.py:404-410`).
+    fn dedent_filter(&mut self, lines: Vec<String>) -> Vec<String> {
+        match self.options.dedent {
+            None => lines,
+            Some(dedent) => dedent_lines(lines, dedent, &mut self.warnings),
+        }
+    }
+
+    /// `prepend_filter` (`code.py:386-393`).
+    fn prepend_filter(&self, mut lines: Vec<String>) -> Vec<String> {
+        if let Some(prepend) = &self.options.prepend {
+            lines.insert(0, format!("{prepend}\n"));
+        }
+        lines
+    }
+
+    /// `append_filter` (`code.py:395-402`).
+    fn append_filter(&self, mut lines: Vec<String>) -> Vec<String> {
+        if let Some(append) = &self.options.append {
+            lines.push(format!("{append}\n"));
+        }
+        lines
     }
 }
 
@@ -10331,6 +11599,19 @@ fn convert_option(conv: Conv, value: Option<&str>) -> Result<OptVal, String> {
             };
             nonnegative_int(v)
         }
+        Conv::OptionalInt => match value {
+            None => Ok(OptVal::Null),
+            Some(v) => match py_int_canonical(v) {
+                // `int('-0')` is 0, which optional_int accepts —
+                // py_int_canonical already reports it non-negative.
+                Some((true, _)) => Err("negative value; must be positive or zero".to_string()),
+                Some((false, digits)) => Ok(int_optval(false, &digits)),
+                None => Err(format!(
+                    "invalid literal for int() with base 10: {}",
+                    py_repr(Some(v))
+                )),
+            },
+        },
         Conv::SingleCharOrUnicode | Conv::SingleCharOrWhitespaceOrUnicode => {
             let Some(v) = value else {
                 return Err("argument required but none supplied".to_string());
@@ -15623,5 +16904,1362 @@ mod include_tests {
         let pf = tree.root.pformat();
         assert!(messages_of(&tree).is_empty(), "{pf}");
         assert!(pf.contains("<literal_block source=\"inc.rst\""), "{pf}");
+    }
+}
+
+#[cfg(test)]
+mod literalinclude_reader_tests {
+    //! The pure `LiteralIncludeReader` battery ([INC §3.2], T13 rows
+    //! 1-3 and 6) — no rst parsing anywhere; the reader runs against the
+    //! committed probe-mirror fixture module.
+
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/literalinclude")
+            .join(name)
+    }
+
+    fn example() -> PathBuf {
+        fixture("example.py")
+    }
+
+    /// Set one INVALID_OPTIONS_PAIR-relevant option by its sphinx name.
+    fn set_opt(options: &mut LiteralIncludeOptions, name: &str) {
+        match name {
+            "lineno-match" => options.lineno_match = true,
+            "lineno-start" => options.lineno_start = Some(1),
+            "append" => options.append = Some("x".to_string()),
+            "prepend" => options.prepend = Some("x".to_string()),
+            "start-after" => options.start_after = Some("x".to_string()),
+            "start-at" => options.start_at = Some("x".to_string()),
+            "end-before" => options.end_before = Some("x".to_string()),
+            "end-at" => options.end_at = Some("x".to_string()),
+            "diff" => options.diff = Some(PathBuf::from("x")),
+            "pyobject" => options.pyobject = Some("x".to_string()),
+            "lines" => options.lines = Some("1".to_string()),
+            other => panic!("unknown option {other}"),
+        }
+    }
+
+    fn read(options: LiteralIncludeOptions) -> Result<(String, usize), String> {
+        LiteralIncludeReader::new(example(), options)?.read()
+    }
+
+    fn read_with_warnings(
+        options: LiteralIncludeOptions,
+    ) -> (Result<(String, usize), String>, Vec<String>) {
+        let mut reader = LiteralIncludeReader::new(example(), options).expect("no option conflict");
+        let result = reader.read();
+        (result, reader.take_warnings())
+    }
+
+    // ---- row 1: INVALID_OPTIONS_PAIR --------------------------------
+
+    #[test]
+    fn every_invalid_options_pair_errs_with_the_exact_text() {
+        for (option1, option2) in LITERALINCLUDE_INVALID_PAIRS {
+            let mut options = LiteralIncludeOptions::default();
+            set_opt(&mut options, option1);
+            set_opt(&mut options, option2);
+            let err = LiteralIncludeReader::new(example(), options)
+                .err()
+                .unwrap_or_else(|| panic!("{option1}+{option2} must conflict"));
+            assert_eq!(
+                err,
+                format!("Cannot use both \"{option1}\" and \"{option2}\" options")
+            );
+        }
+    }
+
+    /// The matrix is checked in list order: with lineno-match,
+    /// lineno-start AND diff all present, the first listed pair names
+    /// the error (probed).
+    #[test]
+    fn the_first_matching_pair_in_list_order_names_the_error() {
+        let mut options = LiteralIncludeOptions::default();
+        set_opt(&mut options, "lineno-match");
+        set_opt(&mut options, "lineno-start");
+        set_opt(&mut options, "diff");
+        assert_eq!(
+            LiteralIncludeReader::new(example(), options).err().unwrap(),
+            "Cannot use both \"lineno-match\" and \"lineno-start\" options"
+        );
+    }
+
+    // ---- row 2: chain order -----------------------------------------
+
+    /// `start-at` runs BEFORE `lines`: the line spec addresses the
+    /// clipped region, not the file.
+    #[test]
+    fn lines_apply_after_the_start_clip() {
+        let options = LiteralIncludeOptions {
+            start_at: Some("class Foo".to_string()),
+            lines: Some("1-2".to_string()),
+            ..Default::default()
+        };
+        let (text, count) = read(options).unwrap();
+        assert_eq!(text, "class Foo:\n    \"\"\"A class.\"\"\"\n");
+        assert_eq!(count, 2);
+    }
+
+    /// `dedent` runs BEFORE `prepend`/`append`, and the returned count
+    /// is post-filter (the probe-pinned prepend-append-dedent shape).
+    #[test]
+    fn dedent_precedes_prepend_and_append_and_count_is_post_filter() {
+        let options = LiteralIncludeOptions {
+            lines: Some("15-17".to_string()),
+            dedent: Some(Some(4)),
+            prepend: Some("# begin".to_string()),
+            append: Some("# end".to_string()),
+            ..Default::default()
+        };
+        let (text, count) = read(options).unwrap();
+        assert_eq!(
+            text,
+            "# begin\n\ndef method(self):\n    return self.attr\n# end\n"
+        );
+        assert_eq!(count, 5);
+    }
+
+    /// `pyobject` is the FIRST chain slot: with a start-at that would
+    /// also fail, the pyobject path errs first. TODO(T15): the stub errs
+    /// unconditionally with the honest not-yet-supported text; T15
+    /// replaces it with the DefinitionFinder port and this test's
+    /// expectation moves to the real tag texts.
+    #[test]
+    fn pyobject_slot_runs_first_and_gates_honestly_until_t15() {
+        let options = LiteralIncludeOptions {
+            pyobject: Some("Foo".to_string()),
+            start_at: Some("NOPE".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            read(options).err().unwrap(),
+            "pyobject is not yet supported by sphinx-ultra"
+        );
+    }
+
+    // ---- row 3: filter semantics + exact texts ----------------------
+
+    #[test]
+    fn start_at_matches_a_mid_line_substring_and_keeps_the_line() {
+        let options = LiteralIncludeOptions {
+            start_at: Some("s Foo".to_string()),
+            end_at: Some("\"\"\"A class".to_string()),
+            ..Default::default()
+        };
+        let (text, _) = read(options).unwrap();
+        assert_eq!(text, "class Foo:\n    \"\"\"A class.\"\"\"\n");
+    }
+
+    #[test]
+    fn start_after_drops_through_the_matched_line() {
+        let options = LiteralIncludeOptions {
+            start_after: Some("def tail".to_string()),
+            ..Default::default()
+        };
+        let (text, count) = read(options).unwrap();
+        assert_eq!(text, "    pass\n");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn start_and_end_not_found_texts_are_exact() {
+        for (set, expected) in [
+            (
+                "start-after",
+                "start-after pattern not found: NOPE".to_string(),
+            ),
+            ("start-at", "start-at pattern not found: NOPE".to_string()),
+            (
+                "end-before",
+                "end-before pattern not found: NOPE".to_string(),
+            ),
+            ("end-at", "end-at pattern not found: NOPE".to_string()),
+        ] {
+            let mut options = LiteralIncludeOptions::default();
+            set_opt(&mut options, set);
+            match set {
+                "start-after" => options.start_after = Some("NOPE".to_string()),
+                "start-at" => options.start_at = Some("NOPE".to_string()),
+                "end-before" => options.end_before = Some("NOPE".to_string()),
+                "end-at" => options.end_at = Some("NOPE".to_string()),
+                _ => unreachable!(),
+            }
+            assert_eq!(read(options).err().unwrap(), expected);
+        }
+    }
+
+    /// `end-before` ignores a first-line match and keeps scanning: the
+    /// next match wins.
+    #[test]
+    fn end_before_skips_a_first_line_match_and_takes_the_next() {
+        let options = LiteralIncludeOptions {
+            start_at: Some("def top".to_string()),
+            end_before: Some("def".to_string()),
+            ..Default::default()
+        };
+        // Region starts at file line 6 ("def top(x):"); the first-line
+        // match is skipped, the next "def" is "    def method" at
+        // region index 10 -> lines[..10] = file lines 6-15.
+        let (text, count) = read(options).unwrap();
+        assert_eq!(count, 10);
+        assert!(text.starts_with("def top(x):\n"));
+        assert!(text.ends_with("    attr = 2\n\n"));
+    }
+
+    /// A first-line-ONLY match raises not-found (probed: the loop's
+    /// `pass` keeps scanning and falls off the end).
+    #[test]
+    fn end_before_with_only_a_first_line_match_errs_not_found() {
+        let options = LiteralIncludeOptions {
+            start_at: Some("def tail".to_string()),
+            end_before: Some("def tail".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            read(options).err().unwrap(),
+            "end-before pattern not found: def tail"
+        );
+    }
+
+    #[test]
+    fn end_at_keeps_the_matched_line() {
+        let options = LiteralIncludeOptions {
+            end_at: Some("CONST".to_string()),
+            ..Default::default()
+        };
+        let (text, count) = read(options).unwrap();
+        assert_eq!(text, "\"\"\"Example module.\"\"\"\n\nCONST = 1\n");
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn parse_line_num_spec_semantics_and_error_texts() {
+        // 0-based single.
+        let spec = parse_line_num_spec("3", 21).unwrap();
+        assert_eq!(spec.in_range_values(21), vec![2]);
+        // `0` parses to -1 (Python int('0') - 1).
+        let spec = parse_line_num_spec("0", 21).unwrap();
+        assert_eq!(spec.in_range_values(21), vec![-1]);
+        // Open left: `-10` is range(0, 10).
+        let spec = parse_line_num_spec("-10", 21).unwrap();
+        assert_eq!(spec.in_range_values(21), (0..10).collect::<Vec<i64>>());
+        // Open right: `10-` is range(9, max(10, total)).
+        let spec = parse_line_num_spec("10-", 21).unwrap();
+        assert_eq!(spec.in_range_values(21), (9..21).collect::<Vec<i64>>());
+        // Open right past the end: `10-` with 5 lines is range(9, 10) —
+        // wholly out of range, nothing selected.
+        let spec = parse_line_num_spec("10-", 5).unwrap();
+        assert!(spec.any_out_of_range(5));
+        assert!(spec.in_range_values(5).is_empty());
+        // Duplicates and written order are preserved.
+        let spec = parse_line_num_spec("6-8,1,1", 21).unwrap();
+        assert_eq!(spec.in_range_values(21), vec![5, 6, 7, 0, 0]);
+        // Reversed, bare dash, three-part and non-numeric specs all
+        // raise the exact `invalid line number spec: {spec!r}` text.
+        for bad in ["5-3", "-", "1-2-3", "x", "", "1,"] {
+            assert_eq!(
+                parse_line_num_spec(bad, 21).err().unwrap(),
+                format!("invalid line number spec: {}", py_repr(Some(bad))),
+                "spec {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_range_lines_warn_and_drop() {
+        let options = LiteralIncludeOptions {
+            lines: Some("1,99".to_string()),
+            ..Default::default()
+        };
+        let (result, warnings) = read_with_warnings(options);
+        let (text, count) = result.unwrap();
+        assert_eq!(text, "\"\"\"Example module.\"\"\"\n");
+        assert_eq!(count, 1);
+        assert_eq!(
+            warnings,
+            vec!["line number spec is out of range(1-21): '1,99'".to_string()]
+        );
+    }
+
+    /// `:lines: 99`: the out-of-range warning fires AND the empty
+    /// selection raises — with the `_StrPath(...)` repr in the bytes.
+    #[test]
+    fn no_lines_pulled_errs_with_the_strpath_repr_after_warning() {
+        let options = LiteralIncludeOptions {
+            lines: Some("99".to_string()),
+            ..Default::default()
+        };
+        let (result, warnings) = read_with_warnings(options);
+        assert_eq!(
+            warnings,
+            vec!["line number spec is out of range(1-21): '99'".to_string()]
+        );
+        assert_eq!(
+            result.err().unwrap(),
+            format!(
+                "Line spec '99': no lines pulled from include file _StrPath('{}')",
+                example().display()
+            )
+        );
+    }
+
+    #[test]
+    fn lineno_match_with_disjoint_lines_errs() {
+        let options = LiteralIncludeOptions {
+            lines: Some("1,6".to_string()),
+            lineno_match: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            read(options).err().unwrap(),
+            "Cannot use \"lineno-match\" with a disjoint set of \"lines\""
+        );
+    }
+
+    /// Python's negative-index wrap: `:lines: 0` selects the LAST line.
+    #[test]
+    fn lines_zero_wraps_to_the_last_line() {
+        let options = LiteralIncludeOptions {
+            lines: Some("0".to_string()),
+            ..Default::default()
+        };
+        let (text, count) = read(options).unwrap();
+        assert_eq!(text, "    pass\n");
+        assert_eq!(count, 1);
+    }
+
+    // ---- lineno-match arithmetic per filter -------------------------
+
+    #[test]
+    fn lineno_match_arithmetic_start_at() {
+        let options = LiteralIncludeOptions {
+            start_at: Some("class Foo".to_string()),
+            lineno_match: true,
+            ..Default::default()
+        };
+        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        reader.read().unwrap();
+        // 1 + lineno(10) — start-at keeps the matched line.
+        assert_eq!(reader.lineno_start, 11);
+    }
+
+    #[test]
+    fn lineno_match_arithmetic_start_after() {
+        let options = LiteralIncludeOptions {
+            start_after: Some("\"\"\"Example module.\"\"\"".to_string()),
+            lineno_match: true,
+            ..Default::default()
+        };
+        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        reader.read().unwrap();
+        // 1 + lineno(0) + 1 — start-after drops through the match.
+        assert_eq!(reader.lineno_start, 2);
+    }
+
+    #[test]
+    fn lineno_match_arithmetic_lines() {
+        let options = LiteralIncludeOptions {
+            lines: Some("6-8".to_string()),
+            lineno_match: true,
+            ..Default::default()
+        };
+        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        let (text, _) = reader.read().unwrap();
+        assert_eq!(
+            text,
+            "def top(x):\n    \"\"\"Top function.\"\"\"\n    return x + 1\n"
+        );
+        // 1 + linelist[0] (5) — the probe-pinned linenostart 6.
+        assert_eq!(reader.lineno_start, 6);
+    }
+
+    /// `:lines: 0` + lineno-match: [-1] is trivially contiguous and
+    /// biases the start DOWN — linenostart 0 (probed).
+    #[test]
+    fn lineno_match_arithmetic_lines_zero() {
+        let options = LiteralIncludeOptions {
+            lines: Some("0".to_string()),
+            lineno_match: true,
+            ..Default::default()
+        };
+        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        reader.read().unwrap();
+        assert_eq!(reader.lineno_start, 0);
+    }
+
+    // ---- dedent -----------------------------------------------------
+
+    #[test]
+    fn int_dedent_preserves_a_bare_newline_and_warns_on_stripped_text() {
+        let options = LiteralIncludeOptions {
+            lines: Some("15-17".to_string()),
+            dedent: Some(Some(4)),
+            ..Default::default()
+        };
+        let (result, warnings) = read_with_warnings(options);
+        // Line 15 is bare "\n": the cut empties it and the '\n' is put
+        // back; the indented lines lose exactly 4 columns.
+        assert_eq!(
+            result.unwrap().0,
+            "\ndef method(self):\n    return self.attr\n"
+        );
+        assert!(warnings.is_empty());
+
+        let options = LiteralIncludeOptions {
+            lines: Some("1".to_string()),
+            dedent: Some(Some(2)),
+            ..Default::default()
+        };
+        let (result, warnings) = read_with_warnings(options);
+        assert_eq!(result.unwrap().0, "\"Example module.\"\"\"\n");
+        assert_eq!(
+            warnings,
+            vec!["non-whitespace stripped by dedent".to_string()]
+        );
+    }
+
+    /// Dedent past every line's end: lines become bare newlines, one
+    /// warning (probed).
+    #[test]
+    fn int_dedent_past_line_ends_leaves_bare_newlines() {
+        let options = LiteralIncludeOptions {
+            lines: Some("11-13".to_string()),
+            dedent: Some(Some(400)),
+            ..Default::default()
+        };
+        let (result, warnings) = read_with_warnings(options);
+        assert_eq!(result.unwrap().0, "\n\n\n");
+        assert_eq!(
+            warnings,
+            vec!["non-whitespace stripped by dedent".to_string()]
+        );
+    }
+
+    /// Bare `:dedent:` is a full `textwrap.dedent` (probed shape).
+    #[test]
+    fn bare_dedent_runs_textwrap_dedent() {
+        let options = LiteralIncludeOptions {
+            lines: Some("12-17".to_string()),
+            dedent: Some(None),
+            ..Default::default()
+        };
+        let (text, count) = read(options).unwrap();
+        assert_eq!(
+            text,
+            "\"\"\"A class.\"\"\"\n\nattr = 2\n\ndef method(self):\n    return self.attr\n"
+        );
+        assert_eq!(count, 6);
+    }
+
+    /// The 3.12 `textwrap.dedent` port, pinned against this session's
+    /// interpreter probes (incl. the mixed-tab/space no-op, whitespace-
+    /// only-line blanking, and the unterminated trailing segment).
+    #[test]
+    fn textwrap_dedent_port_matches_python() {
+        for (input, expected) in [
+            ("  a\n    b\n", "a\n  b\n"),
+            ("  a\n\t b\n", "  a\n\t b\n"),
+            ("\ta\n\tb\n", "a\nb\n"),
+            ("  a\n   \n  b\n", "a\n\nb\n"),
+            ("  a\n  b", "a\nb"),
+            ("  a\nb\n", "  a\nb\n"),
+            ("    only\n", "only\n"),
+            ("  a\n  \n", "a\n\n"),
+            ("  a\n  b\n   ", "a\nb\n"),
+        ] {
+            assert_eq!(py_textwrap_dedent(input), expected, "input {input:?}");
+        }
+    }
+
+    // ---- read_file: encoding, tabs, universal newlines --------------
+
+    #[test]
+    fn missing_file_errs_with_the_exact_text() {
+        let path = fixture("nothere.py");
+        let options = LiteralIncludeOptions::default();
+        let err = LiteralIncludeReader::new(path.clone(), options)
+            .unwrap()
+            .read()
+            .err()
+            .unwrap();
+        assert_eq!(
+            err,
+            format!(
+                "Include file '{}' not found or reading it failed",
+                path.display()
+            )
+        );
+    }
+
+    /// The default encoding is sphinx's `source_encoding` default
+    /// `'utf-8-sig'` (probed in the error bytes), and `:encoding:`
+    /// replaces the `%r` in the text.
+    #[test]
+    fn encoding_error_texts_spell_the_encoding_repr() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bad.bin");
+        std::fs::write(&path, b"caf\xe9 line\n").unwrap();
+        let err = LiteralIncludeReader::new(path.clone(), LiteralIncludeOptions::default())
+            .unwrap()
+            .read()
+            .err()
+            .unwrap();
+        assert_eq!(
+            err,
+            format!(
+                "Encoding 'utf-8-sig' used for reading included file '{}' seems to be \
+                 wrong, try giving an :encoding: option",
+                path.display()
+            )
+        );
+        let options = LiteralIncludeOptions {
+            encoding: Some("ascii".to_string()),
+            ..Default::default()
+        };
+        let err = LiteralIncludeReader::new(path.clone(), options)
+            .unwrap()
+            .read()
+            .err()
+            .unwrap();
+        assert_eq!(
+            err,
+            format!(
+                "Encoding 'ascii' used for reading included file '{}' seems to be \
+                 wrong, try giving an :encoding: option",
+                path.display()
+            )
+        );
+        // latin-1 decodes the same bytes fine.
+        let options = LiteralIncludeOptions {
+            encoding: Some("latin-1".to_string()),
+            ..Default::default()
+        };
+        let (text, _) = LiteralIncludeReader::new(path, options)
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(text, "caf\u{e9} line\n");
+    }
+
+    #[test]
+    fn tab_width_expands_before_splitting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tabs.py");
+        std::fs::write(&path, "def f():\n\treturn 1\n").unwrap();
+        let options = LiteralIncludeOptions {
+            tab_width: Some(4),
+            ..Default::default()
+        };
+        let (text, count) = LiteralIncludeReader::new(path, options)
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(text, "def f():\n    return 1\n");
+        assert_eq!(count, 2);
+    }
+
+    /// A file without a trailing newline: the last line is a real line;
+    /// `append` adds its own element, so the two concatenate (probed
+    /// `y = 2# after`).
+    #[test]
+    fn no_trailing_newline_concatenates_with_append() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nonl.py");
+        std::fs::write(&path, "x = 1\ny = 2").unwrap();
+        let options = LiteralIncludeOptions {
+            append: Some("# after".to_string()),
+            ..Default::default()
+        };
+        let (text, count) = LiteralIncludeReader::new(path, options)
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(text, "x = 1\ny = 2# after\n");
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn crlf_input_reads_as_universal_newlines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("crlf.py");
+        std::fs::write(&path, "a\r\nb\rc\n").unwrap();
+        let (text, count) = LiteralIncludeReader::new(path, LiteralIncludeOptions::default())
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(text, "a\nb\nc\n");
+        assert_eq!(count, 3);
+    }
+
+    // ---- row 6: diff mode -------------------------------------------
+
+    /// The probe-pinned whole-file diff of the fixture pair: headers
+    /// `--- old` / `+++ new` with no timestamps, one hunk.
+    #[test]
+    fn diff_mode_produces_the_probed_unified_diff() {
+        let old = fixture("example_old.py");
+        let options = LiteralIncludeOptions {
+            diff: Some(old.clone()),
+            ..Default::default()
+        };
+        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        let (text, count) = reader.read().unwrap();
+        let expected = format!(
+            "--- {}\n+++ {}\n@@ -1,7 +1,21 @@\n \"\"\"Example module.\"\"\"\n \n\
+             -CONST = 0\n+CONST = 1\n \n \n def top(x):\n-    return x\n\
+             +    \"\"\"Top function.\"\"\"\n+    return x + 1\n+\n+\n\
+             +class Foo:\n+    \"\"\"A class.\"\"\"\n+\n+    attr = 2\n+\n\
+             +    def method(self):\n+        return self.attr\n+\n+\n\
+             +def tail():\n+    pass\n",
+            old.display(),
+            example().display()
+        );
+        assert_eq!(text, expected);
+        // 2 headers + 1 hunk line + 23 body lines.
+        assert_eq!(count, 26);
+        // linenostart stays at its default in diff mode.
+        assert_eq!(reader.lineno_start, 1);
+    }
+
+    /// Identical files: no groups, no headers — empty text, count 0
+    /// (probed empty literal_block).
+    #[test]
+    fn diff_of_identical_files_is_empty() {
+        let options = LiteralIncludeOptions {
+            diff: Some(example()),
+            ..Default::default()
+        };
+        let (text, count) = read(options).unwrap();
+        assert_eq!(text, "");
+        assert_eq!(count, 0);
+    }
+
+    /// Missing diff file: the CURRENT file reads first, then the old
+    /// one fails with the read_file text (probed).
+    #[test]
+    fn diff_with_a_missing_old_file_errs_through_read_file() {
+        let gone = fixture("gone.py");
+        let options = LiteralIncludeOptions {
+            diff: Some(gone.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            read(options).err().unwrap(),
+            format!(
+                "Include file '{}' not found or reading it failed",
+                gone.display()
+            )
+        );
+    }
+
+    /// The difflib port, pinned against CPython 3.12 outputs for a
+    /// replace+delete+insert mix (with an unterminated last line kept
+    /// verbatim), two far-apart hunks, and an empty old side.
+    #[test]
+    fn unified_diff_port_matches_python_difflib() {
+        let to_lines = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let a = to_lines(&["a\n", "b\n", "c\n", "d\n", "e"]);
+        let b = to_lines(&["a\n", "x\n", "c\n", "e", "f\n"]);
+        assert_eq!(
+            py_unified_diff(&a, &b, "o", "n"),
+            to_lines(&[
+                "--- o\n",
+                "+++ n\n",
+                "@@ -1,5 +1,5 @@\n",
+                " a\n",
+                "-b\n",
+                "+x\n",
+                " c\n",
+                "-d\n",
+                " e",
+                "+f\n",
+            ])
+        );
+
+        let a: Vec<String> = (0..30).map(|i| format!("l{i}\n")).collect();
+        let mut b = a.clone();
+        b[2] = "l2X\n".to_string();
+        b[27] = "l27X\n".to_string();
+        assert_eq!(
+            py_unified_diff(&a, &b, "o", "n"),
+            to_lines(&[
+                "--- o\n",
+                "+++ n\n",
+                "@@ -1,6 +1,6 @@\n",
+                " l0\n",
+                " l1\n",
+                "-l2\n",
+                "+l2X\n",
+                " l3\n",
+                " l4\n",
+                " l5\n",
+                "@@ -25,6 +25,6 @@\n",
+                " l24\n",
+                " l25\n",
+                " l26\n",
+                "-l27\n",
+                "+l27X\n",
+                " l28\n",
+                " l29\n",
+            ])
+        );
+
+        assert_eq!(
+            py_unified_diff(&[], &to_lines(&["a\n"]), "o", "n"),
+            to_lines(&["--- o\n", "+++ n\n", "@@ -0,0 +1 @@\n", "+a\n"])
+        );
+    }
+
+    /// Autojunk: 260 lines where every second one is blank — blank lines
+    /// are popular (> n/100 + 1 occurrences), cannot seed matches, and
+    /// the grouping still comes out exactly as CPython's (pinned bytes
+    /// from a 3.12 probe).
+    #[test]
+    fn unified_diff_port_reproduces_autojunk_grouping() {
+        let mut a: Vec<String> = Vec::new();
+        for i in 0..130 {
+            a.push(format!("line {i}\n"));
+            a.push("\n".to_string());
+        }
+        let mut b = a.clone();
+        b[40] = "line 20 CHANGED\n".to_string();
+        b[200] = "line 100 CHANGED\n".to_string();
+        b.insert(100, "inserted\n".to_string());
+        let expected: Vec<String> = [
+            "--- old\n",
+            "+++ new\n",
+            "@@ -38,7 +38,7 @@\n",
+            " \n",
+            " line 19\n",
+            " \n",
+            "-line 20\n",
+            "+line 20 CHANGED\n",
+            " \n",
+            " line 21\n",
+            " \n",
+            "@@ -98,6 +98,7 @@\n",
+            " \n",
+            " line 49\n",
+            " \n",
+            "+inserted\n",
+            " line 50\n",
+            " \n",
+            " line 51\n",
+            "@@ -198,7 +199,7 @@\n",
+            " \n",
+            " line 99\n",
+            " \n",
+            "-line 100\n",
+            "+line 100 CHANGED\n",
+            " \n",
+            " line 101\n",
+            " \n",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(py_unified_diff(&a, &b, "old", "new"), expected);
+    }
+
+    #[test]
+    fn splitlines_keepends_matches_python_boundaries() {
+        assert_eq!(
+            py_splitlines_keepends("a\r\nb\rc\x0bd\ne"),
+            vec!["a\r\n", "b\r", "c\x0b", "d\n", "e"]
+        );
+        assert_eq!(py_splitlines_keepends(""), Vec::<String>::new());
+        assert_eq!(py_splitlines_keepends("\n\n"), vec!["\n", "\n"]);
+    }
+}
+
+#[cfg(test)]
+mod literalinclude_tests {
+    //! rst-level literalinclude battery: node anatomy (row 4), captions
+    //! (row 5), diff (row 6), the error funnel (row 7), the dependency
+    //! record (row 8), and the warning-channel split (row 3, [INC §3.4])
+    //! — pformats and warning bytes pinned against PROBE 4/5 plus this
+    //! session's probes.
+
+    use super::*;
+    use crate::rst::{parse_rst_full, ParseOptions, ParseOutput};
+    use std::path::Path;
+
+    const EXAMPLE_PY: &str = include_str!("../../tests/fixtures/literalinclude/example.py");
+    const EXAMPLE_OLD_PY: &str = include_str!("../../tests/fixtures/literalinclude/example_old.py");
+
+    fn write(dir: &Path, name: &str, content: &str) {
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+
+    /// Sphinx-mode parse of `main` as `main.rst` inside a srcdir holding
+    /// the fixture module.
+    fn parse(srcdir: &Path, main: &str) -> ParseOutput {
+        write(srcdir, "example.py", EXAMPLE_PY);
+        parse_rst_full(
+            main,
+            &ParseOptions {
+                source_path: srcdir.join("main.rst").display().to_string(),
+                sphinx: true,
+                docname: "main".to_string(),
+                srcdir: Some(srcdir.to_path_buf()),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn messages_of(output: &ParseOutput) -> Vec<(i64, i64, String, String)> {
+        fn walk(node: &Node, out: &mut Vec<(i64, i64, String, String)>) {
+            if node.kind == kinds::SYSTEM_MESSAGE {
+                let level = match node.get("level") {
+                    Some(AttrValue::Int(n)) => *n,
+                    _ => 0,
+                };
+                let line = match node.get("line") {
+                    Some(AttrValue::Int(n)) => *n,
+                    _ => 0,
+                };
+                let source = match node.get("source") {
+                    Some(AttrValue::Str(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let text = node
+                    .children
+                    .first()
+                    .map(|p| p.astext())
+                    .unwrap_or_default();
+                out.push((level, line, source, text));
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&output.doctree.root, &mut out);
+        out
+    }
+
+    // ---- row 4: node anatomy ----------------------------------------
+
+    /// The PROBE 4 lines-emph-caption-name shape, byte for byte:
+    /// container takes ids/names, caption parses inline markup,
+    /// `hl_lines` renders 1-based before the unconditional linenostart,
+    /// `language` only because it was given, NO linenos attr.
+    #[test]
+    fn caption_name_emphasize_anatomy_matches_the_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :language: python\n\
+             \x20  :lines: 1,6-8\n\
+             \x20  :emphasize-lines: 2,4\n\
+             \x20  :caption: The *example* file\n\
+             \x20  :name: lit-example\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<container classes=\"literal-block-wrapper\" ids=\"lit-example\" \
+                 literal_block=\"1\" names=\"lit-example\">\n\
+                 \x20   <caption>\n\
+                 \x20       The \n\
+                 \x20       <emphasis>\n\
+                 \x20           example\n\
+                 \x20        file\n\
+                 \x20   <literal_block force=\"0\" highlight_args=\"{{'hl_lines': [2, 4], \
+                 'linenostart': 1}}\" language=\"python\" source=\"{p}/example.py\" \
+                 xml:space=\"preserve\">\n\
+                 \x20       \"\"\"Example module.\"\"\"\n\
+                 \x20       def top(x):\n\
+                 \x20           \"\"\"Top function.\"\"\"\n\
+                 \x20           return x + 1\n"
+            )
+        );
+        assert!(messages_of(&output).is_empty());
+        assert!(output.registry.log_warnings.is_empty());
+    }
+
+    /// `linenos="1"` appears iff one of linenos/lineno-start/
+    /// lineno-match is given (absent otherwise — probed); lineno-match
+    /// with `:lines:` biases linenostart.
+    #[test]
+    fn linenos_appears_only_when_asked_and_lineno_match_biases_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :lines: 6-8\n\
+             \x20  :lineno-match:\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 6}}\" \
+                 linenos=\"1\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 \x20   def top(x):\n\
+                 \x20       \"\"\"Top function.\"\"\"\n\
+                 \x20       return x + 1\n"
+            )
+        );
+    }
+
+    #[test]
+    fn lineno_start_sets_linenos_and_linenostart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :lines: 1-2\n\
+             \x20  :lineno-start: 5\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 5}}\" \
+                 linenos=\"1\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 \x20   \"\"\"Example module.\"\"\"\n\
+                 \x20   \n"
+            )
+        );
+    }
+
+    /// force/class land as attrs; absent `:language:` leaves the
+    /// attribute unset entirely (NO highlight_language fallback), and
+    /// the trailing blank line of the clip survives into the text.
+    #[test]
+    fn start_end_clip_anatomy_with_force_and_class() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :start-at: class Foo\n\
+             \x20  :end-before: def method\n\
+             \x20  :force:\n\
+             \x20  :class: snippet\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<literal_block classes=\"snippet\" force=\"1\" \
+                 highlight_args=\"{{'linenostart': 1}}\" source=\"{p}/example.py\" \
+                 xml:space=\"preserve\">\n\
+                 \x20   class Foo:\n\
+                 \x20       \"\"\"A class.\"\"\"\n\
+                 \x20   \n\
+                 \x20       attr = 2\n\
+                 \x20   \n"
+            )
+        );
+    }
+
+    #[test]
+    fn prepend_append_dedent_anatomy_matches_the_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :lines: 15-17\n\
+             \x20  :dedent: 4\n\
+             \x20  :prepend: # begin\n\
+             \x20  :append: # end\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 1}}\" \
+                 source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 \x20   # begin\n\
+                 \x20   \n\
+                 \x20   def method(self):\n\
+                 \x20       return self.attr\n\
+                 \x20   # end\n"
+            )
+        );
+        assert!(messages_of(&output).is_empty());
+    }
+
+    /// `:name:` without a caption lands on the literal_block itself.
+    #[test]
+    fn name_without_caption_lands_on_the_literal_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :lines: 3\n\
+             \x20  :name: const-line\n",
+        );
+        let node = &output.doctree.root.children[0];
+        assert_eq!(node.kind, kinds::LITERAL_BLOCK);
+        assert_eq!(node.attrs.ids, vec!["const-line".to_string()]);
+        assert_eq!(node.attrs.names, vec!["const-line".to_string()]);
+    }
+
+    // ---- row 5: captions --------------------------------------------
+
+    /// The EMPTY `:caption:` falls back to the path as written, and the
+    /// unnamed captioned container gets the AutoNumbering implicit
+    /// `ids="id1"` with no name (probed).
+    #[test]
+    fn empty_caption_falls_back_to_the_path_and_gets_id1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :caption:\n\
+             \x20  :lines: 3\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<container classes=\"literal-block-wrapper\" ids=\"id1\" \
+                 literal_block=\"1\">\n\
+                 \x20   <caption>\n\
+                 \x20       example.py\n\
+                 \x20   <literal_block force=\"0\" highlight_args=\"{{'linenostart': 1}}\" \
+                 source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 \x20       CONST = 1\n"
+            )
+        );
+    }
+
+    /// A caption whose parse leads with a system_message raises the
+    /// `Invalid caption` ValueError into the reporter funnel — the
+    /// message body renders through system_message.astext()'s
+    /// `source:line: (TYPE/level)` prefix (probed bytes).
+    #[test]
+    fn an_invalid_caption_becomes_one_reporter_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :lines: 3\n\
+             \x20  :caption: .. bogus::\n",
+        );
+        let p = tmp.path().display();
+        let msgs = messages_of(&output);
+        assert_eq!(msgs.len(), 1, "{}", output.doctree.root.pformat());
+        assert_eq!(msgs[0].0, 2);
+        assert_eq!(msgs[0].1, 1);
+        assert_eq!(
+            msgs[0].3,
+            format!(
+                "Invalid caption: {p}/main.rst:1: (INFO/1) No directive entry for \
+                 \"bogus\" in module \"docutils.parsers.rst.languages.en\".\n\
+                 Trying \"bogus\" as canonical directive name."
+            )
+        );
+    }
+
+    // ---- row 6: diff mode -------------------------------------------
+
+    /// Diff mode: `--- old` / `+++ new` headers with no timestamps,
+    /// `language="udiff"`, every other filter skipped; the diff file is
+    /// NOT a dependency, the main file IS.
+    #[test]
+    fn diff_mode_anatomy_and_dependency_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "example_old.py", EXAMPLE_OLD_PY);
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :diff: example_old.py\n",
+        );
+        let p = tmp.path().display();
+        let node = &output.doctree.root.children[0];
+        assert_eq!(node.kind, kinds::LITERAL_BLOCK);
+        assert_eq!(
+            node.get("language"),
+            Some(&AttrValue::Str("udiff".to_string()))
+        );
+        assert_eq!(
+            node.get("source"),
+            Some(&AttrValue::Str(format!("{p}/example.py")))
+        );
+        let text = node.children[0].astext();
+        assert!(
+            text.starts_with(&format!(
+                "--- {p}/example_old.py\n+++ {p}/example.py\n@@ -1,7 +1,21 @@\n"
+            )),
+            "{text}"
+        );
+        assert_eq!(output.registry.dependencies, vec!["example.py".to_string()]);
+    }
+
+    // ---- row 3: the warning-channel split ---------------------------
+
+    /// The three logger-channel warnings ride `log_warnings` with the
+    /// doc2path-doubled RENDERED location and never enter the tree;
+    /// keep_warnings-style reporter messages stay out of the record
+    /// stream ([INC §3.4]).
+    #[test]
+    fn the_three_logger_warnings_render_the_doubled_suffix_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().display().to_string();
+        for (main, line, message) in [
+            (
+                ".. literalinclude:: example.py\n\x20  :lines: 1,99\n".to_string(),
+                1i64,
+                "line number spec is out of range(1-21): '1,99'".to_string(),
+            ),
+            (
+                "para\n\n.. literalinclude:: example.py\n\
+                 \x20  :lines: 1-3\n\x20  :emphasize-lines: 2,9\n"
+                    .to_string(),
+                3,
+                "line number spec is out of range(1-3): '2,9'".to_string(),
+            ),
+            (
+                ".. literalinclude:: example.py\n\
+                 \x20  :lines: 1\n\x20  :dedent: 2\n"
+                    .to_string(),
+                1,
+                "non-whitespace stripped by dedent".to_string(),
+            ),
+        ] {
+            let output = parse(tmp.path(), &main);
+            assert!(
+                messages_of(&output).is_empty(),
+                "logger-channel warnings never enter the tree: {}",
+                output.doctree.root.pformat()
+            );
+            let warnings = &output.registry.log_warnings;
+            assert_eq!(warnings.len(), 1, "{main}");
+            assert_eq!(warnings[0].message, message);
+            assert_eq!(i64::from(warnings[0].line), line);
+            assert!(warnings[0].doc2path_location);
+            let table_path = &output.doctree.sources[warnings[0].source as usize];
+            // The RENDERED location string — the doc2path append doubles
+            // the suffix exactly as sphinx renders it.
+            assert_eq!(
+                warnings[0].rendered_path(table_path),
+                format!("{p}/main.rst.rst")
+            );
+        }
+    }
+
+    /// A literalinclude inside an INCLUDED file attributes the logger
+    /// warning to the included file's own provenance (its srcdir-relative
+    /// display spelling, §Scope-8), still with the doubled suffix.
+    #[test]
+    fn logger_location_inside_an_included_file_is_the_included_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "part.rst",
+            "part para\n\n.. literalinclude:: example.py\n\x20  :lines: 1,99\n",
+        );
+        let output = parse(tmp.path(), ".. include:: part.rst\n");
+        let warnings = &output.registry.log_warnings;
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].line, 3);
+        let table_path = &output.doctree.sources[warnings[0].source as usize];
+        assert_eq!(warnings[0].rendered_path(table_path), "part.rst.rst");
+    }
+
+    /// `:lines: 99` produces BOTH channels: the logger out-of-range
+    /// warning AND the reporter no-lines-pulled warning with the
+    /// `_StrPath` repr bytes (probed pair).
+    #[test]
+    fn lines_99_warns_on_the_logger_channel_and_errs_on_the_reporter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            "para\n\n.. literalinclude:: example.py\n\x20  :lines: 99\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(output.registry.log_warnings.len(), 1);
+        assert_eq!(
+            output.registry.log_warnings[0].message,
+            "line number spec is out of range(1-21): '99'"
+        );
+        let msgs = messages_of(&output);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0],
+            (
+                2,
+                3,
+                format!("{p}/main.rst"),
+                format!(
+                    "Line spec '99': no lines pulled from include file \
+                     _StrPath('{p}/example.py')"
+                )
+            )
+        );
+    }
+
+    // ---- row 7: the error funnel ------------------------------------
+
+    /// Every reader error is ONE reporter warning at the directive line
+    /// with the error text as the message — no literal rawsource child
+    /// (`reporter.warning(exc, line=...)`, not a directive error).
+    #[test]
+    fn reader_errors_funnel_into_one_reporter_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("bad.bin"), b"caf\xe9\n").unwrap();
+        let p = tmp.path().display().to_string();
+        for (main, line, message) in [
+            (
+                "c\n\n.. literalinclude:: nothere.py\n".to_string(),
+                3i64,
+                format!("Include file '{p}/nothere.py' not found or reading it failed"),
+            ),
+            (
+                ".. literalinclude:: example.py\n\
+                 \x20  :start-after: x\n\x20  :start-at: y\n"
+                    .to_string(),
+                1,
+                "Cannot use both \"start-after\" and \"start-at\" options".to_string(),
+            ),
+            (
+                ".. literalinclude:: bad.bin\n".to_string(),
+                1,
+                format!(
+                    "Encoding 'utf-8-sig' used for reading included file '{p}/bad.bin' \
+                     seems to be wrong, try giving an :encoding: option"
+                ),
+            ),
+            (
+                ".. literalinclude:: example.py\n\
+                 \x20  :lines: 1,6\n\x20  :lineno-match:\n"
+                    .to_string(),
+                1,
+                "Cannot use \"lineno-match\" with a disjoint set of \"lines\"".to_string(),
+            ),
+            (
+                ".. literalinclude:: example.py\n\x20  :start-after: NOPE\n".to_string(),
+                1,
+                "start-after pattern not found: NOPE".to_string(),
+            ),
+            (
+                ".. literalinclude:: example.py\n\x20  :lines: 5-3\n".to_string(),
+                1,
+                "invalid line number spec: '5-3'".to_string(),
+            ),
+            (
+                // An invalid emphasize spec replaces the whole node.
+                ".. literalinclude:: example.py\n\
+                 \x20  :lines: 1-3\n\x20  :emphasize-lines: 5-3\n"
+                    .to_string(),
+                1,
+                "invalid line number spec: '5-3'".to_string(),
+            ),
+            (
+                // TODO(T15): the honest pyobject gate — the stub's text
+                // rides the standard except→reporter channel.
+                ".. literalinclude:: example.py\n\x20  :pyobject: Foo\n".to_string(),
+                1,
+                "pyobject is not yet supported by sphinx-ultra".to_string(),
+            ),
+        ] {
+            let output = parse(tmp.path(), &main);
+            let msgs = messages_of(&output);
+            assert_eq!(msgs.len(), 1, "{main}:\n{}", output.doctree.root.pformat());
+            assert_eq!(msgs[0].0, 2, "{main}");
+            assert_eq!(msgs[0].1, line, "{main}");
+            assert_eq!(msgs[0].3, message, "{main}");
+            // No literal_block node replaced the failed directive.
+            assert!(
+                output
+                    .doctree
+                    .root
+                    .children
+                    .iter()
+                    .all(|n| n.kind != kinds::LITERAL_BLOCK),
+                "{main}"
+            );
+            // The reporter message carries no rawsource literal child.
+            let sm = output
+                .doctree
+                .root
+                .children
+                .iter()
+                .find(|n| n.kind == kinds::SYSTEM_MESSAGE)
+                .unwrap();
+            assert_eq!(sm.children.len(), 1, "{main}");
+        }
+    }
+
+    /// The docutils option-conversion layer still owns converter errors:
+    /// a negative `:dedent:` is a directive ERROR with the optional_int
+    /// text (probed), not a reader warning.
+    #[test]
+    fn negative_dedent_is_a_directive_option_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\x20  :dedent: -2\n",
+        );
+        let msgs = messages_of(&output);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, 3);
+        assert_eq!(
+            msgs[0].3,
+            "Error in \"literalinclude\" directive:\ninvalid option value: \
+             (option: \"dedent\"; value: '-2')\nnegative value; must be positive or zero."
+        );
+        // The directive never ran: no dependency was recorded.
+        assert!(output.registry.dependencies.is_empty());
+    }
+
+    // ---- row 8: the dependency record -------------------------------
+
+    /// `env.note_dependency(rel_filename)` is recorded BEFORE reading:
+    /// a missing file and an option-conflict error both still record.
+    #[test]
+    fn dependency_records_precede_the_read_even_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(tmp.path(), ".. literalinclude:: nothere.py\n");
+        assert_eq!(output.registry.dependencies, vec!["nothere.py".to_string()]);
+
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :start-after: x\n\x20  :start-at: y\n",
+        );
+        assert_eq!(output.registry.dependencies, vec!["example.py".to_string()]);
+    }
+
+    /// Docname-relative resolution: a document in a subdirectory
+    /// resolves the argument against its own directory (env.relfn2path).
+    #[test]
+    fn the_argument_resolves_docname_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        write(tmp.path(), "sub/data.py", "x = 1\n");
+        write(tmp.path(), "example.py", EXAMPLE_PY);
+        let output = parse_rst_full(
+            ".. literalinclude:: data.py\n",
+            &ParseOptions {
+                source_path: tmp.path().join("sub/page.rst").display().to_string(),
+                sphinx: true,
+                docname: "sub/page".to_string(),
+                srcdir: Some(tmp.path().to_path_buf()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            output.registry.dependencies,
+            vec!["sub/data.py".to_string()]
+        );
+        let node = &output.doctree.root.children[0];
+        assert_eq!(
+            node.get("source"),
+            Some(&AttrValue::Str(
+                tmp.path().join("sub/data.py").display().to_string()
+            ))
+        );
+        assert_eq!(node.children[0].astext(), "x = 1\n");
     }
 }

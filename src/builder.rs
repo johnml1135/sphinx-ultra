@@ -1141,10 +1141,13 @@ impl SphinxBuilder {
             }
         }
         for warning in &document.registry.log_warnings {
+            // `rendered_path` reproduces sphinx's tuple-location doc2path
+            // append (the doubled `.rst.rst` quirk) for the records that
+            // carry it — see `ParseLogWarning::rendered_path` for WHY.
             let source_path = doctree
                 .sources
                 .get(warning.source as usize)
-                .map(PathBuf::from)
+                .map(|path| PathBuf::from(warning.rendered_path(path)))
                 .unwrap_or_else(|| document.source_path.clone());
             // Sphinx logs these with no `type`/`subtype`, so they render
             // with no `[category]` suffix.

@@ -289,9 +289,10 @@ pub struct RegistryExport {
 
 /// One `logger.warning` a directive raised during the parse.
 ///
-/// Today the only producer is `Cmdoption.handle_signature`'s malformed
-/// option description (`domains/std/__init__.py:237-245`), which is logged
-/// with no `type`/`subtype` and so renders with no `[category]` suffix.
+/// Producers: `Cmdoption.handle_signature`'s malformed option description
+/// (`domains/std/__init__.py:237-245`) and — since wave 4.5 — the three
+/// `literalinclude` reader warnings ([INC §3.4]). All are logged with no
+/// `type`/`subtype` and so render with no `[category]` suffix.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParseLogWarning {
     /// Source-table index of the `location=` node's line: the replay
@@ -303,6 +304,37 @@ pub struct ParseLogWarning {
     pub message: String,
     /// 1-based line of the `location=` node Sphinx passes.
     pub line: u32,
+    /// When true, the rendered location appends the first source suffix to
+    /// the source path (see [`Self::rendered_path`]). Not
+    /// `#[serde(default)]` (cache-shape rule, see
+    /// [`RegistryExport::program_options`]): a pre-wave-4.5 cache entry
+    /// must MISS, not decode with the flag silently off.
+    pub doc2path_location: bool,
+}
+
+impl ParseLogWarning {
+    /// The path the rendered warning line spells for this record's source
+    /// table path.
+    ///
+    /// WHY the doubled suffix: a Sphinx `logger.warning(...,
+    /// location=(source, line))` tuple is treated by the log translator as
+    /// `(docname, lineno)` and rendered `f'{env.doc2path(docname)}:{lineno}'`
+    /// (`SP/util/logging.py:507-512`); `doc2path` on a string that is not a
+    /// known docname appends the project's first source suffix
+    /// (`SP/project.py:114-128`). The three literalinclude reader warnings
+    /// pass a full path like `<srcdir>/a.rst` as the tuple's `source`, so
+    /// Sphinx renders the doubled `<srcdir>/a.rst.rst` — byte-exact oracle
+    /// behavior (probed, [INC §3.4]), reproduced here on replay. The
+    /// appended suffix is the crate's first source suffix (`.rst`, matching
+    /// sphinx's default `source_suffix[0]` and this crate's discovery
+    /// order).
+    pub fn rendered_path(&self, source_path: &str) -> String {
+        if self.doc2path_location {
+            format!("{source_path}.rst")
+        } else {
+            source_path.to_string()
+        }
+    }
 }
 
 /// Everything a parse produces: the doctree plus the flat records the
@@ -396,7 +428,7 @@ mod tests {
                 "aliased":false,"source":0,"lineno":1}],
             "py_modules":[{"name":"m","node_id":"module-m","synopsis":"","platform":"",
                 "deprecated":false,"source":0,"lineno":1}],
-            "log_warnings":[{"source":0,"message":"m","line":2}],
+            "log_warnings":[{"source":0,"message":"m","line":2,"doc2path_location":false}],
             "dependencies":["part.rst"],"included":["part"]}"#;
         serde_json::from_str::<RegistryExport>(with_source).expect("the current shape decodes");
 
@@ -418,7 +450,15 @@ mod tests {
                 "log_warnings":[]}"#,
             r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
                 "py_objects":[],"py_modules":[],
-                "log_warnings":[{"message":"m","line":2}]}"#,
+                "log_warnings":[{"message":"m","line":2,"doc2path_location":false}]}"#,
+            // A wave-4.5 pre-literalinclude log record (no
+            // doc2path_location) must MISS: decoding it with the flag
+            // silently off would render the three literalinclude reader
+            // warnings at the un-doubled path on a warm rebuild.
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "py_objects":[],"py_modules":[],
+                "log_warnings":[{"source":0,"message":"m","line":2}],
+                "dependencies":[],"included":[]}"#,
         ] {
             assert!(
                 serde_json::from_str::<RegistryExport>(stale).is_err(),

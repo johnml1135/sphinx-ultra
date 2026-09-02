@@ -8,6 +8,7 @@
 pub mod annotations;
 pub mod arglist;
 pub mod expr;
+pub mod pycode;
 
 #[cfg(test)]
 mod tests;
