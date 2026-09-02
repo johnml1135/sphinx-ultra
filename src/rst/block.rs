@@ -3650,6 +3650,13 @@ impl BlockParser {
             self.confval_transform_content(&input, &mut content);
         }
         if let DescDispatch::Py(py) = kind {
+            // Base-run tail order (`directives/__init__.py`): the
+            // `object-description-transform` event (`filter_meta_fields`,
+            // py-domain handler) fires FIRST, then `DocFieldTransformer`
+            // rewrites the doc fields, then `after_content` pops the
+            // ref_context the field xrefs just read.
+            filter_meta_fields(&mut content);
+            self.transform_py_doc_fields(&mut content);
             self.py_after_content(py, &input);
         }
         desc.children.push(content);
@@ -4324,6 +4331,26 @@ impl BlockParser {
             // `modules.pop()` when the stack has entries, else the
             // ref_context key is removed — both read back as None here.
             self.py_module = self.py_modules.pop().flatten();
+        }
+    }
+
+    /// `DocFieldTransformer(self).transform_all(content_node)` scoped to
+    /// the py field set — the base `run` applies it to every object
+    /// description AFTER the `object-description-transform` event and
+    /// BEFORE `after_content`, so the ref_context the field xrefs read is
+    /// still the object's own scope. Only immediate `field_list` children
+    /// are transformed (`docfields.py:354-359`). std kinds keep their raw
+    /// field lists (wave-4 behavior; this pass is invoked for py kinds
+    /// only).
+    fn transform_py_doc_fields(&mut self, content: &mut Node) {
+        let ctx = crate::py::annotations::PyRefContext {
+            module: self.py_module.clone(),
+            class_: self.py_class.clone(),
+        };
+        for child in &mut content.children {
+            if child.kind == kinds::FIELD_LIST {
+                transform_py_doc_field_list(child, &ctx, &self.py);
+            }
         }
     }
 
@@ -7746,6 +7773,701 @@ fn desc_annotation_node(span: Span) -> Node {
     let mut node = Node::elem("desc_annotation", span);
     node.set("xml:space", AttrValue::Str("preserve".to_string()));
     node
+}
+
+// ====================================================================
+// Doc-field transformation (M2 wave 4.5 task 7): the
+// `sphinx.util.docfields.DocFieldTransformer` port scoped to the py
+// field set (`PyObject.doc_field_types`, `_object.py:187-232`), run as a
+// desc_content post-pass for py object kinds only [PY §1.6 "Doc fields"].
+// ====================================================================
+
+/// One `PyObject.doc_field_types` entry. The five entries mirror
+/// `_object.py:187-232` exactly (names/typenames/labels/roles verified
+/// against the 9.1.0 source dump).
+/// Sphinx keys these by `Field.name` (`parameter`/`variable`/
+/// `exceptions`/`returnvalue`/`returntype`); the port keys the grouped
+/// entries and the `types` map by [`PY_DOC_FIELDS`] index instead.
+struct PyDocField {
+    /// The rendered `field_name` label.
+    label: &'static str,
+    /// `GroupedField`: every occurrence collects into ONE field.
+    is_grouped: bool,
+    /// `TypedField`: `:type x:` companions and `:param type name:` syntax.
+    is_typed: bool,
+    /// Single-item groups collapse to a bare paragraph (no bullet_list).
+    can_collapse: bool,
+    /// Whether the field REQUIRES an argument (`Field.has_arg`); a
+    /// mismatch in either direction demotes the field to unknown.
+    has_arg: bool,
+    /// Role for the field-argument xrefs (only raises' `exc`).
+    rolename: &'static str,
+    /// Role for typed fields' type xrefs (`class`).
+    typerolename: &'static str,
+    /// Role for a single-text BODY (only rtype's `class`).
+    bodyrolename: &'static str,
+    /// Whether the field class carries `PyXrefMixin` — `returnvalue` is a
+    /// plain `docfields.Field`, everything else is a `Py*Field`. The mixin
+    /// is what splits multi-type strings and stamps the py attrs.
+    py_xref: bool,
+}
+
+/// Indices into [`PY_DOC_FIELDS`].
+const PY_FIELD_PARAMETER: usize = 0;
+const PY_FIELD_VARIABLE: usize = 1;
+const PY_FIELD_EXCEPTIONS: usize = 2;
+const PY_FIELD_RETURNVALUE: usize = 3;
+const PY_FIELD_RETURNTYPE: usize = 4;
+
+const PY_DOC_FIELDS: [PyDocField; 5] = [
+    PyDocField {
+        label: "Parameters",
+        is_grouped: true,
+        is_typed: true,
+        can_collapse: true,
+        has_arg: true,
+        rolename: "",
+        typerolename: "class",
+        bodyrolename: "",
+        py_xref: true,
+    },
+    PyDocField {
+        label: "Variables",
+        is_grouped: true,
+        is_typed: true,
+        can_collapse: true,
+        has_arg: true,
+        rolename: "",
+        typerolename: "class",
+        bodyrolename: "",
+        py_xref: true,
+    },
+    PyDocField {
+        label: "Raises",
+        is_grouped: true,
+        is_typed: false,
+        can_collapse: true,
+        has_arg: true,
+        rolename: "exc",
+        typerolename: "",
+        bodyrolename: "",
+        py_xref: true,
+    },
+    PyDocField {
+        label: "Returns",
+        is_grouped: false,
+        is_typed: false,
+        can_collapse: false,
+        has_arg: false,
+        rolename: "",
+        typerolename: "",
+        bodyrolename: "",
+        py_xref: false,
+    },
+    PyDocField {
+        label: "Return type",
+        is_grouped: false,
+        is_typed: false,
+        can_collapse: false,
+        has_arg: false,
+        rolename: "",
+        typerolename: "",
+        bodyrolename: "class",
+        py_xref: true,
+    },
+];
+
+/// `ObjectDescription.get_field_type_map()` for the py set: field-name ->
+/// `(doc_field_types index, is_typefield)`.
+fn py_field_type_map(name: &str) -> Option<(usize, bool)> {
+    Some(match name {
+        "param" | "parameter" | "arg" | "argument" | "keyword" | "kwarg" | "kwparam" => {
+            (PY_FIELD_PARAMETER, false)
+        }
+        "paramtype" | "type" => (PY_FIELD_PARAMETER, true),
+        "var" | "ivar" | "cvar" => (PY_FIELD_VARIABLE, false),
+        "vartype" => (PY_FIELD_VARIABLE, true),
+        "raises" | "raise" | "exception" | "except" => (PY_FIELD_EXCEPTIONS, false),
+        "returns" | "return" => (PY_FIELD_RETURNVALUE, false),
+        "rtype" => (PY_FIELD_RETURNTYPE, false),
+        _ => return None,
+    })
+}
+
+/// `filter_meta_fields` (`domains/python/__init__.py:603-617`), fired on
+/// the `object-description-transform` event — which the base `run` emits
+/// BEFORE `DocFieldTransformer.transform_all` (`directives/__init__.py`),
+/// so `:meta:` fields vanish from the raw list and the transformer then
+/// replaces the emptied list with an empty `<field_list>` that REMAINS
+/// [PY §1.6 meta probe]. py domain only (the event handler checks).
+fn filter_meta_fields(content: &mut Node) {
+    for child in &mut content.children {
+        if child.kind == kinds::FIELD_LIST {
+            child.children.retain(|field| {
+                if field.kind != kinds::FIELD {
+                    return true;
+                }
+                let name = field.children.first().map(Node::astext).unwrap_or_default();
+                let name = name.trim();
+                !(name == "meta" || name.starts_with("meta "))
+            });
+        }
+    }
+}
+
+/// `_is_single_paragraph` (`docfields.py:34-42`): exactly one paragraph,
+/// tolerating trailing system_messages.
+fn is_single_field_paragraph(field_body: &Node) -> bool {
+    if field_body.children.is_empty() {
+        return false;
+    }
+    if field_body.children[1..]
+        .iter()
+        .any(|n| n.kind != kinds::SYSTEM_MESSAGE)
+    {
+        return false;
+    }
+    field_body.children[0].kind == kinds::PARAGRAPH
+}
+
+/// Python `str.split(None, maxsplit=1)` on a field name: leading
+/// whitespace skipped, the remainder trimmed at its start. A missing or
+/// all-whitespace remainder is the `ValueError` path — the ORIGINAL text
+/// comes back whole with an empty argument (`docfields.py:384-389`).
+fn split_field_name(text: &str) -> (String, String) {
+    let trimmed = text.trim_start();
+    if let Some(i) = trimmed.find(char::is_whitespace) {
+        let rest = trimmed[i..].trim_start();
+        if !rest.is_empty() {
+            return (trimmed[..i].to_string(), rest.to_string());
+        }
+    }
+    (text.to_string(), String::new())
+}
+
+/// Python `fieldarg.rsplit(None, 1)` for the `:param type name:` syntax
+/// (`docfields.py:448-455`): `None` is the single-token `ValueError` path.
+fn rsplit_field_arg(arg: &str) -> Option<(String, String)> {
+    let trimmed = arg.trim_end();
+    let (i, ws) = trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())?;
+    let head = trimmed[..i].trim_end();
+    if head.is_empty() {
+        return None;
+    }
+    Some((head.to_string(), trimmed[i + ws.len_utf8()..].to_string()))
+}
+
+/// Python `s[0:1].upper() + s[1:]` (unknown-field renaming).
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// docutils `nodes.Inline` membership for the kinds this parser emits,
+/// plus `Text` — the filter typed-field bodies pass through
+/// (`docfields.py:442`; block-level nodes would render invalid markup).
+fn is_inline_or_text(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        kinds::TEXT
+            | "abbreviation"
+            | "acronym"
+            | "citation_reference"
+            | "emphasis"
+            | "footnote_reference"
+            | "generated"
+            | "image"
+            | "index"
+            | "inline"
+            | "literal"
+            | "literal_emphasis"
+            | "literal_strong"
+            | "math"
+            | "pending_xref"
+            | "problematic"
+            | "raw"
+            | "reference"
+            | "strong"
+            | "subscript"
+            | "substitution_reference"
+            | "superscript"
+            | "target"
+            | "title_reference"
+    )
+}
+
+/// `PyXrefMixin._delimiters_re` split with the captured delimiters kept
+/// (Python `re.split` with a group) and empties dropped (`filter(None)`).
+/// Returns `(piece, is_delimiter)`; a text piece can never start with a
+/// delimiter match (the scan would have split there), so the flag is
+/// exactly `self._delimiters_re.match(sub_target)` (`_object.py:589`).
+fn split_type_delimiters(target: &str) -> Vec<(String, bool)> {
+    lazy_static::lazy_static! {
+        static ref DELIMITERS_RE: regex::Regex =
+            regex::Regex::new(r"\s*[\[\](),](?:\s*o[rf]\s)?\s*|\s+o[rf]\s+|\s*\|\s*|\.\.\.")
+                .unwrap();
+    }
+    let mut out = Vec::new();
+    let mut last = 0;
+    for m in DELIMITERS_RE.find_iter(target) {
+        if m.start() > last {
+            out.push((target[last..m.start()].to_string(), false));
+        }
+        out.push((target[m.start()..m.end()].to_string(), true));
+        last = m.end();
+    }
+    if last < target.len() {
+        out.push((target[last..].to_string(), false));
+    }
+    out
+}
+
+/// A `TextElement(rawsource, text)`: element node with one Text child
+/// (none when the text is empty, like docutils).
+fn doc_field_inline(kind: &'static str, text: &str, span: Span) -> Node {
+    let mut node = Node::elem(kind, span);
+    if !text.is_empty() {
+        node.children.push(Node::text_node(text, span));
+    }
+    node
+}
+
+/// `PyXrefMixin.make_xref` (`_object.py:514-562`) over
+/// `Field.make_xref` (`docfields.py:78-119`). The mixin always calls the
+/// base with `inliner=None`, so a non-empty rolename ALWAYS yields a
+/// `pending_xref` (never the role-run inline), which then gets
+/// `refspecific=1`, the `py:module`/`py:class` ref_context attrs, the
+/// `parse_reftarget` title rewrite, and — only when title == target — the
+/// `python_use_unqualified_type_names` two-condition wrapping with the
+/// innernode INSIDE each condition [SIG §4.2 item 2, probes F-U1/F-U2].
+/// The directive/environment state every field builder reads: the
+/// ref_context slice the xrefs stamp, the py signature config, and the
+/// span new nodes carry (docutils tracks no provenance for them; the
+/// enclosing field_list's span keeps ours structural).
+struct DocFieldEnv<'a> {
+    ctx: &'a crate::py::annotations::PyRefContext,
+    cfg: &'a crate::py::PySigConfig,
+    span: Span,
+}
+
+fn py_make_doc_xref(
+    rolename: &str,
+    target: &str,
+    innernode: &'static str,
+    contnode: Option<Node>,
+    env: &DocFieldEnv<'_>,
+) -> Node {
+    let span = env.span;
+    if rolename.is_empty() {
+        // `return contnode or innernode(target, target)` — no xref, no
+        // mixin post-processing (the result is not a pending_xref).
+        return contnode.unwrap_or_else(|| doc_field_inline(innernode, target, span));
+    }
+    let mut refnode = Node::elem("pending_xref", span);
+    refnode.set("refdomain", AttrValue::Str("py".to_string()));
+    // Python bools render as 0/1 in pformat (`Element.starttag`).
+    refnode.set("refexplicit", AttrValue::Int(0));
+    refnode.set("reftype", AttrValue::Str(rolename.to_string()));
+    refnode.set("reftarget", AttrValue::Str(target.to_string()));
+    refnode
+        .children
+        .push(contnode.unwrap_or_else(|| doc_field_inline(innernode, target, span)));
+    // `PythonDomain.process_field_xref` is a no-op in 9.1.0.
+
+    // PyXrefMixin post-processing (`_object.py:537-562`).
+    refnode.set("refspecific", AttrValue::Int(1));
+    // ref_context attrs are Python None outside a py scope; pformat
+    // renders None as the "True" sentinel (same convention as
+    // `crate::py::annotations::type_to_xref`).
+    refnode.set(
+        "py:module",
+        AttrValue::Str(env.ctx.module.clone().unwrap_or_else(|| "True".to_string())),
+    );
+    refnode.set(
+        "py:class",
+        AttrValue::Str(env.ctx.class_.clone().unwrap_or_else(|| "True".to_string())),
+    );
+    let (reftype, reftarget, reftitle, _refspecific) =
+        crate::py::annotations::parse_reftarget(target);
+    if reftarget != reftitle {
+        // `~pkg.Cls` / leading-`.` / `typing.` rewrite — takes precedence
+        // over the unqualified-names branch (elif).
+        refnode.set("reftype", AttrValue::Str(reftype));
+        refnode.set("reftarget", AttrValue::Str(reftarget));
+        refnode.children.clear();
+        refnode
+            .children
+            .push(doc_field_inline(innernode, &reftitle, span));
+    } else if env.cfg.python_use_unqualified_type_names {
+        let children = std::mem::take(&mut refnode.children);
+        // `shortname = target.rpartition('.')[-1]`.
+        let shortname = target.rsplit('.').next().unwrap_or(target);
+        let textnode = doc_field_inline(innernode, shortname, span);
+        for (condition, nodes) in [("resolved", vec![textnode]), ("*", children)] {
+            let mut cond = Node::elem("pending_xref_condition", span);
+            cond.set("condition", AttrValue::Str(condition.to_string()));
+            cond.children = nodes;
+            refnode.children.push(cond);
+        }
+    }
+    refnode
+}
+
+/// `make_xrefs`: `PyXrefMixin.make_xrefs` (`_object.py:568-608`) for the
+/// `Py*Field` classes — delimiter split, sticky `Literal[...]`
+/// suppression — or the plain single-xref `Field.make_xrefs`
+/// (`docfields.py:121-136`) for `returnvalue`.
+fn py_make_doc_xrefs(
+    spec: &PyDocField,
+    rolename: &str,
+    target: &str,
+    innernode: &'static str,
+    contnode: Option<&Node>,
+    env: &DocFieldEnv<'_>,
+) -> Vec<Node> {
+    if !spec.py_xref {
+        return vec![py_make_doc_xref(
+            rolename,
+            target,
+            innernode,
+            contnode.cloned(),
+            env,
+        )];
+    }
+    let split_contnode = contnode.is_some_and(|c| c.astext() == target);
+    let mut in_literal = false;
+    let mut results = Vec::new();
+    for (sub_target, is_delim) in split_type_delimiters(target) {
+        let cont: Option<Node> = if split_contnode {
+            Some(Node::text_node(sub_target.clone(), env.span))
+        } else {
+            contnode.cloned()
+        };
+        if in_literal || is_delim {
+            results
+                .push(cont.unwrap_or_else(|| doc_field_inline(innernode, &sub_target, env.span)));
+        } else {
+            results.push(py_make_doc_xref(
+                rolename,
+                &sub_target,
+                innernode,
+                cont,
+                env,
+            ));
+        }
+        if matches!(
+            sub_target.as_str(),
+            "Literal" | "typing.Literal" | "~typing.Literal"
+        ) {
+            in_literal = true;
+        }
+    }
+    results
+}
+
+/// One collected entry: a pass-through original field, or a field type
+/// with its `(fieldarg, content)` items (grouped types collect many).
+enum DocFieldEntry {
+    Pass(Node),
+    Typed {
+        ftype: usize,
+        items: Vec<(String, Vec<Node>)>,
+    },
+}
+
+/// `DocFieldTransformer.transform` for ONE `field_list` node, py-scoped.
+/// The list's children are rebuilt in place (docutils `replace_self` with
+/// a fresh `field_list`, so any attributes are dropped too).
+fn transform_py_doc_field_list(
+    node: &mut Node,
+    ctx: &crate::py::annotations::PyRefContext,
+    cfg: &crate::py::PySigConfig,
+) {
+    use std::collections::HashMap;
+    let env = DocFieldEnv {
+        ctx,
+        cfg,
+        span: node.span,
+    };
+    let fields = std::mem::take(&mut node.children);
+    node.attrs = crate::doctree::Attrs::default();
+
+    // Step 1: collect field types and content (`docfields.py:374-482`).
+    let mut entries: Vec<DocFieldEntry> = Vec::new();
+    let mut group_indices: HashMap<usize, usize> = HashMap::new();
+    let mut types: HashMap<usize, HashMap<String, Vec<Node>>> = HashMap::new();
+    for field in fields {
+        doc_field_step1(field, &mut entries, &mut types, &mut group_indices, &env);
+    }
+
+    // Step 2: construct the new field list (`docfields.py:484-510`).
+    for entry in entries {
+        match entry {
+            DocFieldEntry::Pass(field) => node.children.push(field),
+            DocFieldEntry::Typed { ftype, items } => {
+                let mut empty = HashMap::new();
+                let fieldtypes = types.get_mut(&ftype).unwrap_or(&mut empty);
+                node.children.push(make_doc_field(
+                    &PY_DOC_FIELDS[ftype],
+                    items,
+                    fieldtypes,
+                    &env,
+                ));
+            }
+        }
+    }
+}
+
+/// `DocFieldTransformer._transform_step_1` (`docfields.py:374-482`),
+/// minus the translatable-inline wrapper: sphinx wraps grouped/plain
+/// content in `nodes.inline(translatable=True)`, which the
+/// `RemoveTranslatableInline(999)` transform splices away again on every
+/// untranslated build — the harness3 probes never see it, so the port
+/// skips the round-trip.
+fn doc_field_step1(
+    mut field: Node,
+    entries: &mut Vec<DocFieldEntry>,
+    types: &mut std::collections::HashMap<usize, std::collections::HashMap<String, Vec<Node>>>,
+    group_indices: &mut std::collections::HashMap<usize, usize>,
+    env: &DocFieldEnv<'_>,
+) {
+    // `assert len(field) == 2` — the parser always emits [name, body].
+    if field.children.len() != 2 {
+        entries.push(DocFieldEntry::Pass(field));
+        return;
+    }
+    let name_text = field.children[0].astext();
+    let (fieldtype_name, mut fieldarg) = split_field_name(&name_text);
+    let lookup = py_field_type_map(&fieldtype_name);
+
+    // Collect the content, trying not to keep unnecessary paragraphs.
+    let single_para = is_single_field_paragraph(&field.children[1]);
+    let content: Vec<Node> = if single_para {
+        field.children[1].children[0].children.clone()
+    } else {
+        field.children[1].children.clone()
+    };
+
+    // Sort out unknown fields (or an argument mismatching the spec):
+    // capitalize the field name and pass the field through untouched —
+    // except a lone typefield body, which still gets type-linked.
+    let known = lookup.is_some_and(|(i, _)| PY_DOC_FIELDS[i].has_arg == !fieldarg.is_empty());
+    if !known {
+        let mut new_fieldname = capitalize_first(&fieldtype_name);
+        if !fieldarg.is_empty() {
+            new_fieldname.push(' ');
+            new_fieldname.push_str(&fieldarg);
+        }
+        // `field_name[0] = nodes.Text(new_fieldname)` — only the FIRST
+        // child is replaced.
+        let name_span = field.children[0].span;
+        if !field.children[0].children.is_empty() {
+            field.children[0].children[0] = Node::text_node(new_fieldname, name_span);
+        }
+        if let Some((ftype, true)) = lookup {
+            // "but if this has a type then we can at least link it"
+            if content.len() == 1 && content[0].kind == kinds::TEXT {
+                let spec = &PY_DOC_FIELDS[ftype];
+                let target = content[0].astext();
+                let xrefs = py_make_doc_xrefs(
+                    spec,
+                    spec.typerolename,
+                    &target,
+                    "emphasis",
+                    Some(&content[0]),
+                    env,
+                );
+                let body = &mut field.children[1];
+                if single_para {
+                    body.children[0].children = xrefs;
+                } else {
+                    let mut para = Node::elem(kinds::PARAGRAPH, env.span);
+                    para.children = xrefs;
+                    body.children = vec![para];
+                }
+            }
+        }
+        entries.push(DocFieldEntry::Pass(field));
+        return;
+    }
+    let (ftype, is_typefield) = lookup.expect("known implies present");
+    let spec = &PY_DOC_FIELDS[ftype];
+
+    // A typefield puts its content into the types collection and emits
+    // nothing itself; only inline nodes survive the trip.
+    if is_typefield {
+        let filtered: Vec<Node> = content.into_iter().filter(is_inline_or_text).collect();
+        if !filtered.is_empty() {
+            types.entry(ftype).or_default().insert(fieldarg, filtered);
+        }
+        return;
+    }
+
+    // Also support the `:param type name:` syntax.
+    if spec.is_typed {
+        if let Some((argtype, argname)) = rsplit_field_arg(&fieldarg) {
+            types
+                .entry(ftype)
+                .or_default()
+                .insert(argname.clone(), vec![Node::text_node(argtype, env.span)]);
+            fieldarg = argname;
+        }
+    }
+
+    if spec.is_grouped {
+        if let Some(&i) = group_indices.get(&ftype) {
+            if let DocFieldEntry::Typed { items, .. } = &mut entries[i] {
+                items.push((fieldarg, content));
+            }
+        } else {
+            group_indices.insert(ftype, entries.len());
+            entries.push(DocFieldEntry::Typed {
+                ftype,
+                items: vec![(fieldarg, content)],
+            });
+        }
+    } else {
+        entries.push(DocFieldEntry::Typed {
+            ftype,
+            items: vec![(fieldarg, content)],
+        });
+    }
+}
+
+/// `make_field` dispatch on the field class: `TypedField.make_field`
+/// (`docfields.py:286-339`), `GroupedField.make_field` (`:214-248`), or
+/// `Field.make_field` (`:141-184`).
+fn make_doc_field(
+    spec: &PyDocField,
+    items: Vec<(String, Vec<Node>)>,
+    fieldtypes: &mut std::collections::HashMap<String, Vec<Node>>,
+    env: &DocFieldEnv<'_>,
+) -> Node {
+    let span = env.span;
+    let mut fieldname = Node::elem(kinds::FIELD_NAME, span);
+    fieldname.children.push(Node::text_node(spec.label, span));
+
+    let fieldbody_children: Vec<Node> = if spec.is_typed {
+        // TypedField: `name ( <type xrefs> ) -- description`, with the
+        // type popped from the `:type x:` map (pop guards a doubled
+        // `:param x:` from inserting the same type nodes twice).
+        let handle_item = |fieldarg: String,
+                           content: Vec<Node>,
+                           fieldtypes: &mut std::collections::HashMap<String, Vec<Node>>|
+         -> Node {
+            let mut par = Node::elem(kinds::PARAGRAPH, span);
+            par.children.extend(py_make_doc_xrefs(
+                spec,
+                spec.rolename,
+                &fieldarg,
+                "literal_strong",
+                None,
+                env,
+            ));
+            if let Some(fieldtype) = fieldtypes.remove(&fieldarg) {
+                par.children.push(Node::text_node(" (", span));
+                if fieldtype.len() == 1 && fieldtype[0].kind == kinds::TEXT {
+                    let typename = fieldtype[0].astext();
+                    par.children.extend(py_make_doc_xrefs(
+                        spec,
+                        spec.typerolename,
+                        &typename,
+                        "literal_emphasis",
+                        None,
+                        env,
+                    ));
+                } else {
+                    par.children.extend(fieldtype);
+                }
+                par.children.push(Node::text_node(")", span));
+            }
+            let has_content = content.iter().any(|c| !c.astext().trim().is_empty());
+            if has_content {
+                par.children.push(Node::text_node(" -- ", span));
+                par.children.extend(content);
+            }
+            par
+        };
+
+        if items.len() == 1 && spec.can_collapse {
+            let (fieldarg, content) = items.into_iter().next().expect("one item");
+            vec![handle_item(fieldarg, content, fieldtypes)]
+        } else {
+            let mut listnode = Node::elem(kinds::BULLET_LIST, span);
+            for (fieldarg, content) in items {
+                let mut li = Node::elem(kinds::LIST_ITEM, span);
+                li.children.push(handle_item(fieldarg, content, fieldtypes));
+                listnode.children.push(li);
+            }
+            vec![listnode]
+        }
+    } else if spec.is_grouped {
+        // GroupedField: `<arg xref> -- description` items (the ` -- ` is
+        // unconditional here, unlike TypedField's).
+        let mut list_items: Vec<Node> = Vec::new();
+        for (fieldarg, content) in items {
+            let mut par = Node::elem(kinds::PARAGRAPH, span);
+            par.children.extend(py_make_doc_xrefs(
+                spec,
+                spec.rolename,
+                &fieldarg,
+                "literal_strong",
+                None,
+                env,
+            ));
+            par.children.push(Node::text_node(" -- ", span));
+            par.children.extend(content);
+            let mut li = Node::elem(kinds::LIST_ITEM, span);
+            li.children.push(par);
+            list_items.push(li);
+        }
+        if list_items.len() == 1 && spec.can_collapse {
+            let mut li = list_items.pop().expect("one item");
+            vec![li.children.pop().expect("item paragraph")]
+        } else {
+            let mut listnode = Node::elem(kinds::BULLET_LIST, span);
+            listnode.children = list_items;
+            vec![listnode]
+        }
+    } else {
+        // Field: single entry; a single-Text body may get a body role
+        // (rtype's `class`). Both py Field-type fields have
+        // `has_arg=False`, so the fieldarg-in-name branch is unreachable.
+        let (_fieldarg, mut content) = items.into_iter().next().expect("one item");
+        let single_textish = content.len() == 1
+            && (content[0].kind == kinds::TEXT
+                || (content[0].kind == "inline"
+                    && content[0].children.len() == 1
+                    && content[0].children[0].kind == kinds::TEXT));
+        if single_textish {
+            let target = content[0].astext();
+            let contnode = content[0].clone();
+            content = py_make_doc_xrefs(
+                spec,
+                spec.bodyrolename,
+                &target,
+                "emphasis",
+                Some(&contnode),
+                env,
+            );
+        }
+        let mut par = Node::elem(kinds::PARAGRAPH, span);
+        par.children = content;
+        vec![par]
+    };
+
+    let mut fieldbody = Node::elem(kinds::FIELD_BODY, span);
+    fieldbody.children = fieldbody_children;
+    let mut fieldnode = Node::elem(kinds::FIELD, span);
+    fieldnode.children.push(fieldname);
+    fieldnode.children.push(fieldbody);
+    fieldnode
 }
 
 /// `option_desc_re = r'((?:/|--|-|\+)?[^\s=]+)(=?\s*.*)'` matched with
@@ -11617,6 +12339,1015 @@ mod py_desc_tests {
                 "                <pending_xref py:class=\"C\" py:module=\"mymod\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"0\" reftarget=\"target\" reftype=\"func\" refwarn=\"0\">\n",
                 "                    <literal classes=\"xref py py-func\">\n",
                 "                        target()\n",
+            )),
+            "{pf}"
+        );
+    }
+}
+
+/// Doc-field transformation (M2 wave 4.5 task 7). Every expected pformat
+/// below is pasted verbatim from the Sphinx 9.1.0 oracle — this task's
+/// probe_t7 run (harness3 conventions, pinned wheels) over the research
+/// specs [PY §1.6 "Doc fields"] and [SIG §4.2 item 2 / A.5] — never
+/// written from memory.
+#[cfg(test)]
+mod py_docfield_tests {
+    use super::*;
+    use crate::py::PySigConfig;
+    use crate::rst::{parse_rst_full, ParseOptions};
+
+    fn pf_cfg(src: &str, py: PySigConfig) -> String {
+        let opts = ParseOptions {
+            source_path: "<snippet>".into(),
+            sphinx: true,
+            docname: "index".into(),
+            exclude_patterns: Vec::new(),
+            py,
+            found_docs: None,
+        };
+        parse_rst_full(src, &opts).doctree.root.pformat()
+    }
+
+    fn pf(src: &str) -> String {
+        pf_cfg(src, PySigConfig::default())
+    }
+
+    fn unqual() -> PySigConfig {
+        PySigConfig {
+            python_use_unqualified_type_names: true,
+            ..PySigConfig::default()
+        }
+    }
+
+    /// `PyXrefMixin._delimiters_re` split parity, pinned against the
+    /// Python `re.split` outputs (delimiters kept, empties dropped).
+    #[test]
+    fn the_delimiter_split_matches_python_re_split() {
+        let split = |t: &str| split_type_delimiters(t);
+        let owned = |v: &[(&str, bool)]| -> Vec<(String, bool)> {
+            v.iter().map(|(s, d)| (s.to_string(), *d)).collect()
+        };
+        assert_eq!(
+            split("int or str"),
+            owned(&[("int", false), (" or ", true), ("str", false)])
+        );
+        assert_eq!(
+            split("Literal[1, 2]"),
+            owned(&[
+                ("Literal", false),
+                ("[", true),
+                ("1", false),
+                (", ", true),
+                ("2", false),
+                ("]", true),
+            ])
+        );
+        assert_eq!(
+            split("list[int]"),
+            owned(&[("list", false), ("[", true), ("int", false), ("]", true)])
+        );
+        assert_eq!(
+            split("a | b"),
+            owned(&[("a", false), (" | ", true), ("b", false)])
+        );
+        assert_eq!(split("int..."), owned(&[("int", false), ("...", true)]));
+        assert_eq!(
+            split("dict of str"),
+            owned(&[("dict", false), (" of ", true), ("str", false)])
+        );
+        // No trailing whitespace after `or` -> the whole thing is text.
+        assert_eq!(split("x or"), owned(&[("x or", false)]));
+        assert_eq!(split("of or"), owned(&[("of or", false)]));
+        assert_eq!(split(" or "), owned(&[(" or ", true)]));
+        // A bracket delimiter swallows a following `or `.
+        assert_eq!(
+            split("int, or str"),
+            owned(&[("int", false), (", or ", true), ("str", false)])
+        );
+        assert_eq!(
+            split("tuple(int)"),
+            owned(&[("tuple", false), ("(", true), ("int", false), (")", true)])
+        );
+        assert_eq!(
+            split("a|b"),
+            owned(&[("a", false), ("|", true), ("b", false)])
+        );
+    }
+
+    /// std kinds keep their RAW field lists — the post-pass runs for py
+    /// kinds only (wave-4 behavior unchanged; sphinx itself would rename
+    /// the field to `Param x` here, an accepted scope cut recorded in the
+    /// plan).
+    #[test]
+    fn a_std_object_description_keeps_its_raw_field_list() {
+        assert_eq!(
+            pf(".. envvar:: HOME_X\n\n   :param x: not transformed\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('single',\\ 'environment\\ variable;\\ HOME_X',\\ 'envvar-HOME_X',\\ '',\\ None)\">\n",
+                "    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n",
+                "        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-HOME_X\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                HOME_X\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        param x\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            not transformed\n",
+            )
+        );
+    }
+
+    /// The [PY §1.6] `function_fields` probe: grouped Parameters with
+    /// `:param int a:` inline-type and `:type b:` merge, Returns, Return
+    /// type body role, Raises `exc` xref.
+    #[test]
+    fn function_fields_probe_byte_for_byte() {
+        assert_eq!(
+            pf(".. py:function:: f(a, b)\n\n   :param int a: first\n   :param b: second\n   :type b: str\n   :returns: something\n   :rtype: bool\n   :raises ValueError: when bad\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                f\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        a\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        b\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <bullet_list>\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <literal_strong>\n",
+                "                                        a\n",
+                "                                     (\n",
+                "                                    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"int\" reftype=\"class\">\n",
+                "                                        <literal_emphasis>\n",
+                "                                            int\n",
+                "                                    )\n",
+                "                                     -- \n",
+                "                                    first\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <literal_strong>\n",
+                "                                        b\n",
+                "                                     (\n",
+                "                                    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"str\" reftype=\"class\">\n",
+                "                                        <literal_emphasis>\n",
+                "                                            str\n",
+                "                                    )\n",
+                "                                     -- \n",
+                "                                    second\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Returns\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            something\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Return type\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"bool\" reftype=\"class\">\n",
+                "                                bool\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Raises\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"ValueError\" reftype=\"exc\">\n",
+                "                                <literal_strong>\n",
+                "                                    ValueError\n",
+                "                             -- \n",
+                "                            when bad\n",
+            )
+        );
+    }
+
+    /// TypedField `can_collapse`: one item is a bare paragraph in the
+    /// field_body — no bullet_list (probe param_single; F-U1 shape).
+    #[test]
+    fn a_single_param_collapses_to_a_paragraph() {
+        assert_eq!(
+            pf(".. py:function:: f(x)\n\n   :param x: only one\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                f\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        x\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             -- \n",
+                "                            only one\n",
+            )
+        );
+    }
+
+    /// `:type x:` content lands as ` ( <xref> )` inside the single
+    /// collapsed param entry (probe type_merge).
+    #[test]
+    fn a_type_field_merges_into_the_param_entry() {
+        assert_eq!(
+            pf(".. py:function:: f(x)\n\n   :param x: thing\n   :type x: str\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                f\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        x\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"str\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    str\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )
+        );
+    }
+
+    /// `filter_meta_fields` removes the `:meta:` field BEFORE the
+    /// transformer runs; the emptied `<field_list>` remains [PY §1.6
+    /// meta probe].
+    #[test]
+    fn meta_fields_are_removed_but_the_field_list_remains() {
+        assert_eq!(
+            pf(".. py:function:: f()\n\n   :meta private:\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                f\n",
+                "            <desc_parameterlist xml:space=\"preserve\">\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+            )
+        );
+    }
+
+    /// `PyXrefMixin.make_xrefs` splits `int or str` into two xrefs around
+    /// a `literal_emphasis` ` or ` delimiter (probe multi_type_or).
+    #[test]
+    fn a_multi_type_field_splits_on_or() {
+        assert_eq!(
+            pf(".. py:function:: f(x)\n\n   :param x: thing\n   :type x: int or str\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                f\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        x\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"int\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    int\n",
+                "                            <literal_emphasis>\n",
+                "                                 or \n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"str\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    str\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )
+        );
+    }
+
+    /// [SIG §4.2 item 2, probe F-U2]: under
+    /// `python_use_unqualified_type_names`, the typed-field xref gets the
+    /// two `pending_xref_condition` children with the `literal_emphasis`
+    /// innernode wrapped INSIDE each condition.
+    #[test]
+    fn unqualified_type_names_wrap_field_xrefs_in_conditions() {
+        assert_eq!(
+            pf_cfg(".. py:function:: f(x)\n\n   :param x: thing\n   :type x: pkg.Cls\n", unqual()),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                f\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        x\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"pkg.Cls\" reftype=\"class\">\n",
+                "                                <pending_xref_condition condition=\"resolved\">\n",
+                "                                    <literal_emphasis>\n",
+                "                                        Cls\n",
+                "                                <pending_xref_condition condition=\"*\">\n",
+                "                                    <literal_emphasis>\n",
+                "                                        pkg.Cls\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )
+        );
+    }
+
+    /// GroupedField collapse applies only to a single item; two `:raises:`
+    /// build a bullet_list (probe raises_two).
+    #[test]
+    fn multiple_raises_stay_a_bullet_list() {
+        let pf =
+            pf(".. py:function:: f()\n\n   :raises ValueError: bad\n   :raises TypeError: worse\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Raises\n",
+                "                    <field_body>\n",
+                "                        <bullet_list>\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"ValueError\" reftype=\"exc\">\n",
+                "                                        <literal_strong>\n",
+                "                                            ValueError\n",
+                "                                     -- \n",
+                "                                    bad\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"TypeError\" reftype=\"exc\">\n",
+                "                                        <literal_strong>\n",
+                "                                            TypeError\n",
+                "                                     -- \n",
+                "                                    worse\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `:ivar:`/`:vartype:` render under Variables, and the xref reads the
+    /// enclosing class scope: `py:class=\"C\"` (probe ivar_vartype).
+    #[test]
+    fn variables_fields_read_the_class_ref_context() {
+        let pf = pf(".. py:class:: C\n\n   :ivar x: doc\n   :vartype x: int\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Variables\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"C\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"int\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    int\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            doc\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// An unknown field name is capitalized and the field passed through
+    /// untouched (probe unknown_field).
+    #[test]
+    fn an_unknown_field_is_capitalized_and_passed_through() {
+        let pf = pf(".. py:function:: f()\n\n   :custom foo: bar\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Custom foo\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            bar\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// A `:type x:` with no matching `:param x:` is consumed into the
+    /// types map and never re-emitted — empty field_list (probe
+    /// orphan_type).
+    #[test]
+    fn an_orphan_type_field_is_consumed_silently() {
+        let pf = pf(".. py:function:: f(x)\n\n   :type x: int\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `:param:` and `:keyword:` are the same `parameter` group (probe
+    /// param_keyword_group).
+    #[test]
+    fn param_and_keyword_share_one_parameters_group() {
+        let pf = pf(".. py:function:: f(a, b)\n\n   :param a: pos\n   :keyword b: kw\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <bullet_list>\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <literal_strong>\n",
+                "                                        a\n",
+                "                                     -- \n",
+                "                                    pos\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <literal_strong>\n",
+                "                                        b\n",
+                "                                     -- \n",
+                "                                    kw\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `~pkg.Cls` in a type field: full reftarget, short title in the
+    /// `literal_emphasis` innernode (probe tilde_type).
+    #[test]
+    fn a_tilde_type_takes_the_short_title() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x: thing\n   :type x: ~pkg.Cls\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"pkg.Cls\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    Cls\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `Literal[...]` suppression is sticky: everything after the
+    /// `Literal` xref renders as plain `literal_emphasis` (probe
+    /// literal_type).
+    #[test]
+    fn literal_bracket_types_suppress_inner_xrefs() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x: thing\n   :type x: Literal[1, 2]\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"Literal\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    Literal\n",
+                "                            <literal_emphasis>\n",
+                "                                [\n",
+                "                            <literal_emphasis>\n",
+                "                                1\n",
+                "                            <literal_emphasis>\n",
+                "                                , \n",
+                "                            <literal_emphasis>\n",
+                "                                2\n",
+                "                            <literal_emphasis>\n",
+                "                                ]\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// The rtype body role splits too, and the split contnode keeps BARE
+    /// Text children — no literal_emphasis (probe rtype_or_split).
+    #[test]
+    fn rtype_bodies_split_and_keep_bare_text() {
+        let pf = pf(".. py:function:: f()\n\n   :rtype: int or str\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Return type\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"int\" reftype=\"class\">\n",
+                "                                int\n",
+                "                             or \n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"str\" reftype=\"class\">\n",
+                "                                str\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `types.pop()` semantics: a doubled `:param x:` gets the type on the
+    /// first entry only (probe dup_param_typed).
+    #[test]
+    fn a_doubled_param_consumes_its_type_once() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x: a\n   :param x: b\n   :type x: int\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <bullet_list>\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <literal_strong>\n",
+                "                                        x\n",
+                "                                     (\n",
+                "                                    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"int\" reftype=\"class\">\n",
+                "                                        <literal_emphasis>\n",
+                "                                            int\n",
+                "                                    )\n",
+                "                                     -- \n",
+                "                                    a\n",
+                "                            <list_item>\n",
+                "                                <paragraph>\n",
+                "                                    <literal_strong>\n",
+                "                                        x\n",
+                "                                     -- \n",
+                "                                    b\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// Field xrefs carry `py:module` from the ref_context (probe
+    /// currentmodule_ctx).
+    #[test]
+    fn field_xrefs_read_the_module_ref_context() {
+        let pf = pf(".. py:currentmodule:: curmod\n\n.. py:function:: f(x)\n\n   :param x: thing\n   :type x: str\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"curmod\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"str\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    str\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `returnvalue` is a plain `Field` (no PyXrefMixin): `int or str`
+    /// stays one Text (probe returns_or_not_split).
+    #[test]
+    fn returns_bodies_are_never_split() {
+        let pf = pf(".. py:function:: f()\n\n   :returns: int or str\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Returns\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            int or str\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// Removing a `:meta:` field keeps its siblings transforming (probe
+    /// meta_then_param).
+    #[test]
+    fn meta_removal_keeps_sibling_fields() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x: kept\n   :meta private:\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             -- \n",
+                "                            kept\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `:type:` with no argument mismatches `has_arg` and passes through
+    /// renamed `Type` — but a lone-Text body is still type-linked
+    /// (`docfields.py:409-432`; probe type_no_arg).
+    #[test]
+    fn a_bare_type_field_is_unknown_but_type_linked() {
+        let pf = pf(".. py:function:: f(x)\n\n   :type: int\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Type\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"int\" reftype=\"class\">\n",
+                "                                int\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `:returns foo:` mismatches `has_arg=False` and passes through as
+    /// `Returns foo` (probe returns_with_arg_mismatch).
+    #[test]
+    fn an_arg_on_returns_demotes_it_to_unknown() {
+        let pf = pf(".. py:function:: f()\n\n   :returns foo: x\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Returns foo\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            x\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `:raises:` with no argument is the unknown path — capitalized name,
+    /// body untouched, no xref (probe raises_no_arg_mismatch).
+    #[test]
+    fn raises_without_arg_is_passed_through() {
+        let pf = pf(".. py:function:: f()\n\n   :raises: something\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Raises\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            something\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// TypedField adds ` -- ` only when the description has content (probe
+    /// param_no_desc).
+    #[test]
+    fn an_empty_description_omits_the_dashes() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x:\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// A multi-paragraph field body keeps its paragraphs, nested inside
+    /// the item paragraph after ` -- ` (probe param_multipara).
+    #[test]
+    fn multi_paragraph_content_nests_in_the_item() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x: first para\n\n      second para\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             -- \n",
+                "                            <paragraph>\n",
+                "                                first para\n",
+                "                            <paragraph>\n",
+                "                                second para\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// A `:type x:` body with markup is not a single Text: the parsed
+    /// nodes (here a role-generated pending_xref) are spliced verbatim
+    /// between the parens (probe type_markup_body).
+    #[test]
+    fn a_markup_type_body_is_spliced_verbatim() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x: thing\n   :type x: :class:`Foo`\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"0\" reftarget=\"Foo\" reftype=\"class\" refwarn=\"0\">\n",
+                "                                <literal classes=\"xref py py-class\">\n",
+                "                                    Foo\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// Description inline markup rides along into the transformed entry
+    /// (probe param_markup_desc).
+    #[test]
+    fn markup_in_descriptions_is_spliced() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param x: has *emphasis* here\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             -- \n",
+                "                            has \n",
+                "                            <emphasis>\n",
+                "                                emphasis\n",
+                "                             here\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// Only immediate field_list children transform — and each one does,
+    /// independently (probe two_field_lists).
+    #[test]
+    fn each_field_list_transforms_independently() {
+        let pf = pf(
+            ".. py:function:: f(x)\n\n   :param x: one\n\n   Body between.\n\n   :returns: two\n",
+        );
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             -- \n",
+                "                            one\n",
+                "            <paragraph>\n",
+                "                Body between.\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Returns\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            two\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `:param pkg.Cls x:` rsplits into type + name (probe
+    /// param_type_name_syntax_dotted).
+    #[test]
+    fn param_type_name_syntax_takes_the_last_token() {
+        let pf = pf(".. py:function:: f(x)\n\n   :param pkg.Cls x: doc\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"pkg.Cls\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    pkg.Cls\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            doc\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `~pkg.Cls` under unqualified names: the title-rewrite branch wins
+    /// and NO condition nodes appear (probe FU2_tilde_precedence).
+    #[test]
+    fn the_title_rewrite_beats_unqualified_conditions() {
+        let pf = pf_cfg(
+            ".. py:function:: f(x)\n\n   :param x: thing\n   :type x: ~pkg.Cls\n",
+            unqual(),
+        );
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Parameters\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <literal_strong>\n",
+                "                                x\n",
+                "                             (\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"pkg.Cls\" reftype=\"class\">\n",
+                "                                <literal_emphasis>\n",
+                "                                    Cls\n",
+                "                            )\n",
+                "                             -- \n",
+                "                            thing\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// Raises xrefs wrap in conditions too, with their `literal_strong`
+    /// innernode inside each (probe FU2_raises).
+    #[test]
+    fn unqualified_wraps_raises_xrefs_too() {
+        let pf = pf_cfg(
+            ".. py:function:: f()\n\n   :raises pkg.Err: bad\n",
+            unqual(),
+        );
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Raises\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"pkg.Err\" reftype=\"exc\">\n",
+                "                                <pending_xref_condition condition=\"resolved\">\n",
+                "                                    <literal_strong>\n",
+                "                                        Err\n",
+                "                                <pending_xref_condition condition=\"*\">\n",
+                "                                    <literal_strong>\n",
+                "                                        pkg.Err\n",
+                "                             -- \n",
+                "                            bad\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// The rtype body path: `resolved` holds the default `emphasis`
+    /// innernode, `*` keeps the original bare-Text contnode (probe
+    /// FU2_rtype).
+    #[test]
+    fn unqualified_rtype_conditions_use_emphasis_innernode() {
+        let pf = pf_cfg(".. py:function:: f()\n\n   :rtype: pkg.Cls\n", unqual());
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Return type\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"pkg.Cls\" reftype=\"class\">\n",
+                "                                <pending_xref_condition condition=\"resolved\">\n",
+                "                                    <emphasis>\n",
+                "                                        Cls\n",
+                "                                <pending_xref_condition condition=\"*\">\n",
+                "                                    pkg.Cls\n",
             )),
             "{pf}"
         );
