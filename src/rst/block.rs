@@ -3649,15 +3649,25 @@ impl BlockParser {
         if kind == DescDispatch::Std(ObjectDescKind::Confval) {
             self.confval_transform_content(&input, &mut content);
         }
-        if let DescDispatch::Py(py) = kind {
-            // Base-run tail order (`directives/__init__.py`): the
-            // `object-description-transform` event (`filter_meta_fields`,
-            // py-domain handler) fires FIRST, then `DocFieldTransformer`
-            // rewrites the doc fields, then `after_content` pops the
-            // ref_context the field xrefs just read.
-            filter_meta_fields(&mut content);
-            self.transform_py_doc_fields(&mut content);
-            self.py_after_content(py, &input);
+        // Base-run tail order (`directives/__init__.py`): the
+        // `object-description-transform` event fires FIRST (its only
+        // handler, `filter_meta_fields`, guards `domain == 'py'` —
+        // `domains/python/__init__.py:610-611` — so a std `:meta:` field
+        // survives and renders renamed), then `DocFieldTransformer`
+        // rewrites the doc fields UNCONDITIONALLY for every object
+        // description (`directives/__init__.py:295`) — std kinds get an
+        // empty typemap, so their fields all take the unknown
+        // rename-and-pass-through branch — then `after_content` pops the
+        // ref_context the py field xrefs just read.
+        match kind {
+            DescDispatch::Py(py) => {
+                filter_meta_fields(&mut content);
+                self.transform_doc_fields(&mut content, py_field_type_map);
+                self.py_after_content(py, &input);
+            }
+            DescDispatch::Std(_) => {
+                self.transform_doc_fields(&mut content, std_field_type_map);
+            }
         }
         desc.children.push(content);
 
@@ -4334,22 +4344,23 @@ impl BlockParser {
         }
     }
 
-    /// `DocFieldTransformer(self).transform_all(content_node)` scoped to
-    /// the py field set — the base `run` applies it to every object
-    /// description AFTER the `object-description-transform` event and
-    /// BEFORE `after_content`, so the ref_context the field xrefs read is
-    /// still the object's own scope. Only immediate `field_list` children
-    /// are transformed (`docfields.py:354-359`). std kinds keep their raw
-    /// field lists (wave-4 behavior; this pass is invoked for py kinds
-    /// only).
-    fn transform_py_doc_fields(&mut self, content: &mut Node) {
+    /// `DocFieldTransformer(self).transform_all(content_node)` — the base
+    /// `run` applies it to EVERY object description AFTER the
+    /// `object-description-transform` event and BEFORE `after_content`,
+    /// so the ref_context the field xrefs read is still the object's own
+    /// scope. Only immediate `field_list` children are transformed
+    /// (`docfields.py:354-359`). The `map` is the directive's
+    /// `get_field_type_map()`: the py table for py kinds, empty for the
+    /// std kinds (none of them declare `doc_field_types`), whose fields
+    /// therefore all take the unknown rename-and-pass-through branch.
+    fn transform_doc_fields(&mut self, content: &mut Node, map: DocFieldTypeMap) {
         let ctx = crate::py::annotations::PyRefContext {
             module: self.py_module.clone(),
             class_: self.py_class.clone(),
         };
         for child in &mut content.children {
             if child.kind == kinds::FIELD_LIST {
-                transform_py_doc_field_list(child, &ctx, &self.py);
+                transform_doc_field_list(child, map, &ctx, &self.py);
             }
         }
     }
@@ -7877,6 +7888,20 @@ const PY_DOC_FIELDS: [PyDocField; 5] = [
     },
 ];
 
+/// A directive's `get_field_type_map()` lookup: field-name ->
+/// `(doc_field_types index, is_typefield)`.
+type DocFieldTypeMap = fn(&str) -> Option<(usize, bool)>;
+
+/// `get_field_type_map()` for the std object-description kinds
+/// (Describe/EnvVar/Confval/Cmdoption): none of them declare
+/// `doc_field_types`, so the map is empty and every field takes the
+/// transformer's unknown branch — capitalized name, body passed through
+/// (oracle probes envvar_param/describe_param/option_param/
+/// confval_type_and_field/envvar_multi_fields).
+fn std_field_type_map(_name: &str) -> Option<(usize, bool)> {
+    None
+}
+
 /// `ObjectDescription.get_field_type_map()` for the py set: field-name ->
 /// `(doc_field_types index, is_typefield)`.
 fn py_field_type_map(name: &str) -> Option<(usize, bool)> {
@@ -8051,6 +8076,9 @@ fn doc_field_inline(kind: &'static str, text: &str, span: Span) -> Node {
 /// span new nodes carry (docutils tracks no provenance for them; the
 /// enclosing field_list's span keeps ours structural).
 struct DocFieldEnv<'a> {
+    /// The directive's `get_field_type_map()` (py table or the empty std
+    /// one).
+    map: DocFieldTypeMap,
     ctx: &'a crate::py::annotations::PyRefContext,
     cfg: &'a crate::py::PySigConfig,
     span: Span,
@@ -8181,16 +8209,19 @@ enum DocFieldEntry {
     },
 }
 
-/// `DocFieldTransformer.transform` for ONE `field_list` node, py-scoped.
-/// The list's children are rebuilt in place (docutils `replace_self` with
-/// a fresh `field_list`, so any attributes are dropped too).
-fn transform_py_doc_field_list(
+/// `DocFieldTransformer.transform` for ONE `field_list` node, with the
+/// directive's typemap. The list's children are rebuilt in place
+/// (docutils `replace_self` with a fresh `field_list`, so any attributes
+/// are dropped too).
+fn transform_doc_field_list(
     node: &mut Node,
+    map: DocFieldTypeMap,
     ctx: &crate::py::annotations::PyRefContext,
     cfg: &crate::py::PySigConfig,
 ) {
     use std::collections::HashMap;
     let env = DocFieldEnv {
+        map,
         ctx,
         cfg,
         span: node.span,
@@ -8244,7 +8275,7 @@ fn doc_field_step1(
     }
     let name_text = field.children[0].astext();
     let (fieldtype_name, mut fieldarg) = split_field_name(&name_text);
-    let lookup = py_field_type_map(&fieldtype_name);
+    let lookup = (env.map)(&fieldtype_name);
 
     // Collect the content, trying not to keep unnecessary paragraphs.
     let single_para = is_single_field_paragraph(&field.children[1]);
@@ -12434,12 +12465,12 @@ mod py_docfield_tests {
         );
     }
 
-    /// std kinds keep their RAW field lists — the post-pass runs for py
-    /// kinds only (wave-4 behavior unchanged; sphinx itself would rename
-    /// the field to `Param x` here, an accepted scope cut recorded in the
-    /// plan).
+    /// std kinds run the transformer with an EMPTY typemap
+    /// (`directives/__init__.py:295`; no std kind declares
+    /// `doc_field_types`): every field takes the unknown branch —
+    /// `Param x`, body untouched, fresh field_list (probe envvar_param).
     #[test]
-    fn a_std_object_description_keeps_its_raw_field_list() {
+    fn a_std_field_is_capitalized_and_passed_through() {
         assert_eq!(
             pf(".. envvar:: HOME_X\n\n   :param x: not transformed\n"),
             concat!(
@@ -12453,11 +12484,144 @@ mod py_docfield_tests {
                 "            <field_list>\n",
                 "                <field>\n",
                 "                    <field_name>\n",
-                "                        param x\n",
+                "                        Param x\n",
                 "                    <field_body>\n",
                 "                        <paragraph>\n",
                 "                            not transformed\n",
             )
+        );
+    }
+
+    /// `filter_meta_fields` guards `domain == 'py'`
+    /// (`domains/python/__init__.py:610-611`), so a std `:meta private:`
+    /// SURVIVES and renders renamed `Meta private` with its empty body
+    /// (probe envvar_meta).
+    #[test]
+    fn a_std_meta_field_is_not_removed() {
+        assert_eq!(
+            pf(".. envvar:: HOME_Y\n\n   :meta private:\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('single',\\ 'environment\\ variable;\\ HOME_Y',\\ 'envvar-HOME_Y',\\ '',\\ None)\">\n",
+                "    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n",
+                "        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-HOME_Y\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                HOME_Y\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Meta private\n",
+                "                    <field_body>\n",
+            )
+        );
+    }
+
+    /// Confval's `transform_content` inserts its own field_list BEFORE the
+    /// transformer runs; both it and the body's field_list are direct
+    /// desc_content children and both transform — pass-through for the
+    /// generated `Type` field (same name, body untouched) and the
+    /// unknown rename for `:param y:` (probe confval_type_and_field).
+    #[test]
+    fn the_confval_generated_field_list_transforms_too() {
+        assert_eq!(
+            pf(".. confval:: s\n   :type: text with *emphasis*\n\n   :param y: field in body\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 's;\\ configuration\\ value',\\ 'confval-s',\\ '',\\ None)\">\n",
+                "    <desc classes=\"std confval\" desctype=\"confval\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"confval\">\n",
+                "        <desc_signature _toc_name=\"s\" _toc_parts=\"('s',)\" classes=\"sig sig-object\" fullname=\"s\" ids=\"confval-s\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                s\n",
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Type\n",
+                "                    <field_body>\n",
+                "                        text with \n",
+                "                        <emphasis>\n",
+                "                            emphasis\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Param y\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            field in body\n",
+            )
+        );
+    }
+
+    /// `describe` (bare docutils registration, domain='') transforms with
+    /// the empty map too (probe describe_param).
+    #[test]
+    fn describe_fields_take_the_unknown_branch() {
+        let pf = pf(".. describe:: foo\n\n   :param x: desc\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Param x\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            desc\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// `option` transforms with the empty map (probe option_param).
+    #[test]
+    fn option_fields_take_the_unknown_branch() {
+        let pf = pf(".. option:: --x\n\n   :param x: desc\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Param x\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            desc\n",
+            )),
+            "{pf}"
+        );
+    }
+
+    /// The py field names mean nothing to a std kind: `:returns:` /
+    /// `:rtype:` are renamed `Returns`/`Rtype` and left as plain fields
+    /// (probe envvar_multi_fields).
+    #[test]
+    fn py_field_names_are_unknown_on_std_kinds() {
+        let pf = pf(".. envvar:: HOME_W\n\n   :param a: one\n   :returns: two\n   :rtype: bool\n");
+        assert!(
+            pf.contains(concat!(
+                "        <desc_content>\n",
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Param a\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            one\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Returns\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            two\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Rtype\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            bool\n",
+            )),
+            "{pf}"
         );
     }
 
