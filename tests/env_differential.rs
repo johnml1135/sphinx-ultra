@@ -2108,3 +2108,365 @@ fn a_warm_rebuild_reports_the_same_toctree_warnings() {
     // warning rides on have to come back the same.
     assert_eq!(build_once(), cold, "a warm rebuild must warn identically");
 }
+
+// ---------------------------------------------------------------------------
+// py cross-reference resolution: the [PY §3.3]/[PY §3.5] resolve probes as
+// library-level build tests, each expectation byte-pinned to a sphinx 9.1.0
+// dummy build of the same project (probe scripts, session of 2026-09-02).
+// ---------------------------------------------------------------------------
+
+/// Build one project (no incremental) with a caller-shaped [`BuildConfig`]
+/// and return the resolved pformat per docname plus the rendered warnings,
+/// both with the srcdir replaced by `<project>`.
+fn resolved_build(
+    files: &[(&str, &str)],
+    configure: &dyn Fn(&Path, &mut BuildConfig),
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    for (docname, body) in files {
+        write(&source_dir, docname, body);
+    }
+    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let mut config = BuildConfig::default();
+    configure(&source_dir, &mut config);
+    let mut builder =
+        SphinxBuilder::new(config, source_dir.clone(), tmp.path().join("out")).unwrap();
+    let stats = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(builder.build())
+        .unwrap();
+    let root = source_dir.to_string_lossy().into_owned();
+    let warnings = normalize_warnings(&stats.warning_details, &root);
+    let env = normalize_snapshot(&builder.snapshot_env(), &root);
+    let resolved = env["resolved_pformat"]
+        .as_object()
+        .expect("resolved_pformat is a map")
+        .iter()
+        .map(|(docname, pformat)| (docname.clone(), pformat.as_str().unwrap().to_string()))
+        .collect();
+    (resolved, warnings)
+}
+
+fn py_build(files: &[(&str, &str)]) -> (BTreeMap<String, String>, Vec<String>) {
+    resolved_build(files, &|_, _| {})
+}
+
+/// [PY §3.3] `resolve_basic`: all seven reference outcomes of the basic
+/// project — bare/qualified/tilde targets, a module ref with the synopsis
+/// reftitle, a class ref, an `:obj:` ref, and the silent dangling ref.
+#[test]
+fn py_refs_resolve_across_all_seven_basic_shapes() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "T\n=\n\n.. py:module:: mymod\n   :synopsis: My synopsis.\n   :platform: Unix\n\n\
+         .. py:function:: f()\n\n.. py:class:: C\n\n   .. py:method:: meth()\n\n\
+         Refs: :py:func:`f` and :py:func:`mymod.f` and :py:meth:`~mymod.C.meth`\n\
+         and :py:mod:`mymod` and :py:class:`C` and :py:func:`nope_dangling`\n\
+         and :py:obj:`f`.\n",
+    )]);
+    let index = &resolved["index"];
+
+    // `f`, `mymod.f` and the `:obj:` ref all land on the same entry.
+    assert_eq!(
+        index
+            .matches("<reference internal=\"1\" refid=\"mymod.f\" reftitle=\"mymod.f\">")
+            .count(),
+        3,
+        "{index}"
+    );
+    // Their inner literals keep the role-shaped titles.
+    for inner in [
+        "<literal classes=\"xref py py-func\">\n                    f()",
+        "<literal classes=\"xref py py-func\">\n                    mymod.f()",
+        "<literal classes=\"xref py py-obj\">\n                    f",
+    ] {
+        assert!(index.contains(inner), "missing {inner:?} in {index}");
+    }
+    // `~mymod.C.meth`: tilde title, exact bare-name target.
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"mymod.C.meth\" reftitle=\"mymod.C.meth\">"
+        ),
+        "{index}"
+    );
+    // The module ref carries the `_make_module_refnode` reftitle.
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"module-mymod\" \
+             reftitle=\"mymod: My synopsis. (Unix)\">"
+        ),
+        "{index}"
+    );
+    assert!(
+        index.contains("<reference internal=\"1\" refid=\"mymod.C\" reftitle=\"mymod.C\">"),
+        "{index}"
+    );
+    // The dangling ref keeps its literal with NO reference wrapper and — py
+    // roles are not warn_dangling — no warning outside nitpicky mode.
+    assert!(index.contains("nope_dangling()") && !index.contains("refid=\"nope_dangling\""));
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// [PY §3.3] `resolve_class_context`: the `py:class` node attr enables the
+/// `classname.name` exact lookup, and `.meth` finds the same target through
+/// refspecific search.
+#[test]
+fn py_class_context_resolves_bare_and_dotted_method_refs() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "T\n=\n\n.. py:module:: m\n\n.. py:class:: C\n\n   .. py:method:: meth()\n\n   \
+         In-class ref: :py:meth:`meth` and :py:meth:`.meth`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert_eq!(
+        index
+            .matches("<reference internal=\"1\" refid=\"m.C.meth\" reftitle=\"m.C.meth\">")
+            .count(),
+        2,
+        "{index}"
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// [PY §3.3] `resolve_ambiguous_fuzzy`, order-distinguishing: zeta.same is
+/// registered BEFORE alpha.same, so the fuzzy pass resolves zeta.same and
+/// the warning lists the candidates in registration order — byte-pinned to
+/// the sphinx 9.1.0 probe.
+#[test]
+fn py_fuzzy_ambiguity_takes_the_first_registration_and_warns_in_order() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "T\n=\n\n.. py:function:: zeta.same()\n\n.. py:function:: alpha.same()\n\n\
+         Ref :py:func:`.same`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains("<reference internal=\"1\" refid=\"zeta.same\" reftitle=\"zeta.same\">"),
+        "{index}"
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:8: WARNING: more than one target found for \
+             cross-reference 'same': zeta.same, alpha.same [ref.python]"
+        ]
+    );
+}
+
+/// [PY §3.3] `resolve_parens_off`: `add_function_parentheses = False`
+/// strips the implicit titles; both spellings still resolve (find_obj's
+/// `()` strip is independent of the config).
+#[test]
+fn py_parens_off_strips_titles_and_still_resolves() {
+    let (resolved, warnings) = resolved_build(
+        &[(
+            "index",
+            "T\n=\n\n.. py:function:: f()\n\nRef :py:func:`f` and :py:func:`f()`.\n",
+        )],
+        &|_, config| config.add_function_parentheses = false,
+    );
+    let index = &resolved["index"];
+    assert_eq!(
+        index
+            .matches("<reference internal=\"1\" refid=\"f\" reftitle=\"f\">")
+            .count(),
+        2,
+        "{index}"
+    );
+    assert_eq!(
+        index
+            .matches("<literal classes=\"xref py py-func\">\n                    f\n")
+            .count(),
+        2,
+        "both titles lose the parens (the index entry alone keeps `f()`): {index}"
+    );
+    assert!(
+        index.contains("_toc_name=\"f\""),
+        "the parens-off config reaches `_toc_name` too: {index}"
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// [PY §3.3] `resolve_type_alias_class_fallback`: a `:py:class:` ref falls
+/// back to the data entry (type aliases documented as data).
+#[test]
+fn py_class_refs_fall_back_to_data_entries() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "T\n=\n\n.. py:data:: Alias\n\nRef :py:class:`Alias`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"Alias\" reftitle=\"Alias\">\n                \
+             <literal classes=\"xref py py-class\">"
+        ),
+        "{index}"
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// [PY §3.5] `resolve_nitpicky`: the missing refs warn in the generic
+/// non-std shape with `[ref.{typ}]`, while `builtin_resolver` silences
+/// `int` — the pending_xref is replaced by its literal child with no
+/// reference wrapper and no warning. Byte-pinned to the probe.
+#[test]
+fn py_nitpicky_warns_the_exact_bytes_and_builtins_stay_silent() {
+    let (resolved, warnings) = resolved_build(
+        &[(
+            "index",
+            "T\n=\n\nRef :py:func:`missing_fn` and :py:class:`int` and :py:class:`Missing`.\n",
+        )],
+        &|_, config| config.nitpicky = true,
+    );
+    let index = &resolved["index"];
+    assert!(
+        !index.contains("<reference"),
+        "nothing resolves to a reference here: {index}"
+    );
+    assert!(index.contains("<literal classes=\"xref py py-class\">\n                int"));
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:4: WARNING: py:func reference target not found: \
+             missing_fn [ref.func]",
+            "<project>/index.rst:4: WARNING: py:class reference target not found: \
+             Missing [ref.class]",
+        ]
+    );
+}
+
+/// [PY §3.5] `resolve_module_deprecated` + the both-flags probe: the module
+/// reftitle appends `: synopsis`, ` (deprecated)`, ` (platform)` — in that
+/// order, deprecated BEFORE platform (probe `module_both`).
+#[test]
+fn py_module_reftitles_append_deprecated_before_platform() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "T\n=\n\n.. py:module:: dep\n   :synopsis: Old stuff.\n   :deprecated:\n\n\
+         .. py:module:: both\n   :synopsis: Some synopsis.\n   :platform: Unix, Windows\n\
+         \x20  :deprecated:\n\nRef :py:mod:`dep` and :py:mod:`both`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"module-dep\" \
+             reftitle=\"dep: Old stuff. (deprecated)\">"
+        ),
+        "{index}"
+    );
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"module-both\" \
+             reftitle=\"both: Some synopsis. (deprecated) (Unix, Windows)\">"
+        ),
+        "{index}"
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// `nitpick_ignore` matching for py refs, probe-verified: `('py:func',
+/// target)` silences the warning; the bare `('func', target)` form does
+/// NOT — sphinx tries the domainless form only for std types.
+#[test]
+fn py_nitpick_ignore_matches_domain_qualified_entries_only() {
+    let source: &[(&str, &str)] = &[("index", "T\n=\n\nRef :py:func:`missing_fn`.\n")];
+    let (_, silenced) = resolved_build(source, &|_, config| {
+        config.nitpicky = true;
+        config.nitpick_ignore = vec![("py:func".to_string(), "missing_fn".to_string())];
+    });
+    assert_eq!(silenced, Vec::<String>::new());
+
+    let (_, bare) = resolved_build(source, &|_, config| {
+        config.nitpicky = true;
+        config.nitpick_ignore = vec![("func".to_string(), "missing_fn".to_string())];
+    });
+    assert_eq!(
+        bare,
+        vec![
+            "<project>/index.rst:4: WARNING: py:func reference target not found: \
+             missing_fn [ref.func]"
+        ],
+        "a bare-typ entry must not silence a py ref"
+    );
+}
+
+/// `searchmode = 1 if node.hasattr('refspecific')`: annotation xrefs carry
+/// `refspecific="0"` and STILL search refspecific — the bare `Cls`
+/// annotation resolves `pkg.Cls` through the fuzzy pass (probe
+/// `annotation_refspecific_zero`).
+#[test]
+fn py_annotation_xrefs_search_refspecific_by_attribute_presence() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "T\n=\n\n.. py:class:: pkg.Cls\n\n.. py:function:: f(x: Cls)\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"pkg.Cls\" reftitle=\"pkg.Cls\">\n                                Cls"
+        ),
+        "{index}"
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// The missing-reference event order, probe-pinned: intersphinx listens at
+/// its default priority (500), `builtin_resolver` at 900 — so a builtin
+/// name a loaded inventory carries resolves EXTERNALLY, one it doesn't
+/// carry is silenced, and a plain miss still warns under nitpicky.
+#[test]
+fn py_builtins_in_a_loaded_inventory_resolve_externally_before_the_silencer() {
+    let (resolved, warnings) = resolved_build(
+        &[(
+            "index",
+            "T\n=\n\nRef :py:class:`int` and :py:class:`bool` and :py:class:`Missing`.\n",
+        )],
+        &|source_dir, config| {
+            let header = b"# Sphinx inventory version 2\n\
+                           # Project: other\n\
+                           # Version: 1.0\n\
+                           # The remainder of this file is compressed using zlib.\n";
+            let payload = b"int py:class 1 library/functions.html#int -\n";
+            let mut compressed = Vec::from(&header[..]);
+            use std::io::Write as _;
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(&mut compressed, flate2::Compression::default());
+            encoder.write_all(payload).unwrap();
+            encoder.finish().unwrap();
+            std::fs::write(source_dir.join("local.inv"), compressed).unwrap();
+            config.nitpicky = true;
+            config.intersphinx_mapping.insert(
+                "other".to_string(),
+                (
+                    "https://other.example/".to_string(),
+                    vec![Some("local.inv".to_string())],
+                ),
+            );
+        },
+    );
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"0\" reftitle=\"(in other v1.0)\" \
+             refuri=\"https://other.example/library/functions.html#int\">"
+        ),
+        "`int` is in the inventory, so intersphinx (500) beats \
+         builtin_resolver (900): {index}"
+    );
+    assert!(
+        !index.contains("refid=\"bool\"") && !index.contains("#bool"),
+        "`bool` is not in the inventory and is silenced by builtin_resolver: {index}"
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:4: WARNING: py:class reference target not found: \
+             Missing [ref.class]"
+        ]
+    );
+}

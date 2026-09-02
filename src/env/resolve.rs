@@ -66,10 +66,14 @@ pub struct ResolvedXref {
     pub refuri: Option<String>,
     /// `number_reference['title']`: the *format*, not the rendered text.
     pub title: Option<String>,
+    /// `reference['reftitle']`: the hover title `make_refnode` stamps for
+    /// py targets (the matched fullname, or the module title). std's
+    /// resolvers never pass one.
+    pub reftitle: Option<String>,
     pub inner: Inner,
 }
 
-/// The reference's child node.
+/// The reference's child node(s).
 #[derive(Debug, PartialEq)]
 pub enum Inner {
     /// Sphinx's `contnode`: whatever the parse layer produced, reused
@@ -78,6 +82,10 @@ pub enum Inner {
     /// A fresh `inline` node (`build_reference_node`, and the `:doc:`
     /// caption).
     Inline { text: String, classes: Vec<String> },
+    /// Existing nodes moved under the reference: the
+    /// `pending_xref_condition(condition='resolved')` children a resolved
+    /// py xref adopts (`PythonDomain.resolve_xref`, `:986-992`).
+    Children(Vec<Node>),
 }
 
 /// Everything resolution reads: the environment, the numbering
@@ -418,6 +426,7 @@ impl Resolver<'_> {
             refid: None,
             refuri: None,
             title: None,
+            reftitle: None,
             inner: Inner::Contnode,
         };
         match targetid {
@@ -429,6 +438,30 @@ impl Resolver<'_> {
                 ));
             }
             None => node.refuri = Some((self.relative_uri)(fromdoc, docname)),
+        }
+        node
+    }
+
+    /// The reference node for a resolved py target: [`Self::make_refnode`]
+    /// semantics (Sphinx routes both `_make_module_refnode` and the object
+    /// branch through `sphinx.util.nodes.make_refnode`) plus the
+    /// `reftitle` and, for non-module targets, the
+    /// `pending_xref_condition(condition='resolved')` children when the
+    /// node carries them (`PythonDomain.resolve_xref`, `:983-994`).
+    fn py_refnode(
+        &self,
+        fromdoc: &str,
+        target: crate::env::py_domain::PyXrefTarget<'_>,
+        resolved_children: Option<Vec<Node>>,
+    ) -> ResolvedXref {
+        // `make_refnode`'s targetid test is truthiness, not presence.
+        let targetid = Some(target.node_id).filter(|id| !id.is_empty());
+        let mut node = self.make_refnode(fromdoc, target.docname, targetid);
+        node.reftitle = Some(target.reftitle);
+        if !target.is_module {
+            if let Some(children) = resolved_children {
+                node.inner = Inner::Children(children);
+            }
         }
         node
     }
@@ -453,6 +486,7 @@ impl Resolver<'_> {
             refid: None,
             refuri: None,
             title,
+            reftitle: None,
             inner: Inner::Inline {
                 text: sectname.to_string(),
                 classes: vec!["std".to_string(), format!("std-{rolename}")],
@@ -613,8 +647,9 @@ pub struct NitpickConfig<'a> {
 #[derive(Default)]
 pub struct DocumentResolution {
     pub warnings: Vec<BuildWarning>,
-    /// References left to a domain this build has no implementation for
-    /// (python, today), counted rather than warned about.
+    /// References into a domain this build has no implementation for —
+    /// every `refdomain` outside `{"", "std", "py"}` (`c:`, `cpp:`, `js:`,
+    /// ...) — counted rather than warned about.
     pub unresolvable_domain_refs: usize,
 }
 
@@ -737,8 +772,22 @@ fn resolve_one(
     let external = matches!(node.get("intersphinx"), Some(AttrValue::Int(1)));
     let inventory = attr_str(&node, "inventory").map(str::to_string);
     let role_error = attr_str(&node, "intersphinx_role_error").map(str::to_string);
-    // `contnode = node[0].deepcopy()`.
-    let contnode = node.children.into_iter().next();
+    // `PyXRefRole.process_link` context stamps (Python `None` renders as
+    // the "True" sentinel, and an empty ref_context value is falsy in
+    // every place Sphinx reads these).
+    let py_module = attr_str(&node, "py:module")
+        .filter(|value| !crate::env::std_domain::is_none_sentinel(value) && !value.is_empty())
+        .map(str::to_string);
+    let py_class = attr_str(&node, "py:class")
+        .filter(|value| !crate::env::std_domain::is_none_sentinel(value) && !value.is_empty())
+        .map(str::to_string);
+    // `searchmode = 1 if node.hasattr('refspecific') else 0` (`:942`) — a
+    // PRESENCE test: annotation xrefs carry `refspecific="0"` and still
+    // search in refspecific mode (probe: a bare `Cls` annotation resolves
+    // `pkg.Cls` through the fuzzy pass).
+    let searchmode: u8 = u8::from(node.get("refspecific").is_some());
+    let children = XrefChildren::split(node.children);
+    let contnode = children.contnode();
     let contnode_text = contnode.as_ref().map(Node::astext).unwrap_or_default();
 
     let query = XrefQuery {
@@ -771,12 +820,12 @@ fn resolve_one(
         );
     }
 
-    // Domains this build cannot resolve are left alone: warning about them
-    // would report every python reference in every project as broken. The
-    // count feeds the build's one-line notice. Intersphinx still gets a
-    // look first — a python reference into another project's inventory is
-    // exactly what it is for.
-    if refdomain != "std" && !refdomain.is_empty() {
+    // Domains this build has no resolver for (`c:`, `cpp:`, `js:`, ...)
+    // are left alone: warning about them would report every such reference
+    // in every project as broken. The count feeds the build's one-line
+    // notice. Intersphinx still gets a look first — a reference into
+    // another project's inventory is exactly what it is for.
+    if !matches!(refdomain.as_str(), "" | "std" | "py") {
         let mut diagnostics = Vec::new();
         let outcome = resolver
             .intersphinx
@@ -786,7 +835,26 @@ fn resolve_one(
             return vec![intersphinx_node(resolution, contnode, span)];
         }
         out.unresolvable_domain_refs += 1;
-        return contnode.into_iter().collect();
+        return children.fallback(out, line, path);
+    }
+    if refdomain == "py" {
+        return resolve_py(
+            resolver,
+            nitpick,
+            docname,
+            &query,
+            PyRefContext {
+                module: py_module.as_deref(),
+                class: py_class.as_deref(),
+                searchmode,
+                refwarn,
+            },
+            children,
+            span,
+            line,
+            path,
+            out,
+        );
     }
     // An M1 heuristic kept deliberately: a `:doc:` target that is a URL is
     // somebody linking out, not a broken document reference. Sphinx has no
@@ -851,9 +919,14 @@ fn resolve_one(
                 }
                 HookOutcome::Missing => {}
             }
-            if let Some(message) =
-                missing_reference_warning(resolver.env, nitpick, &reftype, &reftarget, refwarn)
-            {
+            if let Some(message) = missing_reference_warning(
+                resolver.env,
+                nitpick,
+                &refdomain,
+                &reftype,
+                &reftarget,
+                refwarn,
+            ) {
                 out.warnings.push(
                     BuildWarning::new(
                         path.to_path_buf(),
@@ -865,9 +938,131 @@ fn resolve_one(
                     .with_category(Some(format!("ref.{reftype}"))),
                 );
             }
-            contnode.into_iter().collect()
+            children.fallback(out, line, path)
         }
     }
+}
+
+/// The py-role context [`resolve_py`] reads off the `pending_xref`.
+struct PyRefContext<'a> {
+    /// `node['py:module']` / `node['py:class']`, None-sentinel and
+    /// empty-string (Python falsy) both read as absent.
+    module: Option<&'a str>,
+    class: Option<&'a str>,
+    searchmode: u8,
+    refwarn: bool,
+}
+
+/// `PythonDomain.resolve_xref` wired into the resolver's event order
+/// (`ReferencesResolver._resolve_pending_xref`): the domain first, then the
+/// `missing-reference` event — intersphinx at its default priority 500,
+/// [`crate::env::py_domain::builtin_resolver`] at 900 — then the
+/// self-referential retry, then the nitpicky warning. Probe-pinned
+/// consequence of the priorities: a builtin name a loaded inventory carries
+/// resolves EXTERNALLY; one it doesn't carry is silenced.
+#[allow(clippy::too_many_arguments)]
+fn resolve_py(
+    resolver: &Resolver<'_>,
+    nitpick: &NitpickConfig<'_>,
+    docname: &str,
+    query: &XrefQuery<'_>,
+    ctx: PyRefContext<'_>,
+    children: XrefChildren,
+    span: crate::doctree::Span,
+    line: usize,
+    path: &Path,
+    out: &mut DocumentResolution,
+) -> Vec<Node> {
+    use crate::env::py_domain;
+
+    let reftype = query.reftype;
+    let contnode = children.contnode();
+
+    // The domain's own resolution. The ambiguity warning fires even when
+    // the reference then resolves (to the first match).
+    let resolve = |target: &str, out: &mut DocumentResolution| {
+        let (found, ambiguity) = py_domain::resolve_xref(
+            &resolver.env.py,
+            ctx.module,
+            ctx.class,
+            reftype,
+            target,
+            ctx.searchmode,
+        );
+        if let Some(message) = ambiguity {
+            out.warnings.push(
+                BuildWarning::new(
+                    path.to_path_buf(),
+                    Some(line),
+                    message,
+                    WarningType::BrokenCrossReference,
+                )
+                // `type='ref', subtype='python'` (`:977-978`).
+                .with_category(Some("ref.python".to_string())),
+            );
+        }
+        found
+    };
+    if let Some(target) = resolve(query.reftarget, out) {
+        let resolved = resolver.py_refnode(docname, target, children.resolved.clone());
+        return vec![reference_node(resolved, contnode, span)];
+    }
+
+    // The `missing-reference` event: intersphinx first (priority 500)...
+    let mut diagnostics = Vec::new();
+    let outcome = resolver.intersphinx.resolve_detect(query, &mut diagnostics);
+    report(out, diagnostics, line, path);
+    match outcome {
+        HookOutcome::Resolved(resolution) => {
+            return vec![intersphinx_node(resolution, contnode, span)];
+        }
+        HookOutcome::SelfReferential(stripped) => {
+            // ...then builtin_resolver (900), which reads the reftarget
+            // intersphinx just rewrote on the node...
+            if py_domain::builtin_resolver(reftype, &stripped) {
+                return children.contnode().into_iter().collect();
+            }
+            // ...and only then the domain retry with the stripped target.
+            // The warning below still reports the target as written.
+            if let Some(target) = resolve(&stripped, out) {
+                let resolved = resolver.py_refnode(docname, target, children.resolved.clone());
+                return vec![reference_node(resolved, contnode, span)];
+            }
+        }
+        HookOutcome::Missing => {
+            if py_domain::builtin_resolver(reftype, query.reftarget) {
+                // "Do not emit nitpicky warnings for built-in types": the
+                // event returns the contnode, so no `*`-condition fallback
+                // either (probe: an unqualified-names annotation keeps the
+                // SHORT name when builtin-silenced).
+                return children.contnode().into_iter().collect();
+            }
+        }
+    }
+
+    if let Some(message) = missing_reference_warning(
+        resolver.env,
+        nitpick,
+        "py",
+        reftype,
+        query.reftarget,
+        ctx.refwarn,
+    ) {
+        out.warnings.push(
+            BuildWarning::new(
+                path.to_path_buf(),
+                Some(line),
+                message,
+                WarningType::BrokenCrossReference,
+            )
+            // `logger.warning(..., type='ref', subtype=typ)`.
+            .with_category(Some(format!("ref.{reftype}"))),
+        );
+    }
+    // A dangling py ref still feeds the build's skip-notice counter until
+    // the notice itself is retired for the py domain.
+    out.unresolvable_domain_refs += 1;
+    children.fallback(out, line, path)
 }
 
 /// `IntersphinxRoleResolver.run` (`ext/intersphinx/_resolve.py:543-565`),
@@ -939,6 +1134,88 @@ fn resolve_external(
     }
 }
 
+/// A `pending_xref`'s children, split the way `ReferencesResolver.run`
+/// reads them (`post_transforms/__init__.py:66-92`): the content node comes
+/// from the first non-empty `pending_xref_condition` matching `'resolved'`
+/// then `'*'` (docutils truthiness — a childless condition node is falsy
+/// and skipped), else from the node's own first child.
+struct XrefChildren {
+    contnode: Option<Node>,
+    /// All children of the first non-empty `condition="resolved"` node —
+    /// what a resolved py xref adopts in place of the contnode.
+    resolved: Option<Vec<Node>>,
+    /// All children of the first non-empty `condition="*"` node — what
+    /// replaces the `pending_xref` when resolution fails.
+    star: Option<Vec<Node>>,
+    /// `isinstance(node[0], pending_xref_condition)`, which gates the
+    /// failure fallback.
+    first_is_condition: bool,
+}
+
+impl XrefChildren {
+    fn split(children: Vec<Node>) -> Self {
+        let first_is_condition = children
+            .first()
+            .is_some_and(|child| child.kind == "pending_xref_condition");
+        let find = |condition: &str| -> Option<Vec<Node>> {
+            children
+                .iter()
+                .find(|child| {
+                    child.kind == "pending_xref_condition"
+                        && !child.children.is_empty()
+                        && matches!(child.get("condition"),
+                                    Some(AttrValue::Str(value)) if value == condition)
+                })
+                .map(|child| child.children.clone())
+        };
+        let resolved = find("resolved");
+        let star = find("*");
+        let contnode = resolved
+            .as_ref()
+            .or(star.as_ref())
+            .map(|content| content[0].clone())
+            // `contnode = node[0].deepcopy()` — which is the (childless)
+            // condition node itself when conditions exist but are empty.
+            .or_else(|| children.into_iter().next());
+        XrefChildren {
+            contnode,
+            resolved,
+            star,
+            first_is_condition,
+        }
+    }
+
+    /// Sphinx's `contnode` (a deepcopy — every use hands out a fresh clone).
+    fn contnode(&self) -> Option<Node> {
+        self.contnode.clone()
+    }
+
+    /// The nodes that replace a `pending_xref` whose resolution FAILED —
+    /// returned None, as opposed to a Kept/builtin-silenced outcome, which
+    /// keeps the plain contnode: the `'*'` condition's children when the
+    /// node leads with a condition, else the contnode (`run()`, `:76-90`).
+    fn fallback(self, out: &mut DocumentResolution, line: usize, path: &Path) -> Vec<Node> {
+        if self.first_is_condition {
+            if let Some(star) = self.star {
+                return star;
+            }
+            out.warnings.push(
+                BuildWarning::new(
+                    path.to_path_buf(),
+                    Some(line),
+                    "Could not determine the fallback text for the cross-reference. \
+                     Might be a bug."
+                        .to_string(),
+                    WarningType::BrokenCrossReference,
+                )
+                // Plain `logger.warning(msg, location=node)` — no category.
+                .with_category(None),
+            );
+        }
+        self.contnode.into_iter().collect()
+    }
+}
+
 /// Turn intersphinx diagnostics into build warnings at the reference's line.
 fn report(out: &mut DocumentResolution, diagnostics: Vec<Diagnostic>, line: usize, path: &Path) {
     for diagnostic in diagnostics {
@@ -985,25 +1262,36 @@ fn intersphinx_node(
 /// domain's `warn-missing-reference` handler (`std/__init__.py:1444-1461`).
 /// `None` means "resolution failed silently", which is the default for
 /// roles that are not `warn_dangling` outside nitpicky mode.
+///
+/// `refdomain` is `"py"`, `"std"` or `""` (a domainless std role). Sphinx's
+/// nitpick-ignore matching tries the bare `(typ, target)` form ON TOP of
+/// `(domain:typ, target)` only "for 'std' types" — `not domain or
+/// domain.name == 'std'` — so a `('func', 'x')` entry does NOT silence a
+/// missing `:py:func:`x`` (probe-verified; `('py:func', 'x')` does).
 fn missing_reference_warning(
     env: &BuildEnvironment,
     nitpick: &NitpickConfig<'_>,
+    refdomain: &str,
     typ: &str,
     target: &str,
     refwarn: bool,
 ) -> Option<String> {
+    let py = refdomain == "py";
     let mut warn = refwarn;
     if nitpick.nitpicky {
         warn = true;
-        // Only the std domain reaches here, so `dtype` is `std:<typ>` and
-        // the domainless `(typ, target)` form is always also tried.
-        let dtype = format!("std:{typ}");
-        let ignored = nitpick
-            .ignore
-            .iter()
-            .any(|(ityp, itarget)| (ityp == &dtype || ityp == typ) && itarget == target)
-            || nitpick.ignore_regex.iter().any(|(ityp, itarget)| {
-                (full_match(ityp, &dtype) || full_match(ityp, typ)) && full_match(itarget, target)
+        let dtype = if py {
+            format!("py:{typ}")
+        } else {
+            format!("std:{typ}")
+        };
+        let bare = !py;
+        let ignored =
+            nitpick.ignore.iter().any(|(ityp, itarget)| {
+                (ityp == &dtype || (bare && ityp == typ)) && itarget == target
+            }) || nitpick.ignore_regex.iter().any(|(ityp, itarget)| {
+                (full_match(ityp, &dtype) || (bare && full_match(ityp, typ)))
+                    && full_match(itarget, target)
             });
         if ignored {
             warn = false;
@@ -1011,6 +1299,14 @@ fn missing_reference_warning(
     }
     if !warn {
         return None;
+    }
+
+    // The generic branch for a non-std domain
+    // (`post_transforms/__init__.py:290-295`) — the py domain defines no
+    // `dangling_warnings` and no `warn-missing-reference` handler, so every
+    // missing py ref takes this exact shape.
+    if py {
+        return Some(format!("py:{typ} reference target not found: {target}"));
     }
 
     // `:ref:` goes through the std domain's event handler, which
@@ -1077,6 +1373,9 @@ fn reference_node(
     if let Some(title) = resolved.title {
         node.set("title", AttrValue::Str(title));
     }
+    if let Some(reftitle) = resolved.reftitle {
+        node.set("reftitle", AttrValue::Str(reftitle));
+    }
     match resolved.inner {
         Inner::Contnode => node.children.extend(contnode),
         Inner::Inline { text, classes } => {
@@ -1085,6 +1384,7 @@ fn reference_node(
             inner.children.push(Node::text_node(text, span));
             node.children.push(inner);
         }
+        Inner::Children(children) => node.children.extend(children),
     }
     node
 }
@@ -1178,6 +1478,7 @@ mod tests {
                 refid: Some("cmdoption-myprog-verbose".to_string()),
                 refuri: None,
                 title: None,
+                reftitle: None,
                 inner: Inner::Contnode,
             })
         );
@@ -1204,6 +1505,7 @@ mod tests {
                 refid: Some("the-label".to_string()),
                 refuri: None,
                 title: None,
+                reftitle: None,
                 inner: Inner::Inline {
                     text: "The Section".to_string(),
                     classes: vec!["std".to_string(), "std-ref".to_string()],
@@ -1260,6 +1562,7 @@ mod tests {
                 refid: None,
                 refuri: Some(String::new()),
                 title: None,
+                reftitle: None,
                 inner: Inner::Inline {
                     text: "Sub C".to_string(),
                     classes: vec!["doc".to_string()],
@@ -1505,8 +1808,9 @@ mod tests {
             ignore: &[],
             ignore_regex: &[],
         };
-        let warn =
-            |typ: &str, target: &str| missing_reference_warning(&env, &nitpick, typ, target, true);
+        let warn = |typ: &str, target: &str| {
+            missing_reference_warning(&env, &nitpick, "std", typ, target, true)
+        };
         assert_eq!(
             warn("doc", "missing-doc").unwrap(),
             "unknown document: 'missing-doc'"
@@ -1540,7 +1844,7 @@ mod tests {
             ignore_regex: &[],
         };
         assert_eq!(
-            missing_reference_warning(&env, &quiet, "envvar", "PATH", false),
+            missing_reference_warning(&env, &quiet, "std", "envvar", "PATH", false),
             None
         );
         let nitpicky = NitpickConfig {
@@ -1548,7 +1852,9 @@ mod tests {
             ignore: &[],
             ignore_regex: &[],
         };
-        assert!(missing_reference_warning(&env, &nitpicky, "envvar", "PATH", false).is_some());
+        assert!(
+            missing_reference_warning(&env, &nitpicky, "std", "envvar", "PATH", false).is_some()
+        );
     }
 
     #[test]
@@ -1561,10 +1867,10 @@ mod tests {
             ignore_regex: &[],
         };
         assert_eq!(
-            missing_reference_warning(&env, &config, "doc", "missing", true),
+            missing_reference_warning(&env, &config, "std", "doc", "missing", true),
             None
         );
-        assert!(missing_reference_warning(&env, &config, "doc", "other", true).is_some());
+        assert!(missing_reference_warning(&env, &config, "std", "doc", "other", true).is_some());
 
         // The domainless form is accepted for std types too.
         let domainless = vec![("doc".to_string(), "missing".to_string())];
@@ -1574,7 +1880,7 @@ mod tests {
             ignore_regex: &[],
         };
         assert_eq!(
-            missing_reference_warning(&env, &config, "doc", "missing", true),
+            missing_reference_warning(&env, &config, "std", "doc", "missing", true),
             None
         );
 
@@ -1585,11 +1891,11 @@ mod tests {
             ignore_regex: &regex,
         };
         assert_eq!(
-            missing_reference_warning(&env, &config, "doc", "missing", true),
+            missing_reference_warning(&env, &config, "std", "doc", "missing", true),
             None
         );
         assert!(
-            missing_reference_warning(&env, &config, "doc", "hit", true).is_some(),
+            missing_reference_warning(&env, &config, "std", "doc", "hit", true).is_some(),
             "the regexes must both full-match, not merely find"
         );
     }

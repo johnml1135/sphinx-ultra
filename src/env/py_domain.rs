@@ -1,8 +1,9 @@
-//! The `py` domain's *collection* half: object and module registration
-//! with Sphinx's duplicate semantics — `PythonDomain.note_object` /
-//! `note_module` / `clear_doc` / `merge_domaindata`
-//! (`sphinx/domains/python/__init__.py:780-832` and `:744-757`). The
-//! *resolution* half (`find_obj`/`resolve_xref`) is Task 10's.
+//! The `py` domain: object and module registration with Sphinx's
+//! duplicate semantics — `PythonDomain.note_object` / `note_module` /
+//! `clear_doc` / `merge_domaindata`
+//! (`sphinx/domains/python/__init__.py:780-832` and `:744-757`) — and the
+//! resolution half: [`find_obj`] / [`resolve_xref`] (`:855-994`) plus the
+//! [`builtin_resolver`] missing-reference listener (`:1077-1098`).
 //!
 //! Registrations replay from the parse layer's records
 //! ([`crate::rst::RegistryExport::py_objects`]/[`py_modules`]) inside
@@ -187,6 +188,522 @@ impl PyDomainData {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Resolution ([PY §3.2/§3.3/§3.5])
+// ---------------------------------------------------------------------------
+
+/// `PythonDomain.object_types`' keys, in declaration order — the objtype
+/// universe `find_obj` uses when `:any:`-style resolution passes no role
+/// (`type is None` → `list(self.object_types)`).
+const OBJECT_TYPES: &[&str] = &[
+    "function",
+    "data",
+    "class",
+    "exception",
+    "method",
+    "classmethod",
+    "staticmethod",
+    "attribute",
+    "property",
+    "type",
+    "module",
+];
+
+/// `Domain.objtypes_for_role` for the py domain: the `_role2type` reverse
+/// map `Domain.__init__` builds from `object_types` (each ObjType's roles,
+/// appended in `object_types` declaration order). `None` for a role no
+/// ObjType names — `deco` and `const` — which in refspecific search mode
+/// disables the whole candidate walk *and* the fuzzy pass (probe:
+/// `:py:deco:`.mydeco`` never resolves while `:py:deco:`pkg.mydeco``
+/// does).
+pub(crate) fn objtypes_for_role(role: &str) -> Option<&'static [&'static str]> {
+    Some(match role {
+        "func" => &["function"],
+        "data" => &["data"],
+        "class" => &["class", "exception", "type"],
+        "exc" => &["class", "exception"],
+        "meth" => &["method", "classmethod", "staticmethod"],
+        "attr" => &["attribute", "property"],
+        // The "secret role only for internal look-up" behind the
+        // meth→property fallback.
+        "_prop" => &["property"],
+        "type" => &["type"],
+        "mod" => &["module"],
+        "obj" => OBJECT_TYPES,
+        _ => return None,
+    })
+}
+
+/// `PythonDomain.find_obj` (`__init__.py:855-928`): find candidates for
+/// `name`, perhaps using the given module/class context. Returns `(fullname,
+/// entry)` pairs in match order.
+///
+/// - The `()` strip is the FIRST statement (`:868`), so every caller —
+///   `resolve_xref`'s fallback retries and a future `resolve_any_xref` —
+///   inherits it.
+/// - **searchmode 0 (exact)**: `name` → `classname.name` → `modname.name` →
+///   `modname.classname.name`, object type NOT checked; a `mod` role takes
+///   only the bare-name match (`:913-915`) — which may be a non-module
+///   object, since the type isn't checked.
+/// - **searchmode 1 (refspecific)**: candidates gated on
+///   [`objtypes_for_role`], reversed order `modname.classname.name` →
+///   `modname.name` → `name`; only when every exact candidate failed, the
+///   fuzzy pass collects each registered object whose fullname ends with
+///   `.name` — iterating [`PyDomainData::objects`] in REGISTRATION order,
+///   which is what makes the ambiguity warning's candidate list and the
+///   first-match winner reproducible.
+pub fn find_obj<'a>(
+    data: &'a PyDomainData,
+    modname: Option<&str>,
+    classname: Option<&str>,
+    name: &str,
+    typ: Option<&str>,
+    searchmode: u8,
+) -> Vec<(String, &'a PyObjectEntry)> {
+    // skip parens
+    let name = name.strip_suffix("()").unwrap_or(name);
+    if name.is_empty() {
+        return Vec::new();
+    }
+    // Python truthiness: an empty modname/classname never joins a candidate.
+    let modname = modname.filter(|m| !m.is_empty());
+    let classname = classname.filter(|c| !c.is_empty());
+
+    let entry_of = |fullname: &str| {
+        data.objects_index
+            .get(fullname)
+            .map(|&index| &data.objects[index].1)
+    };
+
+    let newname: Option<String> = if searchmode == 1 {
+        let objtypes = match typ {
+            None => Some(OBJECT_TYPES),
+            Some(role) => objtypes_for_role(role),
+        };
+        let Some(objtypes) = objtypes else {
+            // A role with no objtypes matches nothing in this mode.
+            return Vec::new();
+        };
+        let gated = |fullname: &str| {
+            entry_of(fullname).is_some_and(|entry| objtypes.contains(&entry.objtype.as_str()))
+        };
+        let qualified = match (modname, classname) {
+            (Some(modname), Some(classname)) => {
+                Some(format!("{modname}.{classname}.{name}")).filter(|fullname| gated(fullname))
+            }
+            _ => None,
+        };
+        if qualified.is_some() {
+            qualified
+        } else if let Some(dotted) = modname
+            .map(|modname| format!("{modname}.{name}"))
+            .filter(|dotted| gated(dotted))
+        {
+            Some(dotted)
+        } else if gated(name) {
+            Some(name.to_string())
+        } else {
+            // "fuzzy" searching mode (`:901-908`), reached only when every
+            // exact candidate failed.
+            let searchname = format!(".{name}");
+            return data
+                .objects
+                .iter()
+                .filter(|(oname, entry)| {
+                    oname.ends_with(&searchname) && objtypes.contains(&entry.objtype.as_str())
+                })
+                .map(|(oname, entry)| (oname.clone(), entry))
+                .collect();
+        }
+    } else {
+        // NOTE: searching for exact match, object type is not considered.
+        if entry_of(name).is_some() {
+            Some(name.to_string())
+        } else if typ == Some("mod") {
+            // only exact matches allowed for modules
+            return Vec::new();
+        } else {
+            [
+                classname.map(|classname| format!("{classname}.{name}")),
+                modname.map(|modname| format!("{modname}.{name}")),
+                match (modname, classname) {
+                    (Some(modname), Some(classname)) => {
+                        Some(format!("{modname}.{classname}.{name}"))
+                    }
+                    _ => None,
+                },
+            ]
+            .into_iter()
+            .flatten()
+            .find(|candidate| entry_of(candidate).is_some())
+        }
+    };
+    newname
+        .map(|newname| {
+            let entry = entry_of(&newname).expect("candidate was just found");
+            vec![(newname, entry)]
+        })
+        .unwrap_or_default()
+}
+
+/// A resolved py cross-reference: what the resolver needs to build the
+/// `reference` node `make_refnode` / `_make_module_refnode` would.
+#[derive(Debug, PartialEq)]
+pub struct PyXrefTarget<'a> {
+    pub docname: &'a str,
+    pub node_id: &'a str,
+    /// `make_refnode`'s title: the matched fullname, or for modules
+    /// `{name}[: {synopsis}][ (deprecated)][ ({platform})]` — deprecated
+    /// BEFORE platform (`_make_module_refnode`, `:1039-1054`; probe: a
+    /// module with all three shows
+    /// `both: Some synopsis. (deprecated) (Unix, Windows)`).
+    pub reftitle: String,
+    /// A module target keeps the content node even when the pending_xref
+    /// carries `pending_xref_condition` children (`:983-984` passes
+    /// `contnode` straight through).
+    pub is_module: bool,
+}
+
+/// `PythonDomain.resolve_xref` minus the node plumbing (`:930-994`): the
+/// type-fallback retries, the ambiguity rule, and the module/object split.
+/// Returns the target (None = dangling, silent here — the warning is the
+/// resolver's) and the ambiguity warning to log, `type='ref',
+/// subtype='python'` → `[ref.python]`, which fires even on a successful
+/// resolution.
+pub fn resolve_xref<'a>(
+    data: &'a PyDomainData,
+    modname: Option<&str>,
+    classname: Option<&str>,
+    reftype: &str,
+    target: &str,
+    searchmode: u8,
+) -> (Option<PyXrefTarget<'a>>, Option<String>) {
+    let retry = |typ: &str| find_obj(data, modname, classname, target, Some(typ), searchmode);
+    let mut matches = retry(reftype);
+    if matches.is_empty() && reftype == "class" {
+        // fallback to data/attr (for type aliases)
+        matches = retry("data");
+        if matches.is_empty() {
+            matches = retry("attr");
+        }
+    }
+    if matches.is_empty() && reftype == "attr" {
+        // fallback to meth (for property; Sphinx 2.4.x)
+        matches = retry("meth");
+    }
+    if matches.is_empty() && reftype == "meth" {
+        // fallback to attr (for property), via the secret `_prop` role.
+        matches = retry("_prop");
+    }
+
+    if matches.is_empty() {
+        return (None, None);
+    }
+    let mut warning = None;
+    let (name, entry) = if matches.len() > 1 {
+        let canonicals: Vec<&(String, &PyObjectEntry)> =
+            matches.iter().filter(|(_, entry)| !entry.aliased).collect();
+        if canonicals.len() == 1 {
+            // Exactly one non-aliased match wins silently.
+            let (name, entry) = canonicals[0];
+            (name.clone(), *entry)
+        } else {
+            warning = Some(format!(
+                "more than one target found for cross-reference {}: {}",
+                crate::env::toctree::py_repr_str(target),
+                matches
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            // ... and the FIRST match (aliased or not) is used (`:981`).
+            let (name, entry) = &matches[0];
+            (name.clone(), *entry)
+        }
+    } else {
+        let (name, entry) = matches.remove(0);
+        (name, entry)
+    };
+
+    if entry.objtype == "module" {
+        // `_make_module_refnode` reads `self.modules[name]` — a module
+        // *object* entry is only ever written alongside its module entry
+        // (and cleared with it), so the lookup cannot miss; Missing is the
+        // defensive stand-in for Sphinx's would-be KeyError.
+        let Some(&index) = data.modules_index.get(&name) else {
+            return (None, warning);
+        };
+        let module = &data.modules[index].1;
+        let mut reftitle = name;
+        if !module.synopsis.is_empty() {
+            reftitle.push_str(": ");
+            reftitle.push_str(&module.synopsis);
+        }
+        if module.deprecated {
+            reftitle.push_str(" (deprecated)");
+        }
+        if !module.platform.is_empty() {
+            reftitle.push_str(" (");
+            reftitle.push_str(&module.platform);
+            reftitle.push(')');
+        }
+        (
+            Some(PyXrefTarget {
+                docname: &module.docname,
+                node_id: &module.node_id,
+                reftitle,
+                is_module: true,
+            }),
+            warning,
+        )
+    } else {
+        (
+            Some(PyXrefTarget {
+                docname: &entry.docname,
+                node_id: &entry.node_id,
+                reftitle: name,
+                is_module: false,
+            }),
+            warning,
+        )
+    }
+}
+
+/// The names `inspect.isclass(getattr(builtins, name, None))` accepts under
+/// the pinned oracle toolchain (CPython 3.12, the interpreter every fixture
+/// oracle is generated with): every built-in class, exceptions included —
+/// plus `__loader__`, which getattr happily hands back
+/// (`_frozen_importlib.BuiltinImporter` *is* a class). Sorted for
+/// `binary_search`.
+const BUILTIN_CLASSES: &[&str] = &[
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "BaseException",
+    "BaseExceptionGroup",
+    "BlockingIOError",
+    "BrokenPipeError",
+    "BufferError",
+    "BytesWarning",
+    "ChildProcessError",
+    "ConnectionAbortedError",
+    "ConnectionError",
+    "ConnectionRefusedError",
+    "ConnectionResetError",
+    "DeprecationWarning",
+    "EOFError",
+    "EncodingWarning",
+    "EnvironmentError",
+    "Exception",
+    "ExceptionGroup",
+    "FileExistsError",
+    "FileNotFoundError",
+    "FloatingPointError",
+    "FutureWarning",
+    "GeneratorExit",
+    "IOError",
+    "ImportError",
+    "ImportWarning",
+    "IndentationError",
+    "IndexError",
+    "InterruptedError",
+    "IsADirectoryError",
+    "KeyError",
+    "KeyboardInterrupt",
+    "LookupError",
+    "MemoryError",
+    "ModuleNotFoundError",
+    "NameError",
+    "NotADirectoryError",
+    "NotImplementedError",
+    "OSError",
+    "OverflowError",
+    "PendingDeprecationWarning",
+    "PermissionError",
+    "ProcessLookupError",
+    "RecursionError",
+    "ReferenceError",
+    "ResourceWarning",
+    "RuntimeError",
+    "RuntimeWarning",
+    "StopAsyncIteration",
+    "StopIteration",
+    "SyntaxError",
+    "SyntaxWarning",
+    "SystemError",
+    "SystemExit",
+    "TabError",
+    "TimeoutError",
+    "TypeError",
+    "UnboundLocalError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeError",
+    "UnicodeTranslateError",
+    "UnicodeWarning",
+    "UserWarning",
+    "ValueError",
+    "Warning",
+    "ZeroDivisionError",
+    "__loader__",
+    "bool",
+    "bytearray",
+    "bytes",
+    "classmethod",
+    "complex",
+    "dict",
+    "enumerate",
+    "filter",
+    "float",
+    "frozenset",
+    "int",
+    "list",
+    "map",
+    "memoryview",
+    "object",
+    "property",
+    "range",
+    "reversed",
+    "set",
+    "slice",
+    "staticmethod",
+    "str",
+    "super",
+    "tuple",
+    "type",
+    "zip",
+];
+
+/// `_TYPING_ALL = frozenset(typing.__all__)` (`__init__.py:55`) under
+/// CPython 3.12. Sorted for `binary_search`.
+const TYPING_ALL: &[&str] = &[
+    "AbstractSet",
+    "Annotated",
+    "Any",
+    "AnyStr",
+    "AsyncContextManager",
+    "AsyncGenerator",
+    "AsyncIterable",
+    "AsyncIterator",
+    "Awaitable",
+    "BinaryIO",
+    "ByteString",
+    "Callable",
+    "ChainMap",
+    "ClassVar",
+    "Collection",
+    "Concatenate",
+    "Container",
+    "ContextManager",
+    "Coroutine",
+    "Counter",
+    "DefaultDict",
+    "Deque",
+    "Dict",
+    "Final",
+    "ForwardRef",
+    "FrozenSet",
+    "Generator",
+    "Generic",
+    "Hashable",
+    "IO",
+    "ItemsView",
+    "Iterable",
+    "Iterator",
+    "KeysView",
+    "List",
+    "Literal",
+    "LiteralString",
+    "Mapping",
+    "MappingView",
+    "Match",
+    "MutableMapping",
+    "MutableSequence",
+    "MutableSet",
+    "NamedTuple",
+    "Never",
+    "NewType",
+    "NoReturn",
+    "NotRequired",
+    "Optional",
+    "OrderedDict",
+    "ParamSpec",
+    "ParamSpecArgs",
+    "ParamSpecKwargs",
+    "Pattern",
+    "Protocol",
+    "Required",
+    "Reversible",
+    "Self",
+    "Sequence",
+    "Set",
+    "Sized",
+    "SupportsAbs",
+    "SupportsBytes",
+    "SupportsComplex",
+    "SupportsFloat",
+    "SupportsIndex",
+    "SupportsInt",
+    "SupportsRound",
+    "TYPE_CHECKING",
+    "Text",
+    "TextIO",
+    "Tuple",
+    "Type",
+    "TypeAlias",
+    "TypeAliasType",
+    "TypeGuard",
+    "TypeVar",
+    "TypeVarTuple",
+    "TypedDict",
+    "Union",
+    "Unpack",
+    "ValuesView",
+    "assert_never",
+    "assert_type",
+    "cast",
+    "clear_overloads",
+    "dataclass_transform",
+    "final",
+    "get_args",
+    "get_origin",
+    "get_overloads",
+    "get_type_hints",
+    "is_typeddict",
+    "no_type_check",
+    "no_type_check_decorator",
+    "overload",
+    "override",
+    "reveal_type",
+    "runtime_checkable",
+];
+
+/// `builtin_resolver` (`__init__.py:1077-1098`), the py domain's
+/// missing-reference listener at priority 900 — AFTER intersphinx's
+/// default-priority (500) handler, so a builtin name that a loaded
+/// inventory carries resolves externally instead of being silenced (probe:
+/// `:py:class:`int`` with `int` in a mapped inventory renders the external
+/// reference; `:py:class:`bool``, absent from it, is silenced).
+///
+/// `true` means "do not emit nitpicky warnings for built-in types": the
+/// pending_xref is replaced by its content node with no reference wrapper
+/// and no warning — for `class`/`obj` targeting `None`, and for
+/// `class`/`obj`/`exc` targeting a `builtins` class or a `typing` name
+/// (with one leading `typing.` removed).
+pub fn builtin_resolver(reftype: &str, target: &str) -> bool {
+    match reftype {
+        "class" | "obj" if target == "None" => true,
+        "class" | "obj" | "exc" => {
+            BUILTIN_CLASSES.binary_search(&target).is_ok()
+                || TYPING_ALL
+                    .binary_search(&target.strip_prefix("typing.").unwrap_or(target))
+                    .is_ok()
+        }
+        _ => false,
+    }
+}
+
 /// Replay one document's py registrations from the parse layer's records —
 /// the `note_module` + `note_object` calls `PyModule.run` and
 /// `PyObject.add_target_and_index` made while the directives ran, which
@@ -300,6 +817,353 @@ mod tests {
         for (name, &index) in &data.modules_index {
             assert_eq!(&data.modules[index].0, name, "modules_index[{name}]");
         }
+    }
+
+    // ---- find_obj ([PY §3.2]) ------------------------------------------
+
+    /// The registration order used across the find_obj tests: entries are
+    /// noted in the order given, never alphabetized.
+    fn data_of(entries: &[(&str, &str)]) -> PyDomainData {
+        let mut data = PyDomainData::default();
+        for (name, objtype) in entries {
+            data.note_object(name, entry("index", name, objtype, false));
+        }
+        data
+    }
+
+    fn names(matches: &[(String, &PyObjectEntry)]) -> Vec<String> {
+        matches.iter().map(|(name, _)| name.clone()).collect()
+    }
+
+    /// Exact mode tries `name` → `classname.name` → `modname.name` →
+    /// `modname.classname.name`, first hit wins, objtype never checked.
+    #[test]
+    fn exact_mode_walks_the_candidate_chain_in_spec_order() {
+        let data = data_of(&[
+            ("m.C.x", "method"),
+            ("m.x", "function"),
+            ("C.x", "method"),
+            ("x", "function"),
+        ]);
+        let find = |modname: Option<&str>, classname: Option<&str>| {
+            names(&find_obj(&data, modname, classname, "x", Some("func"), 0))
+        };
+        assert_eq!(find(Some("m"), Some("C")), vec!["x"], "bare name first");
+        let partial = data_of(&[("m.C.x", "method"), ("m.x", "function"), ("C.x", "method")]);
+        assert_eq!(
+            names(&find_obj(
+                &partial,
+                Some("m"),
+                Some("C"),
+                "x",
+                Some("func"),
+                0
+            )),
+            vec!["C.x"],
+            "then classname.name"
+        );
+        let partial = data_of(&[("m.C.x", "method"), ("m.x", "function")]);
+        assert_eq!(
+            names(&find_obj(
+                &partial,
+                Some("m"),
+                Some("C"),
+                "x",
+                Some("func"),
+                0
+            )),
+            vec!["m.x"],
+            "then modname.name"
+        );
+        let partial = data_of(&[("m.C.x", "method")]);
+        assert_eq!(
+            names(&find_obj(
+                &partial,
+                Some("m"),
+                Some("C"),
+                "x",
+                Some("func"),
+                0
+            )),
+            vec!["m.C.x"],
+            "then modname.classname.name"
+        );
+        assert!(
+            find_obj(&partial, None, None, "x", Some("func"), 0).is_empty(),
+            "no context, no prefix candidates"
+        );
+    }
+
+    /// Exact mode never checks the objtype: a `func` role happily returns a
+    /// class entry.
+    #[test]
+    fn exact_mode_ignores_the_object_type() {
+        let data = data_of(&[("thing", "class")]);
+        assert_eq!(
+            names(&find_obj(&data, None, None, "thing", Some("func"), 0)),
+            vec!["thing"]
+        );
+    }
+
+    /// `type == 'mod'`: "only exact matches allowed for modules" — the
+    /// prefix chain is cut off entirely (probe: `:py:mod:`sub`` under
+    /// `.. py:currentmodule:: pkg` does NOT find `pkg.sub`). But the
+    /// bare-name hit itself is still type-unchecked.
+    #[test]
+    fn mod_takes_only_the_bare_name_match() {
+        let data = data_of(&[("pkg.sub", "module")]);
+        assert!(find_obj(&data, Some("pkg"), None, "sub", Some("mod"), 0).is_empty());
+        let shadowed = data_of(&[("sub", "function")]);
+        assert_eq!(
+            names(&find_obj(
+                &shadowed,
+                Some("pkg"),
+                None,
+                "sub",
+                Some("mod"),
+                0
+            )),
+            vec!["sub"],
+            "the bare-name arm runs before the mod cutoff and skips no types"
+        );
+    }
+
+    /// The `()` strip is find_obj's FIRST statement, so it applies in both
+    /// modes and to every candidate shape.
+    #[test]
+    fn trailing_parens_are_stripped_before_any_lookup() {
+        let data = data_of(&[("m.f", "function")]);
+        assert_eq!(
+            names(&find_obj(&data, Some("m"), None, "f()", Some("obj"), 0)),
+            vec!["m.f"],
+            "exact mode"
+        );
+        assert_eq!(
+            names(&find_obj(&data, None, None, "f()", Some("obj"), 1)),
+            vec!["m.f"],
+            "refspecific mode (the fuzzy pass sees the stripped name)"
+        );
+        assert!(
+            find_obj(&data, Some("m"), None, "()", Some("obj"), 0).is_empty(),
+            "a name that is nothing but parens strips to empty and matches nothing"
+        );
+    }
+
+    /// searchmode 1 walks `modname.classname.name` → `modname.name` →
+    /// `name`, each gated on the role's objtypes.
+    #[test]
+    fn refspecific_mode_prefers_the_most_qualified_gated_candidate() {
+        let data = data_of(&[
+            ("meth", "function"),
+            ("m.meth", "function"),
+            ("m.C.meth", "method"),
+        ]);
+        assert_eq!(
+            names(&find_obj(
+                &data,
+                Some("m"),
+                Some("C"),
+                "meth",
+                Some("meth"),
+                1
+            )),
+            vec!["m.C.meth"],
+            "most qualified first"
+        );
+        assert_eq!(
+            names(&find_obj(
+                &data,
+                Some("m"),
+                Some("C"),
+                "meth",
+                Some("func"),
+                1
+            )),
+            vec!["m.meth"],
+            "the objtype gate skips m.C.meth for :func: and lands on m.meth"
+        );
+        assert_eq!(
+            names(&find_obj(&data, None, None, "meth", Some("func"), 1)),
+            vec!["meth"],
+            "no context leaves the bare-name candidate"
+        );
+    }
+
+    /// The fuzzy suffix scan runs ONLY when every exact candidate failed,
+    /// and iterates in registration order.
+    #[test]
+    fn the_fuzzy_pass_is_gated_and_registration_ordered() {
+        let data = data_of(&[
+            ("zeta.same", "function"),
+            ("alpha.same", "function"),
+            ("beta.same", "class"),
+        ]);
+        assert_eq!(
+            names(&find_obj(&data, None, None, "same", Some("func"), 1)),
+            vec!["zeta.same", "alpha.same"],
+            "registration order, objtype-filtered (beta.same is a class)"
+        );
+        let with_exact = data_of(&[("zeta.same", "function"), ("same", "function")]);
+        assert_eq!(
+            names(&find_obj(&with_exact, None, None, "same", Some("func"), 1)),
+            vec!["same"],
+            "an exact bare-name hit suppresses the fuzzy pass"
+        );
+        assert!(
+            find_obj(&data, None, None, "ame", Some("func"), 1).is_empty(),
+            "the scan matches '.name', never a bare substring"
+        );
+    }
+
+    /// `objtypes_for_role` returns `None` for `deco`/`const`, which kills
+    /// the whole refspecific search — no candidates, no fuzzy (probe:
+    /// `:py:deco:`.mydeco`` dangles while `:py:deco:`pkg.mydeco``
+    /// resolves through exact mode).
+    #[test]
+    fn roles_without_objtypes_match_nothing_in_refspecific_mode() {
+        let data = data_of(&[("pkg.mydeco", "function")]);
+        assert!(find_obj(&data, None, None, "mydeco", Some("deco"), 1).is_empty());
+        assert_eq!(
+            names(&find_obj(&data, None, None, "pkg.mydeco", Some("deco"), 0)),
+            vec!["pkg.mydeco"]
+        );
+    }
+
+    /// `type=None` (a future `:any:`) searches every objtype.
+    #[test]
+    fn a_none_type_searches_all_object_types() {
+        let data = data_of(&[("m.thing", "attribute")]);
+        assert_eq!(
+            names(&find_obj(&data, None, None, "thing", None, 1)),
+            vec!["m.thing"]
+        );
+    }
+
+    // ---- resolve_xref ([PY §3.3]) --------------------------------------
+
+    /// The type-fallback chains: class→data→attr, attr→meth, meth→_prop.
+    #[test]
+    fn resolve_xref_walks_the_type_fallback_chains() {
+        let alias = data_of(&[("Alias", "data")]);
+        let (found, warning) = resolve_xref(&alias, None, None, "class", "Alias", 0);
+        assert_eq!(warning, None);
+        assert_eq!(
+            found,
+            Some(PyXrefTarget {
+                docname: "index",
+                node_id: "Alias",
+                reftitle: "Alias".to_string(),
+                is_module: false,
+            }),
+            "a type alias documented as data resolves through :class:"
+        );
+
+        let attr_alias = data_of(&[("A.x", "attribute")]);
+        let (found, _) = resolve_xref(&attr_alias, None, Some("A"), "class", "x", 0);
+        assert!(found.is_some(), "class falls back to attr after data");
+
+        let prop = data_of(&[("K.oldm", "method"), ("K.prop", "property")]);
+        let (found, _) = resolve_xref(&prop, None, Some("K"), "attr", "oldm", 0);
+        assert_eq!(found.unwrap().node_id, "K.oldm", "attr falls back to meth");
+        let (found, _) = resolve_xref(&prop, None, Some("K"), "meth", "prop", 0);
+        assert_eq!(
+            found.unwrap().node_id,
+            "K.prop",
+            "meth falls back to property via the secret _prop role"
+        );
+    }
+
+    /// Ambiguity: the warning carries the candidates comma-joined in match
+    /// order and the FIRST match wins — the order-distinguishing case
+    /// (zeta.same registered before alpha.same).
+    #[test]
+    fn ambiguity_warns_with_candidates_in_registration_order_and_takes_the_first() {
+        let data = data_of(&[("zeta.same", "function"), ("alpha.same", "function")]);
+        let (found, warning) = resolve_xref(&data, None, None, "func", "same", 1);
+        assert_eq!(
+            warning.as_deref(),
+            Some("more than one target found for cross-reference 'same': zeta.same, alpha.same")
+        );
+        assert_eq!(found.unwrap().node_id, "zeta.same");
+    }
+
+    /// Exactly one non-aliased match is preferred silently; all-aliased (or
+    /// several real) candidates warn.
+    #[test]
+    fn a_single_non_aliased_match_wins_silently() {
+        let mut data = PyDomainData::default();
+        data.note_object("alpha.f", entry("index", "alpha.f", "function", false));
+        data.note_object("beta.f", entry("index", "alpha.f", "function", true));
+        let (found, warning) = resolve_xref(&data, None, None, "func", "f", 1);
+        assert_eq!(warning, None);
+        assert_eq!(found.unwrap().reftitle, "alpha.f");
+    }
+
+    /// Module targets build the `_make_module_refnode` reftitle:
+    /// `{name}[: {synopsis}][ (deprecated)][ ({platform})]` — deprecated
+    /// BEFORE platform (probe `module_both`:
+    /// `both: Some synopsis. (deprecated) (Unix, Windows)`).
+    #[test]
+    fn a_module_target_carries_the_full_reftitle() {
+        let mut data = PyDomainData::default();
+        data.note_object("both", entry("index", "module-both", "module", false));
+        data.note_module(
+            "both",
+            PyModuleEntry {
+                docname: "index".to_string(),
+                node_id: "module-both".to_string(),
+                synopsis: "Some synopsis.".to_string(),
+                platform: "Unix, Windows".to_string(),
+                deprecated: true,
+            },
+        );
+        let (found, _) = resolve_xref(&data, None, None, "mod", "both", 0);
+        assert_eq!(
+            found,
+            Some(PyXrefTarget {
+                docname: "index",
+                node_id: "module-both",
+                reftitle: "both: Some synopsis. (deprecated) (Unix, Windows)".to_string(),
+                is_module: true,
+            })
+        );
+    }
+
+    // ---- builtin_resolver ([PY §3.5]) ----------------------------------
+
+    #[test]
+    fn builtin_resolver_matches_sphinxs_exact_gates() {
+        // reftype {class, obj} + None.
+        assert!(builtin_resolver("class", "None"));
+        assert!(builtin_resolver("obj", "None"));
+        assert!(
+            !builtin_resolver("exc", "None"),
+            "exc is not in the None gate"
+        );
+        // reftype {class, obj, exc} + builtins classes (exceptions included).
+        assert!(builtin_resolver("class", "int"));
+        assert!(builtin_resolver("obj", "bool"));
+        assert!(builtin_resolver("exc", "ValueError"));
+        assert!(builtin_resolver("class", "__loader__"), "getattr quirk");
+        // typing names, bare or with ONE `typing.` prefix removed.
+        assert!(builtin_resolver("class", "Sequence"));
+        assert!(builtin_resolver("class", "typing.Sequence"));
+        assert!(builtin_resolver("obj", "Optional"));
+        assert!(
+            !builtin_resolver("class", "typing.typing.Sequence"),
+            "removeprefix strips one prefix only"
+        );
+        // Everything else warns.
+        assert!(!builtin_resolver("class", "Missing"));
+        assert!(!builtin_resolver("func", "int"), "func is never silenced");
+        assert!(
+            !builtin_resolver("data", "int"),
+            "probe: :py:data:`int` warns"
+        );
+        assert!(
+            !builtin_resolver("exc", "len"),
+            "a builtin function is not a class"
+        );
     }
 
     // ---- note_object matrix ([PY §5], each cell probe-verified) --------
