@@ -268,6 +268,23 @@ pub struct RegistryExport {
     /// [`ToctreeRecord::warnings`] does — a cache hit that skipped the parse
     /// must still reproduce them.
     pub log_warnings: Vec<ParseLogWarning>,
+    /// Files the document pulls in at parse time (docutils
+    /// `settings.record_dependencies`, harvested by sphinx's
+    /// `DependenciesCollector`): one srcdir-relative normalized path per
+    /// successfully opened `include` target — non-doc files included,
+    /// standard includes excluded (§Scope-2b). The env layer replays these
+    /// into `env.dependencies`, which drives `get_outdated_files`. Not
+    /// `#[serde(default)]` — see [`Self::program_options`]: a pre-include
+    /// cache decoding with an empty list would never re-read the document
+    /// when an included file changes.
+    pub dependencies: Vec<String>,
+    /// The docnames this document textually includes (sphinx
+    /// `env.note_included`, recorded for every include argument that maps
+    /// to a docname — before the file is even opened, like sphinx). The
+    /// env layer replays these into `env.included`, whose only consumer is
+    /// the orphan check. Not `#[serde(default)]` — see
+    /// [`Self::program_options`].
+    pub included: Vec<String>,
 }
 
 /// One `logger.warning` a directive raised during the parse.
@@ -329,10 +346,19 @@ mod tests {
     #[test]
     fn a_registry_written_before_the_std_records_existed_fails_to_decode() {
         let complete = r#"{"nameids":[],"index_serial":0,"program_options":[],
-            "std_objects":[],"py_objects":[],"py_modules":[],"log_warnings":[]}"#;
+            "std_objects":[],"py_objects":[],"py_modules":[],"log_warnings":[],
+            "dependencies":[],"included":[]}"#;
         serde_json::from_str::<RegistryExport>(complete).expect("the current shape decodes");
 
         for missing in [
+            // A wave-4.5 pre-include registry (no dependencies/included
+            // stream) must MISS: a defaulted empty list would never
+            // re-read the document when an included file changes, and
+            // would silently un-suppress the orphan warning.
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "py_objects":[],"py_modules":[],"log_warnings":[],"included":[]}"#,
+            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
+                "py_objects":[],"py_modules":[],"log_warnings":[],"dependencies":[]}"#,
             r#"{"nameids":[],"index_serial":0,"std_objects":[],"py_objects":[],
                 "py_modules":[],"log_warnings":[]}"#,
             r#"{"nameids":[],"index_serial":0,"program_options":[],"py_objects":[],
@@ -370,7 +396,8 @@ mod tests {
                 "aliased":false,"source":0,"lineno":1}],
             "py_modules":[{"name":"m","node_id":"module-m","synopsis":"","platform":"",
                 "deprecated":false,"source":0,"lineno":1}],
-            "log_warnings":[{"source":0,"message":"m","line":2}]}"#;
+            "log_warnings":[{"source":0,"message":"m","line":2}],
+            "dependencies":["part.rst"],"included":["part"]}"#;
         serde_json::from_str::<RegistryExport>(with_source).expect("the current shape decodes");
 
         for stale in [

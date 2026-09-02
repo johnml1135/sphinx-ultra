@@ -986,8 +986,24 @@ impl SphinxBuilder {
             );
 
             // The files this document pulls in, which is what makes it
-            // outdated when one of *them* changes.
-            env_dependencies::process_doc(env, docname, &result.doctree, &self.source_dir);
+            // outdated when one of *them* changes: image uris from the
+            // doctree walk plus the parse-recorded include targets.
+            env_dependencies::process_doc(
+                env,
+                docname,
+                &result.doctree,
+                &self.source_dir,
+                &result.document.registry.dependencies,
+            );
+
+            // The docnames it textually includes (`env.note_included`
+            // replayed from the parse records): the orphan check in
+            // `check_consistency` is the one consumer.
+            let included: std::collections::BTreeSet<String> =
+                result.document.registry.included.iter().cloned().collect();
+            if !included.is_empty() {
+                env.included.insert(docname.to_string(), included);
+            }
 
             let (toc, num_entries) = env_toctree::build_toc(&result.doctree, docname);
             // Each toctree node copied into the toc is noted, in the order
@@ -1902,6 +1918,71 @@ mod tests {
             .html_context
             .insert("a".to_string(), serde_json::Value::String("Z".to_string()));
         assert_ne!(config_fingerprint(&changed).unwrap(), first);
+    }
+
+    /// Row 9 of the include checklist: the parse-time records replay
+    /// into `env.included`/`env.dependencies` on merge, and the orphan
+    /// warning consults `env.included` (src/env/toctree.rs check) — a doc
+    /// reachable only through an `include` stays silent while a genuinely
+    /// unlinked one still warns.
+    #[test]
+    fn include_records_replay_into_the_environment_and_suppress_the_orphan() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        let output_dir = tmp.path().join("build");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(
+            source_dir.join("index.rst"),
+            "Index\n=====\n\n.. toctree::\n\n   a\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source_dir.join("a.rst"),
+            "A\n=\n\n.. include:: part.rst\n\n.. include:: snippet.txt\n",
+        )
+        .unwrap();
+        std::fs::write(source_dir.join("part.rst"), "part para\n").unwrap();
+        std::fs::write(source_dir.join("snippet.txt"), "plain snippet\n").unwrap();
+        std::fs::write(
+            source_dir.join("not_linked.rst"),
+            "Not Linked\n==========\n\nOrphan candidate.\n",
+        )
+        .unwrap();
+
+        let (stats, builder) = build_incrementally(&source_dir, &output_dir);
+
+        // Canonicalized like the builder's own source_dir.
+        let src = source_dir.canonicalize().unwrap();
+        assert_eq!(
+            builder.env.included.get("a"),
+            Some(&std::collections::BTreeSet::from(["part".to_string()])),
+            "only the docname-mapping include registers (snippet.txt maps to no docname)"
+        );
+        assert_eq!(
+            builder
+                .env
+                .dependencies
+                .get("a")
+                .map(|set| set.iter().cloned().collect::<Vec<_>>()),
+            Some(vec![src.join("part.rst"), src.join("snippet.txt")]),
+            "every opened include target is a dependency, the non-doc file too"
+        );
+
+        let orphan_warnings: Vec<String> = stats
+            .warning_details
+            .iter()
+            .filter(|w| w.message.contains("isn't included in any toctree"))
+            .map(|w| w.file.display().to_string())
+            .collect();
+        assert_eq!(
+            orphan_warnings.len(),
+            1,
+            "exactly the genuinely unlinked doc warns: {orphan_warnings:?}"
+        );
+        assert!(
+            orphan_warnings[0].ends_with("not_linked.rst"),
+            "{orphan_warnings:?}"
+        );
     }
 
     #[test]

@@ -12,10 +12,14 @@
 //!
 //! **Scope.** Sphinx notes a dependency for every file-inserting construct:
 //! images, `figure`, `literalinclude`, `include`, `download`, `docutils.conf`
-//! and the gettext catalogs. Of those, images (`figure` builds one) are the
-//! only ones this crate parses today — `include`/`literalinclude` are wave
-//! 4.5 — so an image `uri` is the whole population, and adding the rest is
-//! a matter of calling [`note`] from wherever those nodes are collected.
+//! and the gettext catalogs. This crate covers images (`figure` builds one)
+//! by walking the doctree here, and — since wave 4.5 — `include`, whose
+//! targets arrive as parse-time records
+//! ([`crate::rst::RegistryExport::dependencies`], the counterpart of
+//! docutils' `settings.record_dependencies` harvested by sphinx's
+//! `DependenciesCollector`). The remaining producers are a matter of
+//! calling [`note`] or extending the record stream from wherever their
+//! nodes are collected.
 //!
 //! Deliberate omissions, each of which only costs a *warning*, never a
 //! wrong rebuild decision:
@@ -40,13 +44,27 @@ use super::BuildEnvironment;
 /// Record every file `docname`'s doctree pulls in, replacing whatever the
 /// previous read of that document left behind.
 ///
+/// `parse_dependencies` are the parse-recorded srcdir-relative paths
+/// (`include` targets); the doctree walk contributes the image uris.
+///
 /// Mirrors Sphinx's collector contract: the entry is dropped entirely when
 /// the document depends on nothing, so `dependencies` holds only documents
 /// that have dependencies (Sphinx's `defaultdict(set)` behaves the same way
 /// after `clear_doc`).
-pub fn process_doc(env: &mut BuildEnvironment, docname: &str, doctree: &Doctree, srcdir: &Path) {
+pub fn process_doc(
+    env: &mut BuildEnvironment,
+    docname: &str,
+    doctree: &Doctree,
+    srcdir: &Path,
+    parse_dependencies: &[String],
+) {
     let mut paths = BTreeSet::new();
     collect(&doctree.root, docname, srcdir, &mut paths);
+    for dependency in parse_dependencies {
+        // Recorded srcdir-relative (a leading `..` walks outside, like
+        // sphinx's `srcdir / relpath` for an out-of-tree include).
+        paths.insert(srcdir.join(dependency));
+    }
     if paths.is_empty() {
         env.dependencies.remove(docname);
     } else {
@@ -90,11 +108,35 @@ mod tests {
     fn deps(docname: &str, source: &str) -> Vec<PathBuf> {
         let doctree = rst::parse_rst(source, &rst::ParseOptions::default());
         let mut env = BuildEnvironment::default();
-        process_doc(&mut env, docname, &doctree, Path::new("/src"));
+        process_doc(&mut env, docname, &doctree, Path::new("/src"), &[]);
         env.dependencies
             .get(docname)
             .map(|set| set.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Parse-recorded include dependencies fold in beside the image walk,
+    /// srcdir-joined.
+    #[test]
+    fn parse_recorded_dependencies_join_the_image_walk() {
+        let doctree = rst::parse_rst(".. image:: pic.png\n", &rst::ParseOptions::default());
+        let mut env = BuildEnvironment::default();
+        process_doc(
+            &mut env,
+            "index",
+            &doctree,
+            Path::new("/src"),
+            &["part.rst".to_string(), "data/snippet.txt".to_string()],
+        );
+        let paths: Vec<PathBuf> = env.dependencies["index"].iter().cloned().collect();
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/src/data/snippet.txt"),
+                PathBuf::from("/src/part.rst"),
+                PathBuf::from("/src/pic.png"),
+            ]
+        );
     }
 
     #[test]
@@ -151,7 +193,7 @@ mod tests {
         env.dependencies
             .insert("index".to_string(), BTreeSet::from([PathBuf::from("/old")]));
 
-        process_doc(&mut env, "index", &doctree, Path::new("/src"));
+        process_doc(&mut env, "index", &doctree, Path::new("/src"), &[]);
 
         assert!(
             !env.dependencies.contains_key("index"),

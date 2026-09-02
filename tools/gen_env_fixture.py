@@ -16,6 +16,13 @@ built with a real `SphinxTestApp(buildername='dummy')` + `app.build()` --
 exactly what a real `sphinx-build` does for its read + resolve phases, minus
 writing output files.
 
+ORACLE VENUE NOTE (wave 4.5): projects here are ALSO the oracle venue for
+the file-inserting directives (`include`/`literalinclude`) -- the two
+doctree fixtures are string corpora that cannot carry the aux files those
+directives read, so their node shapes (`:literal:` with `:name:`/
+`:number-lines:`, `:code:`, SEVERE error shapes) belong to this fixture's
+inc_* projects (T14) plus unit/e2e tests.
+
 Design verified empirically in this session against sphinx 9.1.0 / docutils
 0.22.4 under the pinned uv invocation above; see
 docs/superpowers/plans/2026-08-31-m2-wave4-research-read-fixtures-oracles.md

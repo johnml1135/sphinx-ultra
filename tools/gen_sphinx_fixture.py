@@ -17,6 +17,13 @@ That path was re-verified in this session to be byte-identical to a full
 build for representative snippets (plain constructs, admonitions, images,
 errors, tables, targets).
 
+ORACLE VENUE NOTE (wave 4.5): the `include`/`literalinclude` directives are
+NOT exercised by this corpus and must not be added to it -- every case here
+is a single rst string against a fixed one-file srcdir, and file-inserting
+directives need aux files beside the document. Their oracle venue is the
+env fixture (tools/gen_env_fixture.py projects, which ship real member
+files) plus unit/e2e tests.
+
 DO NOT use `sphinx.testing.restructuredtext.parse()`: it builds an ad-hoc
 settings dict that omits `doctitle_xform=False` (and the other
 `sphinx.environment.default_settings` pins), so docutils' DocTitle transform

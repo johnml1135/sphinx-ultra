@@ -310,6 +310,12 @@ pub(crate) struct BlockParser {
     /// popped when the comment path reaches the matching
     /// `.. end of inclusion from "..."` marker.
     include_log: Vec<(String, IncludeClip)>,
+    /// Parse-recorded dependency paths (see
+    /// [`super::RegistryExport::dependencies`]); sphinx mode only.
+    dependency_records: Vec<String>,
+    /// Parse-recorded included docnames (see
+    /// [`super::RegistryExport::included`]); sphinx mode only.
+    included_records: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -369,6 +375,8 @@ impl BlockParser {
             substitution_dupnames: Vec::new(),
             pending_splice: None,
             include_log: Vec::new(),
+            dependency_records: Vec::new(),
+            included_records: Vec::new(),
         }
     }
 
@@ -386,6 +394,8 @@ impl BlockParser {
             py_objects: std::mem::take(&mut self.py_object_records),
             py_modules: std::mem::take(&mut self.py_module_records),
             log_warnings: std::mem::take(&mut self.log_warnings),
+            dependencies: std::mem::take(&mut self.dependency_records),
+            included: std::mem::take(&mut self.included_records),
         };
         super::ParseOutput {
             doctree: crate::doctree::Doctree {
@@ -567,6 +577,8 @@ impl BlockParser {
         self.py_object_records.append(&mut sub.py_object_records);
         self.py_module_records.append(&mut sub.py_module_records);
         self.log_warnings.append(&mut sub.log_warnings);
+        self.dependency_records.append(&mut sub.dependency_records);
+        self.included_records.append(&mut sub.included_records);
         nodes
     }
 
@@ -3408,6 +3420,20 @@ impl BlockParser {
             .map(|a| a.lines().map(str::trim).collect())
             .unwrap_or_default();
         let target = self.resolve_include_target(&path_arg, input.span.source);
+        // `env.note_included` runs BEFORE the file is opened
+        // (`other.py:415` precedes `super().run()`), so even a missing
+        // file records — but only when the path maps to a docname, and
+        // never for a standard include (`other.py:410-412` bypasses the
+        // rewrite entirely).
+        if let IncludeTarget::File { io_path, .. } = &target {
+            if self.sphinx {
+                if let Some(srcdir) = &self.srcdir {
+                    if let Some(docname) = crate::utils::path2doc(io_path, srcdir) {
+                        self.included_records.push(docname);
+                    }
+                }
+            }
+        }
         let Some(text) = self.include_read_file(&target, &input, &clip, out) else {
             return DirectiveOutcome::Done;
         };
@@ -3541,7 +3567,7 @@ impl BlockParser {
                 };
                 // A successful open records the dependency BEFORE reading
                 // (`misc.py:130`) — a decode failure below still records.
-                self.record_include_dependency(io_path, display);
+                self.record_include_dependency(display);
                 let encoding = match opt_get(&input.options, "encoding") {
                     Some(OptVal::Str(name)) => {
                         lookup_encoding(name).expect("the encoding converter validated the name")
@@ -3607,9 +3633,19 @@ impl BlockParser {
         Some(text)
     }
 
-    /// Parse-time record channel (filled in with the RegistryExport
-    /// wiring; standard includes never reach here — §Scope-2b).
-    fn record_include_dependency(&mut self, _io_path: &std::path::Path, _display: &str) {}
+    /// The docutils-side dependency record
+    /// (`settings.record_dependencies.add(path)`, `misc.py:130`, which
+    /// sphinx's `DependenciesCollector` harvests into `env.dependencies`):
+    /// every successfully opened project file, non-doc files included.
+    /// Standard includes never reach here (§Scope-2b: recording their
+    /// environment-specific path would outdate the document on every warm
+    /// rebuild). Sphinx mode only — a standalone parse has no environment
+    /// to replay into.
+    fn record_include_dependency(&mut self, display: &str) {
+        if self.sphinx && self.srcdir.is_some() {
+            self.dependency_records.push(display.to_string());
+        }
+    }
 
     /// `insert_into_input_lines` (`misc.py:236-267`): length check,
     /// circular check, marker suffix, splice.
@@ -15367,6 +15403,93 @@ mod include_tests {
             "Problem with \"include\" directive:\nparser mode is not supported by sphinx-ultra \
              (planned with MyST, M2 wave 6)"
         );
+    }
+
+    // ---- rows 8-9: the sphinx record layer ---------------------------
+
+    fn parse_sphinx_full(srcdir: &Path, docname: &str, main: &str) -> crate::rst::ParseOutput {
+        crate::rst::parse_rst_full(
+            main,
+            &ParseOptions {
+                source_path: srcdir.join(format!("{docname}.rst")).display().to_string(),
+                sphinx: true,
+                docname: docname.to_string(),
+                found_docs: None,
+                exclude_patterns: Vec::new(),
+                py: Default::default(),
+                srcdir: Some(srcdir.to_path_buf()),
+            },
+        )
+    }
+
+    /// Row 8: dependency for every successfully opened project file
+    /// (non-doc files included), `included` only for docname-mapping
+    /// paths, standard includes recording neither (§Scope-2b), and a
+    /// missing file recording `included` but no dependency (sphinx's
+    /// `note_included` runs before the open, `other.py:415`).
+    #[test]
+    fn the_registry_records_dependencies_and_included_docnames() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "part.rst", "part para\n");
+        write(tmp.path(), "sub/abs_part.rst", "abs part\n");
+        write(tmp.path(), "data.txt", "plain text\n");
+        let out = parse_sphinx_full(
+            tmp.path(),
+            "a",
+            "A\n=\n\n.. include:: part.rst\n\n.. include:: /sub/abs_part.rst\n\n\
+             .. include:: data.txt\n\n.. include:: <isonum.txt>\n\n\
+             .. include:: missing.rst\n",
+        );
+        assert_eq!(
+            out.registry.dependencies,
+            vec![
+                "part.rst".to_string(),
+                "sub/abs_part.rst".to_string(),
+                "data.txt".to_string(),
+            ],
+            "opened files only; standard include excluded"
+        );
+        assert_eq!(
+            out.registry.included,
+            vec![
+                "part".to_string(),
+                "sub/abs_part".to_string(),
+                "missing".to_string(),
+            ],
+            "docname-mapping paths only (.txt maps to no docname), missing file included"
+        );
+    }
+
+    /// The dependency is recorded at OPEN time (`misc.py:130`), so a file
+    /// that fails to DECODE still records.
+    #[test]
+    fn a_decode_failure_still_records_the_dependency() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("inc.rst"), b"caf\xe9\n").unwrap();
+        let out = parse_sphinx_full(tmp.path(), "a", ".. include:: inc.rst\n");
+        assert_eq!(out.registry.dependencies, vec!["inc.rst".to_string()]);
+    }
+
+    /// A standalone (docutils-mode) parse has no environment to replay
+    /// into: no records.
+    #[test]
+    fn docutils_mode_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "para\n");
+        let out = crate::rst::parse_rst_full(
+            ".. include:: inc.rst\n",
+            &ParseOptions {
+                source_path: tmp.path().join("main.rst").display().to_string(),
+                sphinx: false,
+                docname: "index".to_string(),
+                found_docs: None,
+                exclude_patterns: Vec::new(),
+                py: Default::default(),
+                srcdir: None,
+            },
+        );
+        assert!(out.registry.dependencies.is_empty());
+        assert!(out.registry.included.is_empty());
     }
 
     #[test]

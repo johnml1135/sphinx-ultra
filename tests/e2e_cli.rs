@@ -409,6 +409,89 @@ fn touching_an_embedded_image_re_reads_only_the_page_that_embeds_it() {
     );
 }
 
+/// The include dependency + orphan wiring, end to end (wave 4.5 T12,
+/// [INC PROBE 6] matrix): a cold build records the include targets as
+/// dependencies, a warm build reads nothing, touching an included `.rst`
+/// re-reads the includer AND the included doc (it is discovered and read
+/// standalone too), and an included-only doc never earns the orphan
+/// warning. Divergence note: touching an included `.txt` re-reads the
+/// includer and the `.txt`'s own document — sphinx's default
+/// `source_suffix` does not read `.txt` standalone, this crate's wider
+/// discovery does.
+#[test]
+fn touching_an_included_file_re_reads_the_documents_that_pull_it_in() {
+    let src = out_dir("deps-include-src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("index.rst"),
+        "Index\n=====\n\n.. toctree::\n\n   a\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("a.rst"),
+        "A\n=\n\n.. include:: part.rst\n\n.. include:: snippet.txt\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("part.rst"), "part para\n").unwrap();
+    std::fs::write(src.join("snippet.txt"), "plain snippet\n").unwrap();
+    let out = out_dir("deps-include-out");
+
+    let run1 = build(&src, &out, &["--incremental"]);
+    assert!(run1.status.success(), "stderr: {}", stderr_of(&run1));
+    assert!(
+        !stderr_of(&run1).contains("isn't included in any toctree"),
+        "part.rst is reachable through the include; nothing is orphaned: {}",
+        stderr_of(&run1)
+    );
+
+    // Warm no-op: all four discovered documents (snippet.txt included —
+    // this crate's discovery is wider than sphinx's) hit the cache, and
+    // the orphan check replayed from the persisted env stays quiet.
+    let run2 = build(&src, &out, &["--incremental"]);
+    let stderr2 = stderr_of(&run2);
+    assert!(
+        stderr2.contains("Cache hits: 4"),
+        "an unchanged project reads nothing, stderr: {stderr2}"
+    );
+    assert!(
+        !stderr2.contains("isn't included in any toctree"),
+        "{stderr2}"
+    );
+
+    // Touch the included .rst: outdates the includer (via
+    // env.dependencies) and itself (its own document) — PROBE 6's
+    // changed={a, part}.
+    let part = src.join("part.rst");
+    let bytes = std::fs::read(&part).unwrap();
+    std::fs::write(&part, &bytes).unwrap();
+    let run3 = build(&src, &out, &["--incremental"]);
+    assert!(
+        stderr_of(&run3).contains("Cache hits: 2"),
+        "touch part.rst re-reads a + part, stderr: {}",
+        stderr_of(&run3)
+    );
+
+    // Touch the included .txt: outdates the includer; the .txt's own
+    // document is the divergence noted above.
+    let snippet = src.join("snippet.txt");
+    let bytes = std::fs::read(&snippet).unwrap();
+    std::fs::write(&snippet, &bytes).unwrap();
+    let run4 = build(&src, &out, &["--incremental"]);
+    assert!(
+        stderr_of(&run4).contains("Cache hits: 2"),
+        "touch snippet.txt re-reads a + snippet, stderr: {}",
+        stderr_of(&run4)
+    );
+
+    // The re-reads settled every dependency.
+    let run5 = build(&src, &out, &["--incremental"]);
+    assert!(
+        stderr_of(&run5).contains("Cache hits: 4"),
+        "stderr: {}",
+        stderr_of(&run5)
+    );
+}
+
 #[test]
 fn clean_incremental_build_produces_full_output() {
     let out = out_dir("clean-incremental");
