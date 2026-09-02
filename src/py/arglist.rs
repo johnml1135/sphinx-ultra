@@ -459,9 +459,13 @@ pub fn parse_type_list(
     let cleaned = tp_list.replace('\n', "");
     let cleaned = cleaned.trim();
     let toks = lex(cleaned).ok_or_else(invalid_syntax)?;
-    // `tokenize` raises TokenError('EOF in multi-line statement') for
-    // unclosed brackets (extra closers are lenient); the parser's caller
-    // catches any Exception into the tp-list warning.
+    // `tokenize` raises TokenError('unexpected EOF in multi-line
+    // statement', (lnum, 0)) for unclosed brackets (extra closers are
+    // lenient); the parser's caller catches any Exception into the
+    // tp-list warning, where `%s` renders the two-arg exception as its
+    // args-tuple repr — and `lnum` is always 1 because the parser joins
+    // the tp-list to one line first. Probe tp_list_tokerror pins the
+    // rendered bytes verbatim.
     let mut level = 0i64;
     for t in &toks {
         if t.kind == TokKind::Op {
@@ -474,7 +478,7 @@ pub fn parse_type_list(
     }
     if level > 0 {
         return Err(SigParseError::Syntax(
-            "EOF in multi-line statement".to_string(),
+            "('unexpected EOF in multi-line statement', (1, 0))".to_string(),
         ));
     }
 

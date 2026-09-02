@@ -3225,7 +3225,14 @@ impl BlockParser {
             DirectiveKind::IndexDir => self.run_index(input, out),
             DirectiveKind::HList => self.run_hlist(input, out),
             DirectiveKind::Glossary => self.run_glossary(input, out),
-            DirectiveKind::ObjectDesc(kind) => self.run_object_description(kind, input, out),
+            DirectiveKind::ObjectDesc(kind) => {
+                self.run_object_description(DescDispatch::Std(kind), input, out)
+            }
+            DirectiveKind::PyObjectDesc(py) => {
+                self.run_object_description(DescDispatch::Py(py), input, out)
+            }
+            DirectiveKind::PyModule => self.run_py_module(input, out),
+            DirectiveKind::PyCurrentModule => self.run_py_currentmodule(input),
             DirectiveKind::ProgramDir => self.run_program(input),
             // `DefaultDomain.run` sets `env.current_document.default_domain`
             // and returns []. This crate implements no domain whose
@@ -3530,7 +3537,7 @@ impl BlockParser {
     /// [`ObjectDescKind`].
     fn run_object_description(
         &mut self,
-        kind: ObjectDescKind,
+        kind: DescDispatch,
         input: DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
@@ -3541,10 +3548,13 @@ impl BlockParser {
         // docutils registration, but `'{domain}:{name}'` for a domain
         // directive (`Domain.directive`'s adapter, `domains/__init__.py`),
         // which is why `describe` reports `domain=""` and `option` reports
-        // `domain="std"` / `objtype="option"`.
+        // `domain="std"` / `objtype="option"`. For the aliasing py
+        // directives, `run()` rewrites `self.name` BEFORE the base run
+        // partitions it, so the objtype is the ALIASED kind's (trap 13).
         let (domain, objtype) = match kind {
-            ObjectDescKind::Describe => ("", input.name.to_string()),
-            _ => ("std", input.name.to_lowercase()),
+            DescDispatch::Std(ObjectDescKind::Describe) => ("", input.name.to_string()),
+            DescDispatch::Std(_) => ("std", input.name.to_lowercase()),
+            DescDispatch::Py(py) => ("py", py.kind.objtype().to_string()),
         };
         let span = input.span;
 
@@ -3580,25 +3590,33 @@ impl BlockParser {
         desc.attrs.classes.push(objtype.clone());
 
         let mut index_entries: Vec<String> = Vec::new();
-        let mut names: Vec<String> = Vec::new();
-        for sig in object_signatures(argument) {
+        // Names are the `(fullname, name_prefix)` tuples py's
+        // `handle_signature` returns (`_object.py:397`); std kinds carry an
+        // empty prefix. Dedup is on the whole tuple, exactly like the base
+        // run's `if name not in self.names` (`directives/__init__.py:273`).
+        let mut names: Vec<(String, String)> = Vec::new();
+        for sig in object_signatures(argument, self.py.strip_signature_backslash) {
             let mut signode = Node::elem("desc_signature", span);
             signode
                 .attrs
                 .classes
                 .extend(["sig".to_string(), "sig-object".to_string()]);
-            let name = self.handle_object_signature(kind, &sig, input.lineno, &mut signode);
-            // `_toc_parts`/`_toc_name` are assigned in a `finally` (`:264-272`),
-            // so the ValueError path carries them too. Only
-            // `ConfigurationValue` overrides the two empty defaults.
-            let (toc_parts, toc_name) = match (kind, &name) {
-                (ObjectDescKind::Confval, Some(n)) => {
-                    (format!("({},)", py_repr(Some(n))), n.clone())
-                }
-                _ => ("()".to_string(), String::new()),
-            };
-            signode.set("_toc_parts", AttrValue::Str(toc_parts));
-            signode.set("_toc_name", AttrValue::Str(toc_name));
+            let name = self.handle_object_signature(kind, &sig, &input, &mut signode);
+            if let DescDispatch::Std(std_kind) = kind {
+                // `_toc_parts`/`_toc_name` are assigned in a `finally`
+                // (`:264-272`), so the ValueError path carries them too.
+                // Only `ConfigurationValue` overrides the two empty
+                // defaults; the py arm stamps its own inside
+                // `handle_py_signature`.
+                let (toc_parts, toc_name) = match (std_kind, &name) {
+                    (ObjectDescKind::Confval, Some((n, _))) => {
+                        (format!("({},)", py_repr(Some(n))), n.clone())
+                    }
+                    _ => ("()".to_string(), String::new()),
+                };
+                signode.set("_toc_parts", AttrValue::Str(toc_parts));
+                signode.set("_toc_name", AttrValue::Str(toc_name));
+            }
             // "only add target and index entry if this is the first
             // description of the object with this name in this desc block".
             if let Some(name) = name {
@@ -3609,7 +3627,7 @@ impl BlockParser {
                             kind,
                             &objtype,
                             &name,
-                            input.lineno,
+                            &input,
                             &mut signode,
                             &mut index_entries,
                         );
@@ -3619,10 +3637,18 @@ impl BlockParser {
             desc.children.push(signode);
         }
 
+        // py `before_content` (`_object.py:449-480`): the class/module
+        // ref_context pushes the nested content parses under.
+        if let DescDispatch::Py(py) = kind {
+            self.py_before_content(py, &names, &input);
+        }
         let mut content = Node::elem("desc_content", span);
         content.children = self.parse_nested(&input.content, "desc_content");
-        if kind == ObjectDescKind::Confval {
+        if kind == DescDispatch::Std(ObjectDescKind::Confval) {
             self.confval_transform_content(&input, &mut content);
+        }
+        if let DescDispatch::Py(py) = kind {
+            self.py_after_content(py, &input);
         }
         desc.children.push(content);
 
@@ -3647,40 +3673,45 @@ impl BlockParser {
         out.push(desc);
     }
 
-    /// The per-subclass `handle_signature`. Returns the object name, or
-    /// `None` for the ValueError path — where `run` clears the signature
-    /// node and drops the whole signature into one `desc_name` (`:259-263`),
-    /// which each arm does itself.
+    /// The per-subclass `handle_signature`. Returns the object name — a
+    /// `(name, prefix)` tuple, prefix empty for std kinds — or `None` for
+    /// the ValueError path, where `run` clears the signature node and drops
+    /// the whole signature into one `desc_name` (`:259-263`), which each
+    /// arm does itself.
     fn handle_object_signature(
         &mut self,
-        kind: ObjectDescKind,
+        kind: DescDispatch,
         sig: &str,
-        lineno: u32,
+        input: &DirectiveInput<'_>,
         signode: &mut Node,
-    ) -> Option<String> {
+    ) -> Option<(String, String)> {
         let span = signode.span;
+        let std_name = |name: String| Some((name, String::new()));
         match kind {
             // The base `handle_signature` raises unconditionally (`:100-111`).
-            ObjectDescKind::Describe => {
+            DescDispatch::Std(ObjectDescKind::Describe) => {
                 signode.children.clear();
                 signode.children.push(desc_name_node(sig, span));
                 None
             }
             // `GenericObject.handle_signature` (`domains/std:56-64`).
-            ObjectDescKind::EnvVar => {
+            DescDispatch::Std(ObjectDescKind::EnvVar) => {
                 signode.children.clear();
                 signode.children.push(desc_name_node(sig, span));
-                Some(ws_collapse(sig, " "))
+                std_name(ws_collapse(sig, " "))
             }
             // `ConfigurationValue.handle_signature` (`domains/std:126-131`).
-            ObjectDescKind::Confval => {
+            DescDispatch::Std(ObjectDescKind::Confval) => {
                 signode.children.clear();
                 signode.children.push(desc_name_node(sig, span));
                 let name = ws_collapse(sig, " ");
                 signode.set("fullname", AttrValue::Str(name.clone()));
-                Some(name)
+                std_name(name)
             }
-            ObjectDescKind::Cmdoption => self.handle_option_signature(sig, lineno, signode),
+            DescDispatch::Std(ObjectDescKind::Cmdoption) => self
+                .handle_option_signature(sig, input.lineno, signode)
+                .and_then(std_name),
+            DescDispatch::Py(py) => self.handle_py_signature(py, sig, input, signode),
         }
     }
 
@@ -3744,26 +3775,31 @@ impl BlockParser {
     }
 
     /// The per-subclass `add_target_and_index`: node ids through sphinx's
-    /// `make_id`, the index entries, and (for options) the program-scoped
-    /// registration the env layer replays.
+    /// `make_id`, the index entries, and the domain registration records
+    /// the env layer replays.
     fn object_target_and_index(
         &mut self,
-        kind: ObjectDescKind,
+        kind: DescDispatch,
         objtype: &str,
-        name: &str,
-        line: u32,
+        name_cls: &(String, String),
+        input: &DirectiveInput<'_>,
         signode: &mut Node,
         entries: &mut Vec<String>,
     ) {
+        let name: &str = &name_cls.0;
+        let line = input.lineno;
         match kind {
+            DescDispatch::Py(py) => {
+                self.py_target_and_index(py, objtype, name_cls, input, signode, entries)
+            }
             // `ObjectDescription.add_target_and_index` is `pass` (`:113-120`)
             // — no id, no index entry, no std object. (Unreachable in
             // practice: `Describe`'s handle_signature never returns a name.)
-            ObjectDescKind::Describe => {}
+            DescDispatch::Std(ObjectDescKind::Describe) => {}
             // `GenericObject.add_target_and_index` (`domains/std:66-84`).
             // `EnvVar.indextemplate` has no ':' separator, so the whole
             // template is a 'single' entry value.
-            ObjectDescKind::EnvVar => {
+            DescDispatch::Std(ObjectDescKind::EnvVar) => {
                 let node_id = self.note_object_id(objtype, name, line, signode);
                 entries.push(index_entry_tuple(
                     "single",
@@ -3774,7 +3810,7 @@ impl BlockParser {
                 ));
             }
             // `ConfigurationValue.add_target_and_index` (`domains/std:142-151`).
-            ObjectDescKind::Confval => {
+            DescDispatch::Std(ObjectDescKind::Confval) => {
                 let node_id = self.note_object_id(objtype, name, line, signode);
                 entries.push(index_entry_tuple(
                     "pair",
@@ -3785,7 +3821,7 @@ impl BlockParser {
                 ));
             }
             // `Cmdoption.add_target_and_index` (`domains/std:292-330`).
-            ObjectDescKind::Cmdoption => {
+            DescDispatch::Std(ObjectDescKind::Cmdoption) => {
                 let program = self.program.clone();
                 let allnames = match signode.get("allnames") {
                     Some(AttrValue::List(names)) => names.clone(),
@@ -3858,6 +3894,520 @@ impl BlockParser {
             line,
         });
         node_id
+    }
+
+    /// `PyObject.handle_signature` with every subclass override inlined
+    /// (`domains/python/_object.py:248-397`, `__init__.py`, [PY §1.3]).
+    /// Returns `(fullname, name_prefix)`, or `None` for the no-match
+    /// ValueError path — silent, whole sig in one `desc_name`, empty toc
+    /// attrs, no registration (trap 7).
+    fn handle_py_signature(
+        &mut self,
+        py: PyDirective,
+        sig: &str,
+        input: &DirectiveInput<'_>,
+        signode: &mut Node,
+    ) -> Option<(String, String)> {
+        let span = signode.span;
+        let Some(m) = py_sig_match(sig) else {
+            signode.children.clear();
+            signode.children.push(desc_name_node(sig, span));
+            signode.set("_toc_parts", AttrValue::Str("()".to_string()));
+            signode.set("_toc_name", AttrValue::Str(String::new()));
+            return None;
+        };
+
+        // Python-truthy option access: a present-but-empty value is falsy
+        // everywhere handle_signature consults these.
+        let opt_str = |name: &'static str| match opt_get(&input.options, name) {
+            Some(OptVal::Str(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let opt_truthy = |name: &'static str| opt_str(name).filter(|s| !s.is_empty());
+
+        // `modname = self.options.get('module', ref_context['py:module'])`
+        // (`_object.py:263`): option PRESENCE wins, even with an empty value.
+        let modname: Option<String> = match opt_str("module") {
+            Some(module) => Some(module),
+            None => self.py_module.clone(),
+        };
+        let ref_class = self.py_class.clone().filter(|c| !c.is_empty());
+
+        // Module/class resolution (`_object.py:262-285`).
+        let mut prefix = m.prefix.clone().unwrap_or_default();
+        let name = m.name.clone();
+        let fullname: String;
+        let classname_attr: String;
+        let add_module: bool;
+        match &ref_class {
+            Some(classname) => {
+                add_module = false;
+                if !prefix.is_empty()
+                    && (prefix == *classname || prefix.starts_with(&format!("{classname}.")))
+                {
+                    // Class name given again in the signature: stripped
+                    // from display, kept in the fullname.
+                    fullname = format!("{prefix}{name}");
+                    prefix = prefix[classname.len()..]
+                        .trim_start_matches('.')
+                        .to_string();
+                } else if !prefix.is_empty() {
+                    // A DIFFERENT prefix inside a class nests under it:
+                    // `D.meth` inside `C` → `C.D.meth` (probe
+                    // method_other_prefix).
+                    fullname = format!("{classname}.{prefix}{name}");
+                } else {
+                    fullname = format!("{classname}.{name}");
+                }
+                classname_attr = classname.clone();
+            }
+            None => {
+                add_module = true;
+                if !prefix.is_empty() {
+                    // A dotted prefix at top level becomes the signature
+                    // CLASS name, not a module (trap 12).
+                    classname_attr = prefix.trim_end_matches('.').to_string();
+                    fullname = format!("{prefix}{name}");
+                } else {
+                    classname_attr = String::new();
+                    fullname = name.clone();
+                }
+            }
+        }
+
+        // Stamped on every successful signature (`_object.py:287-289`);
+        // a None modname pformats as the `"True"` sentinel (trap 2).
+        signode.set(
+            "module",
+            AttrValue::Str(modname.clone().unwrap_or_else(|| "True".to_string())),
+        );
+        signode.set("class", AttrValue::Str(classname_attr.clone()));
+        signode.set("fullname", AttrValue::Str(fullname.clone()));
+
+        let single_line = crate::py::arglist::SingleLineOpts {
+            parameter_list: opt_get(&input.options, "single-line-parameter-list").is_some(),
+            type_parameter_list: opt_get(&input.options, "single-line-type-parameter-list")
+                .is_some(),
+        };
+        let (multi_line_params, multi_line_tp) =
+            crate::py::arglist::multi_line_flags(sig, &m, single_line, &self.py);
+
+        // Annotation xrefs read the RAW ref_context, not the option-
+        // modified modname: the `:module:` option only touches
+        // `env.ref_context` in before_content (`_annotations.py:62-66`).
+        let ctx = crate::py::annotations::PyRefContext {
+            module: self.py_module.clone(),
+            class_: self.py_class.clone(),
+        };
+
+        // 1. Signature prefix keywords (`get_signature_prefix`).
+        let prefix_nodes = py_signature_prefix(py, input);
+        if !prefix_nodes.is_empty() {
+            let mut anno = desc_annotation_node(span);
+            anno.children = prefix_nodes;
+            signode.children.push(anno);
+        }
+
+        // 2. Written prefix, else `{modname}.` under add_module_names
+        // (`_object.py:326-330`).
+        if !prefix.is_empty() {
+            signode.children.push(desc_addname_node(&prefix, span));
+        } else if let Some(modname) = modname.as_deref().filter(|s| !s.is_empty()) {
+            if add_module && self.py.add_module_names {
+                signode
+                    .children
+                    .push(desc_addname_node(&format!("{modname}."), span));
+            }
+        }
+
+        // 3. Object name.
+        signode.children.push(desc_name_node(&name, span));
+
+        // 4. Type parameter list; any failure is a WARNING (`_object.py:
+        // 342-345`), interpolating the exception text (probes
+        // tp_list_warning / tp_list_tokerror).
+        if let Some(tp_list) = m.tp_list.as_deref().filter(|t| !t.is_empty()) {
+            match crate::py::arglist::parse_type_list(tp_list, multi_line_tp, &ctx, &self.py) {
+                Ok(node) => signode.children.push(node),
+                Err(err) => self.log_warnings.push(super::ParseLogWarning {
+                    source: span.source,
+                    message: format!(
+                        "could not parse tp_list ({}): {err}",
+                        py_repr(Some(tp_list))
+                    ),
+                    line: input.lineno,
+                }),
+            }
+        }
+
+        // 5. Parameter list. An EMPTY written `()` is falsy and routes to
+        // the needs_arglist branch, exactly like no parens at all (see
+        // arglist_empty_still_carries_attrs in src/py/arglist.rs); the
+        // bare paramlist carries NO multi_line attrs (trap 1).
+        match m.arglist.as_deref().filter(|a| !a.is_empty()) {
+            Some(arglist) => {
+                match crate::py::arglist::parse_arglist(arglist, multi_line_params, &ctx, &self.py)
+                {
+                    Ok(node) => signode.children.push(node),
+                    Err(crate::py::arglist::SigParseError::Syntax(_)) => {
+                        // `logger.debug` — invisible (`_object.py:355-369`).
+                        signode
+                            .children
+                            .push(crate::py::arglist::pseudo_parse_arglist(
+                                arglist,
+                                multi_line_params,
+                                &ctx,
+                                &self.py,
+                            ));
+                    }
+                    Err(err) => {
+                        // Duplicate parameter names: WARNING + pseudo
+                        // fallback (`_object.py:370-381`, probe
+                        // arglist_dup_warning).
+                        self.log_warnings.push(super::ParseLogWarning {
+                            source: span.source,
+                            message: format!(
+                                "could not parse arglist ({}): {err}",
+                                py_repr(Some(arglist))
+                            ),
+                            line: input.lineno,
+                        });
+                        signode
+                            .children
+                            .push(crate::py::arglist::pseudo_parse_arglist(
+                                arglist,
+                                multi_line_params,
+                                &ctx,
+                                &self.py,
+                            ));
+                    }
+                }
+            }
+            None => {
+                if py.needs_arglist() {
+                    let mut params = Node::elem("desc_parameterlist", span);
+                    params.set("xml:space", AttrValue::Str("preserve".to_string()));
+                    signode.children.push(params);
+                }
+            }
+        }
+
+        // 6. Return annotation (`_object.py:387-389`).
+        if let Some(retann) = m.retann.as_deref().filter(|r| !r.is_empty()) {
+            let mut returns = Node::elem("desc_returns", span);
+            returns.set("xml:space", AttrValue::Str("preserve".to_string()));
+            returns.children = crate::py::annotations::parse_annotation(retann, &ctx, &self.py);
+            signode.children.push(returns);
+        }
+
+        // 7. `:annotation:` option tail (`_object.py:391-395`).
+        if let Some(anno) = opt_truthy("annotation") {
+            let mut node = desc_annotation_node(span);
+            node.children.push(crate::py::annotations::desc_sig_space());
+            node.children.push(Node::text_node(anno, span));
+            signode.children.push(node);
+        }
+
+        // Subclass tails run AFTER the base handle_signature returns:
+        // `:type:`/`:value:` for data/attribute (the `:`/`=` here are
+        // desc_sig_punctuation, unlike parameter defaults — trap 3),
+        // `:type:` only for property, display-only `:canonical:` for
+        // py:type.
+        match py.kind {
+            PyObjectKind::Data | PyObjectKind::Attribute => {
+                if let Some(typ) = opt_truthy("type") {
+                    let mut node = desc_annotation_node(span);
+                    node.children
+                        .push(crate::py::annotations::desc_sig_punctuation(":"));
+                    node.children.push(crate::py::annotations::desc_sig_space());
+                    node.children
+                        .extend(crate::py::annotations::parse_annotation(
+                            &typ, &ctx, &self.py,
+                        ));
+                    signode.children.push(node);
+                }
+                if let Some(value) = opt_truthy("value") {
+                    let mut node = desc_annotation_node(span);
+                    node.children.push(crate::py::annotations::desc_sig_space());
+                    node.children
+                        .push(crate::py::annotations::desc_sig_punctuation("="));
+                    node.children.push(crate::py::annotations::desc_sig_space());
+                    node.children.push(Node::text_node(value, span));
+                    signode.children.push(node);
+                }
+            }
+            PyObjectKind::Property => {
+                if let Some(typ) = opt_truthy("type") {
+                    let mut node = desc_annotation_node(span);
+                    node.children
+                        .push(crate::py::annotations::desc_sig_punctuation(":"));
+                    node.children.push(crate::py::annotations::desc_sig_space());
+                    node.children
+                        .extend(crate::py::annotations::parse_annotation(
+                            &typ, &ctx, &self.py,
+                        ));
+                    signode.children.push(node);
+                }
+            }
+            PyObjectKind::TypeAlias => {
+                if let Some(canonical) = opt_truthy("canonical") {
+                    let mut node = desc_annotation_node(span);
+                    node.children.push(crate::py::annotations::desc_sig_space());
+                    node.children
+                        .push(crate::py::annotations::desc_sig_punctuation("="));
+                    node.children.push(crate::py::annotations::desc_sig_space());
+                    node.children
+                        .extend(crate::py::annotations::parse_annotation(
+                            &canonical, &ctx, &self.py,
+                        ));
+                    signode.children.push(node);
+                }
+            }
+            _ => {}
+        }
+
+        // Decorators insert the `@` addname FIRST, after everything else
+        // ran (`__init__.py:124-127`, `313-316`).
+        if py.decorator {
+            signode.children.insert(0, desc_addname_node("@", span));
+        }
+
+        // `_toc_parts`/`_toc_name` — `_object_hierarchy_parts` +
+        // `_toc_entry_name` (`_object.py:399-408`, `505-522`), gated on
+        // `toc_object_entries` by the base run's finally (`:264-272`).
+        if self.py.toc_object_entries {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(modname) = modname.as_deref().filter(|s| !s.is_empty()) {
+                parts.push(modname.to_string());
+            }
+            parts.extend(fullname.split('.').map(str::to_string));
+            let toc_name = py_toc_entry_name(&parts, &fullname, py.kind, &self.py);
+            signode.set("_toc_parts", AttrValue::Str(py_tuple_repr(&parts)));
+            signode.set("_toc_name", AttrValue::Str(toc_name));
+        } else {
+            signode.set("_toc_parts", AttrValue::Str("()".to_string()));
+            signode.set("_toc_name", AttrValue::Str(String::new()));
+        }
+
+        Some((fullname, prefix))
+    }
+
+    /// `PyObject.add_target_and_index` + the PyFunction extension
+    /// (`_object.py:415-447`, `__init__.py:95-109`, [PY §1.4/1.5]).
+    fn py_target_and_index(
+        &mut self,
+        py: PyDirective,
+        objtype: &str,
+        name_cls: &(String, String),
+        input: &DirectiveInput<'_>,
+        signode: &mut Node,
+        entries: &mut Vec<String>,
+    ) {
+        let opt_str = |name: &'static str| match opt_get(&input.options, name) {
+            Some(OptVal::Str(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let modname: Option<String> = match opt_str("module") {
+            Some(module) => Some(module),
+            None => self.py_module.clone(),
+        };
+        let modname = modname.filter(|m| !m.is_empty());
+        let name = &name_cls.0;
+        let fullname = match &modname {
+            Some(modname) => format!("{modname}.{name}"),
+            None => name.clone(),
+        };
+        // Empty prefix: the id IS the fullname, `id{n}` on collision
+        // ([PY §1.5], the empty-prefix branch of `sphinx_make_id`).
+        let node_id = self.registry.sphinx_make_id("", &fullname);
+        signode.attrs.ids.push(node_id.clone());
+        self.registry.note_explicit_id(&node_id);
+        self.py_object_records.push(super::PyObjectRecord {
+            fullname: fullname.clone(),
+            objtype: objtype.to_string(),
+            node_id: node_id.clone(),
+            aliased: false,
+            source: signode.span.source,
+            lineno: input.lineno,
+        });
+        // `:canonical:` registers an alias — except on py:type, where the
+        // option is display-only (`_object.py:427-437`, §6).
+        if py.kind != PyObjectKind::TypeAlias {
+            if let Some(canonical) = opt_str("canonical").filter(|c| !c.is_empty()) {
+                self.py_object_records.push(super::PyObjectRecord {
+                    fullname: canonical,
+                    objtype: objtype.to_string(),
+                    node_id: node_id.clone(),
+                    aliased: true,
+                    source: signode.span.source,
+                    lineno: input.lineno,
+                });
+            }
+        }
+        let has = |n: &'static str| opt_get(&input.options, n).is_some();
+        if has("no-index-entry") || has("noindexentry") {
+            return;
+        }
+        let index_text = py_index_text(
+            py,
+            input,
+            modname.as_deref(),
+            name,
+            self.py.add_module_names,
+        );
+        if !index_text.is_empty() {
+            entries.push(index_entry_tuple("single", &index_text, &node_id, "", None));
+        }
+        // PyFunction adds its entry in its own add_target_and_index
+        // (`__init__.py:95-109`): module-less functions are a PAIR entry
+        // (trap 10).
+        if py.kind == PyObjectKind::Function {
+            match &modname {
+                Some(modname) => entries.push(index_entry_tuple(
+                    "single",
+                    &format!("{name}() (in module {modname})"),
+                    &node_id,
+                    "",
+                    None,
+                )),
+                None => entries.push(index_entry_tuple(
+                    "pair",
+                    &format!("built-in function; {name}()"),
+                    &node_id,
+                    "",
+                    None,
+                )),
+            }
+        }
+    }
+
+    /// `PyObject.before_content` (`_object.py:449-480`): class scope from
+    /// the LAST signature's name — the fullname for nesting kinds, the
+    /// written prefix otherwise — plus the `:module:` option push.
+    fn py_before_content(
+        &mut self,
+        py: PyDirective,
+        names: &[(String, String)],
+        input: &DirectiveInput<'_>,
+    ) {
+        let mut prefix: Option<String> = None;
+        if let Some((fullname, name_prefix)) = names.last() {
+            if py.allow_nesting() {
+                prefix = Some(fullname.clone());
+            } else if !name_prefix.is_empty() {
+                prefix = Some(name_prefix.trim_matches('.').to_string());
+            }
+        }
+        if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
+            self.py_class = Some(prefix.clone());
+            if py.allow_nesting() {
+                self.py_classes.push(prefix);
+            }
+        }
+        if let Some(OptVal::Str(module)) = opt_get(&input.options, "module") {
+            self.py_modules.push(self.py_module.take());
+            self.py_module = Some(module.clone());
+        }
+    }
+
+    /// `PyObject.after_content` (`_object.py:482-503`): pop the nesting
+    /// stack (nesting kinds only), always reassign `py:class` from the
+    /// stack top, and undo the `:module:` push.
+    fn py_after_content(&mut self, py: PyDirective, input: &DirectiveInput<'_>) {
+        if py.allow_nesting() {
+            self.py_classes.pop();
+        }
+        self.py_class = self.py_classes.last().cloned();
+        if opt_get(&input.options, "module").is_some() {
+            // `modules.pop()` when the stack has entries, else the
+            // ref_context key is removed — both read back as None here.
+            self.py_module = self.py_modules.pop().flatten();
+        }
+    }
+
+    /// `PyModule.run` (`domains/python/__init__.py:492-536`, [PY §1.5]):
+    /// node order `[index?, target, *content]`, always-set ref_context
+    /// (trap 6), registration unless `:no-index:`.
+    fn run_py_module(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
+        let Some(argument) = input.arguments.first() else {
+            return;
+        };
+        let modname = argument.trim().to_string();
+        let has = |n: &'static str| opt_get(&input.options, n).is_some();
+        let no_index = has("no-index") || has("noindex");
+        // ALWAYS sets the module scope, even under `:no-index:` (trap 6).
+        self.py_module = Some(modname.clone());
+        // Content parses BEFORE the module's own id is allocated
+        // (`__init__.py:505-510`), so ids taken by content come first.
+        // sphinx parses it with allow_section_headings=True; sections
+        // inside nested content are not representable in this parser (a
+        // pre-existing wave-4 limitation shared by every nested parse),
+        // and the T8 corpus excludes section-bearing module content.
+        let content = self.parse_nested(&input.content, "py_module");
+        if !no_index {
+            let node_id = self.registry.sphinx_make_id("module", &modname);
+            self.registry.note_explicit_id(&node_id);
+            let mut target = Node::elem(kinds::TARGET, input.span);
+            target.attrs.ids.push(node_id.clone());
+            target.set("ismod", AttrValue::Int(1));
+            let opt = |name: &'static str| match opt_get(&input.options, name) {
+                Some(OptVal::Str(s)) => s.clone(),
+                _ => String::new(),
+            };
+            self.py_module_records.push(super::PyModuleRecord {
+                name: modname.clone(),
+                node_id: node_id.clone(),
+                synopsis: opt("synopsis"),
+                platform: opt("platform"),
+                deprecated: has("deprecated"),
+                source: input.span.source,
+                lineno: input.lineno,
+            });
+            // `note_object(modname, 'module', node_id)` (`__init__.py:522`)
+            // — modules also join the objects table.
+            self.py_object_records.push(super::PyObjectRecord {
+                fullname: modname.clone(),
+                objtype: "module".to_string(),
+                node_id: node_id.clone(),
+                aliased: false,
+                source: input.span.source,
+                lineno: input.lineno,
+            });
+            if !has("no-index-entry") {
+                let mut index = Node::elem("index", input.span);
+                index.set(
+                    "entries",
+                    AttrValue::List(vec![index_entry_tuple(
+                        "pair",
+                        &format!("module; {modname}"),
+                        &node_id,
+                        "",
+                        None,
+                    )]),
+                );
+                out.push(index);
+            }
+            // NOTE §Scope-3: this is the PRE-propagation shape — the target
+            // keeps its ids; docutils PropagateTargets (a transform this
+            // parse layer deliberately does not run) is what turns it into
+            // `refid` and moves the id onto the next body node (trap 5).
+            out.push(target);
+        }
+        out.extend(content);
+    }
+
+    /// `PyCurrentModule.run` (`__init__.py:550-556`): pure ref_context
+    /// state, no nodes; the literal argument `None` pops the scope.
+    fn run_py_currentmodule(&mut self, input: DirectiveInput<'_>) {
+        let Some(argument) = input.arguments.first() else {
+            return;
+        };
+        let modname = argument.trim();
+        if modname == "None" {
+            self.py_module = None;
+        } else {
+            self.py_module = Some(modname.to_string());
+        }
     }
 
     /// `ConfigurationValue.transform_content` (`domains/std:153-185`):
@@ -6437,6 +6987,17 @@ enum DirectiveKind {
     /// (`directives/__init__.py:183-314`) with a per-directive
     /// `handle_signature`/`add_target_and_index`.
     ObjectDesc(ObjectDescKind),
+    /// The `py:*` object-description family (`sphinx/domains/python`),
+    /// running through the same `ObjectDescription.run` anatomy with the
+    /// py-domain `handle_signature`/`add_target_and_index`/`before_content`
+    /// overrides ([PY §1.3-1.5, §7]).
+    PyObjectDesc(PyDirective),
+    /// `.. py:module::` — a plain `SphinxDirective`, NOT an
+    /// ObjectDescription (`domains/python/__init__.py:473-536`).
+    PyModule,
+    /// `.. py:currentmodule::` — pure ref_context state, emits nothing
+    /// (`__init__.py:539-556`).
+    PyCurrentModule,
     /// `.. program::` (`domains/std/__init__.py:333-348`).
     ProgramDir,
     /// `.. default-domain::` (`directives/__init__.py:353-366`).
@@ -6446,6 +7007,69 @@ enum DirectiveKind {
     /// directive produces a splice until T12's `include`.
     #[cfg(test)]
     TestSplice,
+}
+
+/// Which Python object a `py:*` object-description directive describes.
+/// Values are the sphinx directive classes AFTER name aliasing [PY §1.1]:
+/// `py:classmethod`/`py:staticmethod`/`py:decoratormethod` are `Method`,
+/// `py:decorator` is `Function` — their `run()` rewrites `self.name`
+/// before the base run partitions it, so the desc's objtype is the
+/// aliased kind's (trap 13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PyObjectKind {
+    Function,
+    Data,
+    Class,
+    Exception,
+    Method,
+    Attribute,
+    Property,
+    TypeAlias,
+}
+
+impl PyObjectKind {
+    /// The desc `objtype`/`desctype` string (also the second desc class).
+    fn objtype(self) -> &'static str {
+        match self {
+            PyObjectKind::Function => "function",
+            PyObjectKind::Data => "data",
+            PyObjectKind::Class => "class",
+            PyObjectKind::Exception => "exception",
+            PyObjectKind::Method => "method",
+            PyObjectKind::Attribute => "attribute",
+            PyObjectKind::Property => "property",
+            PyObjectKind::TypeAlias => "type",
+        }
+    }
+}
+
+/// One `py:*` object directive after spec-lookup-time aliasing: the
+/// [`PyObjectKind`] plus what the aliasing directives' `run()` injects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PyDirective {
+    kind: PyObjectKind,
+    /// `py:classmethod`/`py:staticmethod` inject `options['classmethod']`
+    /// / `options['staticmethod']` in `run()` (`__init__.py:287-303`)
+    /// rather than accepting the flag as an option (their option_spec is
+    /// the plain `PyObject` copy).
+    injected: Option<&'static str>,
+    /// `py:decorator`/`py:decoratormethod`: `needs_arglist()` forced off
+    /// and a leading `desc_addname('@')` (`__init__.py:116-130`, `306-319`).
+    decorator: bool,
+}
+
+impl PyDirective {
+    /// `needs_arglist()`: True only for PyFunction and PyMethod
+    /// (`__init__.py:92-93`, `230-231`); decorators override it back to
+    /// False (`:129-130`, `:318-319`).
+    fn needs_arglist(self) -> bool {
+        matches!(self.kind, PyObjectKind::Function | PyObjectKind::Method) && !self.decorator
+    }
+
+    /// `allow_nesting`: PyClasslike only (`__init__.py:186`).
+    fn allow_nesting(self) -> bool {
+        matches!(self.kind, PyObjectKind::Class | PyObjectKind::Exception)
+    }
 }
 
 /// Which `ObjectDescription` subclass a `desc`-producing directive is.
@@ -6464,6 +7088,14 @@ enum ObjectDescKind {
     Confval,
     /// `Cmdoption` (`domains/std/__init__.py:226-330`).
     Cmdoption,
+}
+
+/// The `run_object_description` dispatch: which family's overrides run on
+/// top of the shared `ObjectDescription.run` anatomy.
+#[derive(Clone, Copy, PartialEq)]
+enum DescDispatch {
+    Std(ObjectDescKind),
+    Py(PyDirective),
 }
 
 /// Sphinx-mode registry: overlays/extends the docutils-native table.
@@ -6658,6 +7290,45 @@ fn sphinx_directive_spec(lower: &str) -> Option<DirectiveSpec> {
         "envvar" => Some(object_desc_spec(ObjectDescKind::EnvVar)),
         "confval" => Some(object_desc_spec(ObjectDescKind::Confval)),
         "option" | "cmdoption" => Some(object_desc_spec(ObjectDescKind::Cmdoption)),
+        // `PythonDomain.directives` (`domains/python/__init__.py:739-754`)
+        // with the run()-time name aliasing resolved at spec-lookup time
+        // [PY §1.1].
+        "py:function" => Some(py_object_desc_spec(PyObjectKind::Function, None, false)),
+        "py:data" => Some(py_object_desc_spec(PyObjectKind::Data, None, false)),
+        "py:class" => Some(py_object_desc_spec(PyObjectKind::Class, None, false)),
+        "py:exception" => Some(py_object_desc_spec(PyObjectKind::Exception, None, false)),
+        "py:method" => Some(py_object_desc_spec(PyObjectKind::Method, None, false)),
+        "py:classmethod" => Some(py_object_desc_spec(
+            PyObjectKind::Method,
+            Some("classmethod"),
+            false,
+        )),
+        "py:staticmethod" => Some(py_object_desc_spec(
+            PyObjectKind::Method,
+            Some("staticmethod"),
+            false,
+        )),
+        "py:attribute" => Some(py_object_desc_spec(PyObjectKind::Attribute, None, false)),
+        "py:property" => Some(py_object_desc_spec(PyObjectKind::Property, None, false)),
+        "py:type" => Some(py_object_desc_spec(PyObjectKind::TypeAlias, None, false)),
+        "py:decorator" => Some(py_object_desc_spec(PyObjectKind::Function, None, true)),
+        "py:decoratormethod" => Some(py_object_desc_spec(PyObjectKind::Method, None, true)),
+        "py:module" => Some(DirectiveSpec {
+            required_arguments: 1,
+            optional_arguments: 0,
+            final_argument_whitespace: false,
+            has_content: true,
+            option_spec: PY_MODULE_OPTS,
+            kind: DirectiveKind::PyModule,
+        }),
+        "py:currentmodule" => Some(DirectiveSpec {
+            required_arguments: 1,
+            optional_arguments: 0,
+            final_argument_whitespace: false,
+            has_content: false,
+            option_spec: &[],
+            kind: DirectiveKind::PyCurrentModule,
+        }),
         "program" => Some(DirectiveSpec {
             required_arguments: 1,
             optional_arguments: 0,
@@ -6675,6 +7346,107 @@ fn sphinx_directive_spec(lower: &str) -> Option<DirectiveSpec> {
             kind: DirectiveKind::DefaultDomainDir,
         }),
         _ => None,
+    }
+}
+
+/// `PyObject.option_spec` (`domains/python/_object.py:172-185`) plus each
+/// subclass's additions ([PY §1.2]). The macro keeps the shared twelve in
+/// one place.
+macro_rules! py_object_opts {
+    ($($extra:tt)*) => {
+        &[
+            ("no-index", Conv::Flag),
+            ("no-index-entry", Conv::Flag),
+            ("no-contents-entry", Conv::Flag),
+            ("no-typesetting", Conv::Flag),
+            ("noindex", Conv::Flag),
+            ("noindexentry", Conv::Flag),
+            ("nocontentsentry", Conv::Flag),
+            ("single-line-parameter-list", Conv::Flag),
+            ("single-line-type-parameter-list", Conv::Flag),
+            ("module", Conv::Unchanged),
+            ("canonical", Conv::Unchanged),
+            ("annotation", Conv::Unchanged),
+            $($extra)*
+        ]
+    };
+}
+
+const PY_OBJECT_OPTS: &[(&str, Conv)] = py_object_opts!();
+const PY_FUNCTION_OPTS: &[(&str, Conv)] = py_object_opts!(("async", Conv::Flag),);
+const PY_VARIABLE_OPTS: &[(&str, Conv)] =
+    py_object_opts!(("type", Conv::Unchanged), ("value", Conv::Unchanged),);
+const PY_CLASSLIKE_OPTS: &[(&str, Conv)] =
+    py_object_opts!(("abstract", Conv::Flag), ("final", Conv::Flag),);
+const PY_METHOD_OPTS: &[(&str, Conv)] = py_object_opts!(
+    ("abstract", Conv::Flag),
+    ("abstractmethod", Conv::Flag),
+    ("async", Conv::Flag),
+    ("classmethod", Conv::Flag),
+    ("final", Conv::Flag),
+    ("staticmethod", Conv::Flag),
+);
+const PY_PROPERTY_OPTS: &[(&str, Conv)] = py_object_opts!(
+    ("abstract", Conv::Flag),
+    ("abstractmethod", Conv::Flag),
+    ("classmethod", Conv::Flag),
+    ("type", Conv::Unchanged),
+);
+
+/// `PyModule.option_spec` (`__init__.py:480-490`): note **no
+/// `noindexentry`** old spelling (probe `module_bad_option`: it is the
+/// unknown-option error), and `no-typesetting` is accepted but unused by
+/// `PyModule.run` (probe `module_no_typesetting`: inert). `platform`/
+/// `synopsis` are identity lambdas in sphinx — `Conv::Unchanged` differs
+/// only for a bare valueless option (`''` here vs Python `None`, probe
+/// `module_synopsis_bare`), which the record keeps as `''`.
+const PY_MODULE_OPTS: &[(&str, Conv)] = &[
+    ("platform", Conv::Unchanged),
+    ("synopsis", Conv::Unchanged),
+    ("no-index", Conv::Flag),
+    ("no-index-entry", Conv::Flag),
+    ("no-contents-entry", Conv::Flag),
+    ("no-typesetting", Conv::Flag),
+    ("noindex", Conv::Flag),
+    ("nocontentsentry", Conv::Flag),
+    ("deprecated", Conv::Flag),
+];
+
+/// The `py:*` object-description directives share `ObjectDescription`'s
+/// class-level shape ([`object_desc_spec`]); the option spec is the
+/// subclass's — with `py:classmethod`/`py:staticmethod` RESET to the plain
+/// `PyObject.option_spec.copy()` (`__init__.py:285`, `:297`): their flags
+/// arrive via [`PyDirective::injected`], not as options.
+fn py_object_desc_spec(
+    kind: PyObjectKind,
+    injected: Option<&'static str>,
+    decorator: bool,
+) -> DirectiveSpec {
+    let option_spec: &'static [(&'static str, Conv)] = if injected.is_some() {
+        PY_OBJECT_OPTS
+    } else {
+        match kind {
+            PyObjectKind::Function => PY_FUNCTION_OPTS,
+            PyObjectKind::Data | PyObjectKind::Attribute => PY_VARIABLE_OPTS,
+            PyObjectKind::Class | PyObjectKind::Exception => PY_CLASSLIKE_OPTS,
+            PyObjectKind::Method => PY_METHOD_OPTS,
+            PyObjectKind::Property => PY_PROPERTY_OPTS,
+            // PyTypeAlias re-declares `canonical`, which the base set
+            // already carries with the same conversion (`__init__.py:436-439`).
+            PyObjectKind::TypeAlias => PY_OBJECT_OPTS,
+        }
+    };
+    DirectiveSpec {
+        required_arguments: 1,
+        optional_arguments: 0,
+        final_argument_whitespace: true,
+        has_content: true,
+        option_spec,
+        kind: DirectiveKind::PyObjectDesc(PyDirective {
+            kind,
+            injected,
+            decorator,
+        }),
     }
 }
 
@@ -6716,15 +7488,262 @@ fn ws_collapse(s: &str, repl: &str) -> String {
     out
 }
 
-/// `ObjectDescription.get_signatures` (`directives/__init__.py:88-98`) with
-/// `strip_signature_backslash` at its default False: backslash-newline pairs
-/// vanish (`nl_escape_re`), then one stripped signature per line.
-fn object_signatures(argument: &str) -> Vec<String> {
+/// `ObjectDescription.get_signatures` (`directives/__init__.py:88-98`):
+/// backslash-newline pairs vanish (`nl_escape_re`), then one stripped
+/// signature per line — each put through `strip_backslash_re.sub(r'\1', …)`
+/// when `strip_signature_backslash` is on (probe strip_backslash_on:
+/// `f(a\_b)` documents parameter `a_b`).
+fn object_signatures(argument: &str, strip_signature_backslash: bool) -> Vec<String> {
     argument
         .replace("\\\n", "")
         .split('\n')
-        .map(|line| line.trim().to_string())
+        .map(|line| {
+            let line = line.trim();
+            if strip_signature_backslash {
+                strip_backslashes(line)
+            } else {
+                line.to_string()
+            }
+        })
         .collect()
+}
+
+/// `strip_backslash_re.sub(r'\1', line)` — `\\(.)`: every backslash
+/// followed by a character is removed keeping the character; a lone
+/// trailing backslash has no `.` to consume and survives.
+fn strip_backslashes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(next) => out.push(next),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `py_sig_re` (`domains/python/_object.py:41-50`) as a [`PySigMatch`]:
+/// groups (prefix, name, tp_list, arglist, retann) plus the byte spans of
+/// groups 3/4 that the multi-line measurement subtracts. The regex crate's
+/// leftmost-first captures match Python's backtracking on this pattern
+/// (pinned by the py_sig_match tests, incl. the greedy-arglist edge).
+fn py_sig_match(sig: &str) -> Option<crate::py::arglist::PySigMatch> {
+    lazy_static::lazy_static! {
+        static ref PY_SIG_RE: regex::Regex = regex::Regex::new(
+            r"(?x)^ ([\w.]*\.)?               # class name(s)
+                  (\w+) \s*                   # thing name
+                  (?: \[ \s* (.*?) \s* \] )?  # optional: type parameters list
+                  (?: \( \s* (.*) \s* \)      # optional: arguments
+                   (?: \s* ->\s* (.*) )?      #           return annotation
+                  )? $",
+        )
+        .expect("py_sig_re compiles");
+    }
+    let caps = PY_SIG_RE.captures(sig)?;
+    let group = |i: usize| caps.get(i).map(|m| m.as_str().to_string());
+    let span_of = |i: usize| caps.get(i).map(|m| (m.start(), m.end())).unwrap_or((0, 0));
+    Some(crate::py::arglist::PySigMatch {
+        prefix: group(1),
+        name: group(2).unwrap_or_default(),
+        tp_list: group(3),
+        arglist: group(4),
+        retann: group(5),
+        tp_span: span_of(3),
+        arg_span: span_of(4),
+    })
+}
+
+/// `get_signature_prefix` per py kind (`__init__.py`, [PY §1.3]): the
+/// keyword set in FIXED order, each keyword a `desc_sig_keyword` +
+/// `desc_sig_space` pair. Note `staticmethod` prints keyword `static`.
+fn py_signature_prefix(py: PyDirective, input: &DirectiveInput<'_>) -> Vec<Node> {
+    let has = |n: &'static str| opt_get(&input.options, n).is_some() || py.injected == Some(n);
+    let mut words: Vec<&str> = Vec::new();
+    match py.kind {
+        PyObjectKind::Function => {
+            if has("async") {
+                words.push("async");
+            }
+        }
+        PyObjectKind::Class | PyObjectKind::Exception => {
+            if has("final") {
+                words.push("final");
+            }
+            if has("abstract") {
+                words.push("abstract");
+            }
+            words.push(py.kind.objtype());
+        }
+        PyObjectKind::Method => {
+            if has("final") {
+                words.push("final");
+            }
+            if has("abstract") || has("abstractmethod") {
+                words.push("abstractmethod");
+            }
+            if has("async") {
+                words.push("async");
+            }
+            if has("classmethod") {
+                words.push("classmethod");
+            }
+            if has("staticmethod") {
+                words.push("static");
+            }
+        }
+        PyObjectKind::Property => {
+            if has("abstract") || has("abstractmethod") {
+                words.push("abstract");
+            }
+            if has("classmethod") {
+                words.push("class");
+            }
+            words.push("property");
+        }
+        PyObjectKind::TypeAlias => words.push("type"),
+        PyObjectKind::Data | PyObjectKind::Attribute => {}
+    }
+    words
+        .iter()
+        .flat_map(|word| {
+            [
+                crate::py::annotations::desc_sig_keyword(word),
+                crate::py::annotations::desc_sig_space(),
+            ]
+        })
+        .collect()
+}
+
+/// `get_index_text` per py kind ([PY §1.4]); PyFunction returns `''` and
+/// adds its entry in its own `add_target_and_index` instead.
+fn py_index_text(
+    py: PyDirective,
+    input: &DirectiveInput<'_>,
+    modname: Option<&str>,
+    name: &str,
+    add_module_names: bool,
+) -> String {
+    let has = |n: &'static str| opt_get(&input.options, n).is_some() || py.injected == Some(n);
+    // `clsname, attrname = name.rsplit('.', 1)` with the add_module_names
+    // qualification (`__init__.py:262-279` and friends).
+    let split = |name: &str| -> Option<(String, String)> {
+        let (cls, last) = name.rsplit_once('.')?;
+        let cls = match modname {
+            Some(modname) if add_module_names => format!("{modname}.{cls}"),
+            _ => cls.to_string(),
+        };
+        Some((cls, last.to_string()))
+    };
+    match py.kind {
+        PyObjectKind::Function => String::new(),
+        PyObjectKind::Data => match modname {
+            Some(modname) => format!("{name} (in module {modname})"),
+            None => format!("{name} (built-in variable)"),
+        },
+        PyObjectKind::Class => match modname {
+            Some(modname) => format!("{name} (class in {modname})"),
+            None => format!("{name} (built-in class)"),
+        },
+        // Exception index entries are the bare name (trap 10).
+        PyObjectKind::Exception => name.to_string(),
+        PyObjectKind::Method => match split(name) {
+            Some((cls, meth)) => {
+                if has("classmethod") {
+                    format!("{meth}() ({cls} class method)")
+                } else if has("staticmethod") {
+                    format!("{meth}() ({cls} static method)")
+                } else {
+                    format!("{meth}() ({cls} method)")
+                }
+            }
+            None => match modname {
+                Some(modname) => format!("{name}() (in module {modname})"),
+                None => format!("{name}()"),
+            },
+        },
+        PyObjectKind::Attribute => match split(name) {
+            Some((cls, attr)) => format!("{attr} ({cls} attribute)"),
+            None => match modname {
+                Some(modname) => format!("{name} (in module {modname})"),
+                None => name.to_string(),
+            },
+        },
+        PyObjectKind::Property => match split(name) {
+            Some((cls, attr)) => format!("{attr} ({cls} property)"),
+            None => match modname {
+                Some(modname) => format!("{name} (in module {modname})"),
+                None => name.to_string(),
+            },
+        },
+        PyObjectKind::TypeAlias => match split(name) {
+            Some((cls, attr)) => format!("{attr} (type alias in {cls})"),
+            None => match modname {
+                Some(modname) => format!("{name} (in module {modname})"),
+                None => name.to_string(),
+            },
+        },
+    }
+}
+
+/// `PyObject._toc_entry_name` (`_object.py:505-522`): parens for the
+/// callable objtypes iff `add_function_parentheses`, then the
+/// `toc_object_entries_show_parents` shape (unknown values fall through to
+/// `''`, matching the un-handled `return` path).
+fn py_toc_entry_name(
+    parts: &[String],
+    fullname: &str,
+    kind: PyObjectKind,
+    cfg: &crate::py::PySigConfig,
+) -> String {
+    let Some(last) = parts.last() else {
+        return String::new();
+    };
+    let callable = matches!(kind, PyObjectKind::Function | PyObjectKind::Method);
+    let parens = if cfg.add_function_parentheses && callable {
+        "()"
+    } else {
+        ""
+    };
+    match cfg.toc_object_entries_show_parents.as_str() {
+        "domain" => format!("{fullname}{parens}"),
+        "hide" => format!("{last}{parens}"),
+        "all" => {
+            let mut joined = parts[..parts.len() - 1].to_vec();
+            joined.push(format!("{last}{parens}"));
+            joined.join(".")
+        }
+        _ => String::new(),
+    }
+}
+
+/// Python tuple-repr of a string sequence: `()`, `('a',)`, `('a', 'b')` —
+/// the `_toc_parts` pformat shape.
+fn py_tuple_repr(parts: &[String]) -> String {
+    match parts {
+        [] => "()".to_string(),
+        [one] => format!("({},)", py_repr(Some(one))),
+        _ => format!(
+            "({})",
+            parts
+                .iter()
+                .map(|part| py_repr(Some(part)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// `addnodes.desc_annotation` — a `FixedTextElement` (xml:space preserve)
+/// with no extra classes; also the shape of `desc_returns`.
+fn desc_annotation_node(span: Span) -> Node {
+    let mut node = Node::elem("desc_annotation", span);
+    node.set("xml:space", AttrValue::Str("preserve".to_string()));
+    node
 }
 
 /// `option_desc_re = r'((?:/|--|-|\+)?[^\s=]+)(=?\s*.*)'` matched with
@@ -9377,6 +10396,1172 @@ mod tests {
         assert_eq!(
             pf("Para.\n\n    Fake\n    ====\n"),
             "<document source=\"<snippet>\">\n    <paragraph>\n        Para.\n    <block_quote>\n        <system_message level=\"3\" line=\"4\" source=\"<snippet>\" type=\"ERROR\">\n            <paragraph>\n                Unexpected section title.\n            <literal_block xml:space=\"preserve\">\n                Fake\n                ====\n"
+        );
+    }
+}
+
+/// The `py:*` directive family (M2 wave 4.5 task 6). Every expected
+/// pformat below is pasted verbatim from the Sphinx 9.1.0 oracle probes —
+/// the research spec [PY §1.6/1.7] and this task's probe_t6 run (harness3
+/// conventions, pinned wheels) — never written from memory.
+#[cfg(test)]
+mod py_desc_tests {
+    use super::*;
+    use crate::py::PySigConfig;
+    use crate::rst::{parse_rst_full, ParseOptions, ParseOutput};
+
+    fn py_opts(py: PySigConfig) -> ParseOptions {
+        ParseOptions {
+            source_path: "<snippet>".into(),
+            sphinx: true,
+            docname: "index".into(),
+            exclude_patterns: Vec::new(),
+            py,
+            found_docs: None,
+        }
+    }
+
+    fn parse_py(src: &str) -> ParseOutput {
+        parse_rst_full(src, &py_opts(PySigConfig::default()))
+    }
+
+    fn pf_py(src: &str) -> String {
+        parse_py(src).doctree.root.pformat()
+    }
+
+    fn pf_py_cfg(src: &str, py: PySigConfig) -> String {
+        parse_rst_full(src, &py_opts(py)).doctree.root.pformat()
+    }
+
+    /// `(fullname, objtype, node_id, aliased)` of every py object record.
+    fn objects(out: &ParseOutput) -> Vec<(String, String, String, bool)> {
+        out.registry
+            .py_objects
+            .iter()
+            .map(|r| {
+                (
+                    r.fullname.clone(),
+                    r.objtype.clone(),
+                    r.node_id.clone(),
+                    r.aliased,
+                )
+            })
+            .collect()
+    }
+
+    fn owned(v: &[(&str, &str, &str, bool)]) -> Vec<(String, String, String, bool)> {
+        v.iter()
+            .map(|(a, b, c, d)| (a.to_string(), b.to_string(), c.to_string(), *d))
+            .collect()
+    }
+
+    // ---- py_sig_re (checklist row 1) ----------------------------------
+
+    #[test]
+    fn py_sig_match_groups_and_spans() {
+        let m = py_sig_match("mymod.func(a, b) -> str").unwrap();
+        assert_eq!(m.prefix.as_deref(), Some("mymod."));
+        assert_eq!(m.name, "func");
+        assert_eq!(m.tp_list, None);
+        assert_eq!(m.tp_span, (0, 0));
+        assert_eq!(m.arglist.as_deref(), Some("a, b"));
+        assert_eq!(m.arg_span, (11, 15));
+        assert_eq!(m.retann.as_deref(), Some("str"));
+
+        let m = py_sig_match("f[T](x)").unwrap();
+        assert_eq!(m.tp_list.as_deref(), Some("T"));
+        assert_eq!(m.tp_span, (2, 3));
+        assert_eq!(m.arglist.as_deref(), Some("x"));
+
+        // Empty written parens: group 4 participates with '' — falsy, so
+        // handle_signature routes it to the needs_arglist branch.
+        let m = py_sig_match("f()").unwrap();
+        assert_eq!(m.arglist.as_deref(), Some(""));
+
+        // The greedy-arglist edge: the LAST ')' closes the group, so a
+        // parenthesized return annotation is swallowed INTO the arglist
+        // and group 5 never participates (probe retann_tuple_greedy).
+        let m = py_sig_match("f(x) -> (int, str)").unwrap();
+        assert_eq!(m.arglist.as_deref(), Some("x) -> (int, str"));
+        assert_eq!(m.retann, None);
+
+        assert!(py_sig_match("not a signature!").is_none());
+        assert!(py_sig_match("f(x").is_none());
+    }
+
+    // ---- baseline shapes (rows 1, 3, 4) --------------------------------
+
+    #[test]
+    fn function_plain_args_matches_the_sphinx_probe() {
+        let out = parse_py(".. py:function:: func(a, b)\n\n   Body.\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ func()',\\ 'func',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"func()\" _toc_parts=\"('func',)\" class=\"\" classes=\"sig sig-object\" fullname=\"func\" ids=\"func\" module=\"True\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                func\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        a\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        b\n",
+                "        <desc_content>\n",
+                "            <paragraph>\n",
+                "                Body.\n",
+            )
+        );
+        assert_eq!(objects(&out), owned(&[("func", "function", "func", false)]));
+        assert!(out.registry.log_warnings.is_empty());
+    }
+
+    #[test]
+    fn function_full_markers_matches_the_sphinx_probe() {
+        assert_eq!(
+            pf_py(".. py:function:: mymod.func(a, b=1, *args, c: int = 2, **kwargs) -> str\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ mymod.func()',\\ 'mymod.func',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                // A dotted prefix at top level is a CLASS prefix (trap 12):
+                // class="mymod", desc_addname, index still "built-in".
+                "        <desc_signature _toc_name=\"mymod.func()\" _toc_parts=\"('mymod', 'func')\" class=\"mymod\" classes=\"sig sig-object\" fullname=\"mymod.func\" ids=\"mymod.func\" module=\"True\">\n",
+                "            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n",
+                "                mymod.\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                func\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        a\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        b\n",
+                "                    <desc_sig_operator classes=\"o\">\n",
+                "                        =\n",
+                "                    <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "                        1\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_operator classes=\"o\">\n",
+                "                        *\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        args\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        c\n",
+                "                    <desc_sig_punctuation classes=\"p\">\n",
+                "                        :\n",
+                "                    <desc_sig_space classes=\"w\">\n",
+                "                         \n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"int\" reftype=\"class\">\n",
+                "                            int\n",
+                "                    <desc_sig_space classes=\"w\">\n",
+                "                         \n",
+                "                    <desc_sig_operator classes=\"o\">\n",
+                "                        =\n",
+                "                    <desc_sig_space classes=\"w\">\n",
+                "                         \n",
+                "                    <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "                        2\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_operator classes=\"o\">\n",
+                "                        **\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        kwargs\n",
+                "            <desc_returns xml:space=\"preserve\">\n",
+                "                <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"str\" reftype=\"class\">\n",
+                "                    str\n",
+                "        <desc_content>\n",
+            )
+        );
+    }
+
+    /// Row 4/trap 1: no written arglist AND empty written `()` both take
+    /// the bare attr-less paramlist for needs_arglist kinds; a class
+    /// (needs_arglist false) with `()` gets NO paramlist at all.
+    #[test]
+    fn no_arglist_and_empty_parens_take_the_bare_paramlist() {
+        let out = pf_py(".. py:function:: func\n");
+        assert!(
+            out.contains("            <desc_parameterlist xml:space=\"preserve\">\n"),
+            "bare attr-less paramlist: {out}"
+        );
+        // Empty parens with a return annotation (probe empty_parens_retann):
+        // still the bare list, followed by desc_returns.
+        let out = pf_py(".. py:function:: f() -> int\n");
+        assert!(out.contains(concat!(
+            "            <desc_parameterlist xml:space=\"preserve\">\n",
+            "            <desc_returns xml:space=\"preserve\">\n",
+            "                <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"int\" reftype=\"class\">\n",
+            "                    int\n",
+        )));
+        // Probe class_no_parens: PyClasslike never needs an arglist.
+        let out = pf_py(".. py:class:: C()\n");
+        assert!(!out.contains("desc_parameterlist"), "{out}");
+    }
+
+    /// Row 1/trap 7: a failed py_sig_re match is SILENT — raw sig in one
+    /// desc_name, empty toc attrs, no ids, no registration — and drops
+    /// option tails with the cleared signode (probe annotation_bad_sig).
+    #[test]
+    fn a_bad_signature_is_silent_with_empty_toc_and_no_registration() {
+        let out = parse_py(".. py:function:: not a signature!\n   :annotation: tail\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\">\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                not a signature!\n",
+                "        <desc_content>\n",
+            )
+        );
+        assert!(objects(&out).is_empty());
+        assert!(out.registry.log_warnings.is_empty(), "no warning (trap 7)");
+    }
+
+    /// Row 4: `:async:` prefix annotation and the `:annotation:` tail
+    /// (probes function_async / function_annotation_option).
+    #[test]
+    fn async_prefix_and_annotation_option_tail() {
+        let out = pf_py(".. py:function:: coro(x)\n   :async:\n");
+        assert!(out.contains(concat!(
+            "            <desc_annotation xml:space=\"preserve\">\n",
+            "                <desc_sig_keyword classes=\"k\">\n",
+            "                    async\n",
+            "                <desc_sig_space classes=\"w\">\n",
+            "                     \n",
+            "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+            "                coro\n",
+        )));
+        let out = pf_py(".. py:function:: f(x)\n   :annotation: something extra\n");
+        assert!(out.ends_with(concat!(
+            "            <desc_annotation xml:space=\"preserve\">\n",
+            "                <desc_sig_space classes=\"w\">\n",
+            "                     \n",
+            "                something extra\n",
+            "        <desc_content>\n",
+        )));
+    }
+
+    // ---- module resolution (rows 2, 9, 10) -----------------------------
+
+    /// Row 3/10: the `:module:` option qualifies ids/index/registration and
+    /// pushes/pops the module scope around the content — the NEXT directive
+    /// is back under the surrounding module (probe method_module_pop).
+    #[test]
+    fn the_module_option_qualifies_and_pops() {
+        let out = parse_py(
+            ".. py:module:: outer\n\n.. py:function:: g(x)\n   :module: inner\n\n.. py:function:: h(x)\n",
+        );
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "    <index entries=\"('single',\\ 'g()\\ (in\\ module\\ inner)',\\ 'inner.g',\\ '',\\ None)\">\n"
+        ));
+        assert!(pf.contains(
+            "        <desc_signature _toc_name=\"g()\" _toc_parts=\"('inner', 'g')\" class=\"\" classes=\"sig sig-object\" fullname=\"g\" ids=\"inner.g\" module=\"inner\">\n"
+        ));
+        assert!(pf.contains(
+            "    <index entries=\"('single',\\ 'h()\\ (in\\ module\\ outer)',\\ 'outer.h',\\ '',\\ None)\">\n"
+        ));
+        assert!(pf.contains(
+            "        <desc_signature _toc_name=\"h()\" _toc_parts=\"('outer', 'h')\" class=\"\" classes=\"sig sig-object\" fullname=\"h\" ids=\"outer.h\" module=\"outer\">\n"
+        ));
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("outer", "module", "module-outer", false),
+                ("inner.g", "function", "inner.g", false),
+                ("outer.h", "function", "outer.h", false),
+            ])
+        );
+    }
+
+    /// Row 2: prefix resolution inside a class — the class's own prefix is
+    /// stripped from display; a DIFFERENT prefix nests (fullname
+    /// `C.D.meth`, desc_addname `D.`, index `meth() (C.D method)`) —
+    /// probes method_class_prefix_given / method_other_prefix.
+    #[test]
+    fn class_prefixes_strip_or_nest() {
+        let out = parse_py(
+            ".. py:class:: C\n\n   .. py:method:: C.meth(x)\n\n   .. py:method:: D.meth(x)\n",
+        );
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "                <desc_signature _toc_name=\"C.meth()\" _toc_parts=\"('C', 'meth')\" class=\"C\" classes=\"sig sig-object\" fullname=\"C.meth\" ids=\"C.meth\" module=\"True\">\n"
+        ));
+        // The stripped prefix leaves no desc_addname on C.meth.
+        let c_meth_sig = pf
+            .split("fullname=\"C.meth\"")
+            .nth(1)
+            .unwrap()
+            .split("desc_signature")
+            .next()
+            .unwrap();
+        assert!(!c_meth_sig.contains("desc_addname"), "{c_meth_sig}");
+        assert!(pf.contains(
+            "                <desc_signature _toc_name=\"C.D.meth()\" _toc_parts=\"('C', 'D', 'meth')\" class=\"C\" classes=\"sig sig-object\" fullname=\"C.D.meth\" ids=\"C.D.meth\" module=\"True\">\n"
+        ));
+        assert!(pf.contains(concat!(
+            "                    <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n",
+            "                        D.\n",
+        )));
+        assert!(pf.contains(
+            "            <index entries=\"('single',\\ 'meth()\\ (C.D\\ method)',\\ 'C.D.meth',\\ '',\\ None)\">\n"
+        ));
+    }
+
+    // ---- multi-signature (row 11) --------------------------------------
+
+    #[test]
+    fn multiple_signatures_share_one_desc_and_register_each_unique_name() {
+        let out = parse_py(".. py:function:: f(x)\n                  g(y)\n\n   Shared body.\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None) ('pair',\\ 'built-in\\ function;\\ g()',\\ 'g',\\ '',\\ None)\">\n"
+        ));
+        assert!(pf.contains(
+            "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n"
+        ));
+        assert!(pf.contains(
+            "        <desc_signature _toc_name=\"g()\" _toc_parts=\"('g',)\" class=\"\" classes=\"sig sig-object\" fullname=\"g\" ids=\"g\" module=\"True\">\n"
+        ));
+        assert_eq!(pf.matches("<desc_content>").count(), 1, "one shared body");
+        assert_eq!(
+            objects(&out),
+            owned(&[("f", "function", "f", false), ("g", "function", "g", false),]),
+            "every UNIQUE name registers ([PY §1.6 function_multi_sig])"
+        );
+        // Identical signatures dedupe via `if name not in self.names`.
+        let out = parse_py(".. py:function:: f(x)\n                  f(x)\n");
+        assert_eq!(objects(&out), owned(&[("f", "function", "f", false)]));
+    }
+
+    // ---- class + nesting (rows 2, 10) ----------------------------------
+
+    #[test]
+    fn class_with_bases_nests_the_method_scope() {
+        let out = parse_py(
+            ".. py:class:: MyClass(Base1, Base2)\n\n   .. py:method:: meth(self, arg)\n\n      Body.\n",
+        );
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('single',\\ 'MyClass\\ (built-in\\ class)',\\ 'MyClass',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py class\" desctype=\"class\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"class\">\n",
+                "        <desc_signature _toc_name=\"MyClass\" _toc_parts=\"('MyClass',)\" class=\"\" classes=\"sig sig-object\" fullname=\"MyClass\" ids=\"MyClass\" module=\"True\">\n",
+                "            <desc_annotation xml:space=\"preserve\">\n",
+                "                <desc_sig_keyword classes=\"k\">\n",
+                "                    class\n",
+                "                <desc_sig_space classes=\"w\">\n",
+                "                     \n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                MyClass\n",
+                // Class bases parse as an ordinary arglist — names only.
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        Base1\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        Base2\n",
+                "        <desc_content>\n",
+                "            <index entries=\"('single',\\ 'meth()\\ (MyClass\\ method)',\\ 'MyClass.meth',\\ '',\\ None)\">\n",
+                "            <desc classes=\"py method\" desctype=\"method\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"method\">\n",
+                "                <desc_signature _toc_name=\"MyClass.meth()\" _toc_parts=\"('MyClass', 'meth')\" class=\"MyClass\" classes=\"sig sig-object\" fullname=\"MyClass.meth\" ids=\"MyClass.meth\" module=\"True\">\n",
+                "                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                        meth\n",
+                "                    <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                        <desc_parameter xml:space=\"preserve\">\n",
+                "                            <desc_sig_name classes=\"n\">\n",
+                "                                self\n",
+                "                        <desc_parameter xml:space=\"preserve\">\n",
+                "                            <desc_sig_name classes=\"n\">\n",
+                "                                arg\n",
+                "                <desc_content>\n",
+                "                    <paragraph>\n",
+                "                        Body.\n",
+            )
+        );
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("MyClass", "class", "MyClass", false),
+                ("MyClass.meth", "method", "MyClass.meth", false),
+            ])
+        );
+    }
+
+    /// Row 10: nested classes stack and unwind — after the inner class's
+    /// content, the OUTER class scope is restored (probe nested_classes:
+    /// inner signode class="Outer.Inner", _toc_parts ('Outer','Inner','m')).
+    #[test]
+    fn nested_classes_stack_and_unwind() {
+        let out = parse_py(concat!(
+            ".. py:class:: Outer\n",
+            "\n",
+            "   .. py:class:: Inner\n",
+            "\n",
+            "      .. py:method:: m(x)\n",
+            "\n",
+            "   .. py:method:: back(x)\n",
+        ));
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "class=\"Outer.Inner\" classes=\"sig sig-object\" fullname=\"Outer.Inner.m\" ids=\"Outer.Inner.m\""
+        ));
+        assert!(pf.contains("_toc_parts=\"('Outer', 'Inner', 'm')\""));
+        assert!(
+            pf.contains("class=\"Outer\" classes=\"sig sig-object\" fullname=\"Outer.back\""),
+            "the inner class popped back to Outer: {pf}"
+        );
+    }
+
+    // ---- method options / aliasing directives (rows 4, 7; trap 13) -----
+
+    #[test]
+    fn method_option_trio_prefixes_and_index_texts() {
+        let out = parse_py(concat!(
+            ".. py:class:: C\n",
+            "\n",
+            "   .. py:method:: m1(x)\n",
+            "      :classmethod:\n",
+            "\n",
+            "   .. py:method:: m2(x)\n",
+            "      :staticmethod:\n",
+            "\n",
+            "   .. py:method:: m3(x)\n",
+            "      :abstractmethod:\n",
+            "      :async:\n",
+            "      :final:\n",
+        ));
+        let pf = out.doctree.root.pformat();
+        let kw = |words: &[&str]| {
+            let mut s =
+                String::from("                    <desc_annotation xml:space=\"preserve\">\n");
+            for w in words {
+                s.push_str(&format!(
+                    "                        <desc_sig_keyword classes=\"k\">\n                            {w}\n                        <desc_sig_space classes=\"w\">\n                             \n"
+                ));
+            }
+            s
+        };
+        assert!(pf.contains(&kw(&["classmethod"])), "{pf}");
+        // `:staticmethod:` prints keyword `static`.
+        assert!(pf.contains(&kw(&["static"])), "{pf}");
+        assert!(
+            pf.contains(&kw(&["final", "abstractmethod", "async"])),
+            "{pf}"
+        );
+        assert!(pf.contains("('single',\\ 'm1()\\ (C\\ class\\ method)',\\ 'C.m1',\\ '',\\ None)"));
+        assert!(pf.contains("('single',\\ 'm2()\\ (C\\ static\\ method)',\\ 'C.m2',\\ '',\\ None)"));
+        assert!(pf.contains("('single',\\ 'm3()\\ (C\\ method)',\\ 'C.m3',\\ '',\\ None)"));
+    }
+
+    /// Trap 13: `py:classmethod`/`py:staticmethod`/`py:decoratormethod`
+    /// rewrite `self.name`, so their descs carry objtype `method` with the
+    /// injected flag driving prefix and index text.
+    #[test]
+    fn aliasing_directives_register_the_aliased_objtype() {
+        let out = parse_py(concat!(
+            ".. py:class:: C\n",
+            "\n",
+            "   .. py:classmethod:: cm(x)\n",
+            "\n",
+            "   .. py:staticmethod:: sm(x)\n",
+            "\n",
+            "   .. py:decoratormethod:: dm\n",
+        ));
+        let pf = out.doctree.root.pformat();
+        assert_eq!(
+            pf.matches("desctype=\"method\" domain=\"py\"").count(),
+            3,
+            "{pf}"
+        );
+        assert!(pf.contains("('single',\\ 'cm()\\ (C\\ class\\ method)',\\ 'C.cm',\\ '',\\ None)"));
+        assert!(pf.contains("('single',\\ 'sm()\\ (C\\ static\\ method)',\\ 'C.sm',\\ '',\\ None)"));
+        assert!(pf.contains("('single',\\ 'dm()\\ (C\\ method)',\\ 'C.dm',\\ '',\\ None)"));
+        // The decorator method: @ addname first, no forced parens.
+        assert!(pf.contains(concat!(
+            "                    <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n",
+            "                        @\n",
+            "                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+            "                        dm\n",
+        )));
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("C", "class", "C", false),
+                ("C.cm", "method", "C.cm", false),
+                ("C.sm", "method", "C.sm", false),
+                ("C.dm", "method", "C.dm", false),
+            ])
+        );
+    }
+
+    // ---- attribute / property / data (rows 5, 7; trap 3) ---------------
+
+    #[test]
+    fn attribute_typed_matches_the_sphinx_probe() {
+        let out = parse_py(concat!(
+            ".. py:class:: C\n",
+            "\n",
+            "   .. py:attribute:: attr\n",
+            "      :type: int\n",
+            "      :value: 42\n",
+        ));
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "            <index entries=\"('single',\\ 'attr\\ (C\\ attribute)',\\ 'C.attr',\\ '',\\ None)\">\n"
+        ));
+        assert!(pf.contains(concat!(
+            "                <desc_signature _toc_name=\"C.attr\" _toc_parts=\"('C', 'attr')\" class=\"C\" classes=\"sig sig-object\" fullname=\"C.attr\" ids=\"C.attr\" module=\"True\">\n",
+            "                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+            "                        attr\n",
+            // `:` is desc_sig_punctuation here (trap 3), and the xref
+            // carries the enclosing class in py:class.
+            "                    <desc_annotation xml:space=\"preserve\">\n",
+            "                        <desc_sig_punctuation classes=\"p\">\n",
+            "                            :\n",
+            "                        <desc_sig_space classes=\"w\">\n",
+            "                             \n",
+            "                        <pending_xref py:class=\"C\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"int\" reftype=\"class\">\n",
+            "                            int\n",
+            // `=` in `:value:` is desc_sig_punctuation too, unlike
+            // parameter defaults (desc_sig_operator).
+            "                    <desc_annotation xml:space=\"preserve\">\n",
+            "                        <desc_sig_space classes=\"w\">\n",
+            "                             \n",
+            "                        <desc_sig_punctuation classes=\"p\">\n",
+            "                            =\n",
+            "                        <desc_sig_space classes=\"w\">\n",
+            "                             \n",
+            "                        42\n",
+        )));
+        // Bare-name attribute outside any scope: index text is the name
+        // itself (probe value_only_attr).
+        let pf = pf_py(".. py:attribute:: a\n   :value: 42\n");
+        assert!(pf.contains("    <index entries=\"('single',\\ 'a',\\ 'a',\\ '',\\ None)\">\n"));
+    }
+
+    #[test]
+    fn property_typed_prefix_and_type_only() {
+        let out = parse_py(concat!(
+            ".. py:class:: C\n",
+            "\n",
+            "   .. py:property:: prop\n",
+            "      :type: str\n",
+            "      :abstractmethod:\n",
+            "      :classmethod:\n",
+        ));
+        let pf = out.doctree.root.pformat();
+        // Prefix: abstract ␣ class ␣ property ␣ (three keyword+space pairs).
+        assert!(pf.contains(concat!(
+            "                    <desc_annotation xml:space=\"preserve\">\n",
+            "                        <desc_sig_keyword classes=\"k\">\n",
+            "                            abstract\n",
+            "                        <desc_sig_space classes=\"w\">\n",
+            "                             \n",
+            "                        <desc_sig_keyword classes=\"k\">\n",
+            "                            class\n",
+            "                        <desc_sig_space classes=\"w\">\n",
+            "                             \n",
+            "                        <desc_sig_keyword classes=\"k\">\n",
+            "                            property\n",
+            "                        <desc_sig_space classes=\"w\">\n",
+            "                             \n",
+        )));
+        assert!(pf.contains(concat!(
+            "                    <desc_annotation xml:space=\"preserve\">\n",
+            "                        <desc_sig_punctuation classes=\"p\">\n",
+            "                            :\n",
+            "                        <desc_sig_space classes=\"w\">\n",
+            "                             \n",
+            "                        <pending_xref py:class=\"C\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"str\" reftype=\"class\">\n",
+            "                            str\n",
+        )));
+        assert!(pf.contains("('single',\\ 'prop\\ (C\\ property)',\\ 'C.prop',\\ '',\\ None)"));
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("C", "class", "C", false),
+                ("C.prop", "property", "C.prop", false),
+            ])
+        );
+    }
+
+    #[test]
+    fn data_typed_renders_type_and_value_tails() {
+        let out = parse_py(".. py:data:: CONST\n   :type: dict[str, int]\n   :value: {}\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "    <index entries=\"('single',\\ 'CONST\\ (built-in\\ variable)',\\ 'CONST',\\ '',\\ None)\">\n"
+        ));
+        // dict [ str , int ] — three xrefs with punctuation between.
+        for target in ["dict", "str", "int"] {
+            assert!(pf.contains(&format!(
+                "<pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"{target}\" reftype=\"class\">"
+            )));
+        }
+        assert!(pf.contains(concat!(
+            "            <desc_annotation xml:space=\"preserve\">\n",
+            "                <desc_sig_space classes=\"w\">\n",
+            "                     \n",
+            "                <desc_sig_punctuation classes=\"p\">\n",
+            "                    =\n",
+            "                <desc_sig_space classes=\"w\">\n",
+            "                     \n",
+            "                {}\n",
+        )));
+        assert_eq!(objects(&out), owned(&[("CONST", "data", "CONST", false)]));
+    }
+
+    // ---- decorator / type alias / exception (rows 5, 6, 7) -------------
+
+    #[test]
+    fn decorator_basic_matches_the_sphinx_probe() {
+        let out = parse_py(".. py:decorator:: mydeco\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ mydeco()',\\ 'mydeco',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"mydeco()\" _toc_parts=\"('mydeco',)\" class=\"\" classes=\"sig sig-object\" fullname=\"mydeco\" ids=\"mydeco\" module=\"True\">\n",
+                "            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n",
+                "                @\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                mydeco\n",
+                "        <desc_content>\n",
+            )
+        );
+        assert_eq!(
+            objects(&out),
+            owned(&[("mydeco", "function", "mydeco", false)])
+        );
+    }
+
+    #[test]
+    fn type_alias_canonical_is_display_only() {
+        let out = parse_py(".. py:type:: MyAlias\n   :canonical: list[int]\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "    <index entries=\"('single',\\ 'MyAlias',\\ 'MyAlias',\\ '',\\ None)\">\n"
+        ));
+        assert!(pf.contains(concat!(
+            "            <desc_annotation xml:space=\"preserve\">\n",
+            "                <desc_sig_keyword classes=\"k\">\n",
+            "                    type\n",
+            "                <desc_sig_space classes=\"w\">\n",
+            "                     \n",
+            "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+            "                MyAlias\n",
+            "            <desc_annotation xml:space=\"preserve\">\n",
+            "                <desc_sig_space classes=\"w\">\n",
+            "                     \n",
+            "                <desc_sig_punctuation classes=\"p\">\n",
+            "                    =\n",
+            "                <desc_sig_space classes=\"w\">\n",
+            "                     \n",
+            "                <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"list\" reftype=\"class\">\n",
+            "                    list\n",
+            "                <desc_sig_punctuation classes=\"p\">\n",
+            "                    [\n",
+            "                <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"int\" reftype=\"class\">\n",
+            "                    int\n",
+            "                <desc_sig_punctuation classes=\"p\">\n",
+            "                    ]\n",
+        )));
+        // NO alias registration on py:type (§6).
+        assert_eq!(
+            objects(&out),
+            owned(&[("MyAlias", "type", "MyAlias", false)])
+        );
+    }
+
+    #[test]
+    fn exception_basic_matches_the_sphinx_probe() {
+        assert_eq!(
+            pf_py(".. py:exception:: MyError\n"),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                // Exception index entries are the bare name (trap 10).
+                "    <index entries=\"('single',\\ 'MyError',\\ 'MyError',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py exception\" desctype=\"exception\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"exception\">\n",
+                "        <desc_signature _toc_name=\"MyError\" _toc_parts=\"('MyError',)\" class=\"\" classes=\"sig sig-object\" fullname=\"MyError\" ids=\"MyError\" module=\"True\">\n",
+                "            <desc_annotation xml:space=\"preserve\">\n",
+                "                <desc_sig_keyword classes=\"k\">\n",
+                "                    exception\n",
+                "                <desc_sig_space classes=\"w\">\n",
+                "                     \n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                MyError\n",
+                "        <desc_content>\n",
+            )
+        );
+    }
+
+    // ---- py:module / py:currentmodule (row 9; traps 5, 6) --------------
+
+    /// Row 9 — OUR pre-propagation shape (§Scope-3 sanctioned divergence):
+    /// sphinx's recorded doctree has docutils PropagateTargets move the
+    /// module target's id onto the next body node (`<target ismod="1"
+    /// refid="module-mymod">` + desc `ids="module-mymod"`); this parse
+    /// layer runs no transforms, so the target KEEPS its ids and the desc
+    /// gains none. Everything else is the probe's bytes.
+    #[test]
+    fn module_basic_pre_propagation_shape() {
+        let out = parse_py(concat!(
+            ".. py:module:: mymod\n",
+            "   :synopsis: A module.\n",
+            "   :platform: Unix\n",
+            "\n",
+            ".. py:function:: f(x)\n",
+            "\n",
+            "   Body.\n",
+        ));
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'module;\\ mymod',\\ 'module-mymod',\\ '',\\ None)\">\n",
+                "    <target ids=\"module-mymod\" ismod=\"1\">\n",
+                "    <index entries=\"('single',\\ 'f()\\ (in\\ module\\ mymod)',\\ 'mymod.f',\\ '',\\ None)\">\n",
+                "    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n",
+                "        <desc_signature _toc_name=\"f()\" _toc_parts=\"('mymod', 'f')\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"mymod.f\" module=\"mymod\">\n",
+                "            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n",
+                "                mymod.\n",
+                "            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n",
+                "                f\n",
+                "            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        x\n",
+                "        <desc_content>\n",
+                "            <paragraph>\n",
+                "                Body.\n",
+            )
+        );
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("mymod", "module", "module-mymod", false),
+                ("mymod.f", "function", "mymod.f", false),
+            ])
+        );
+        assert_eq!(out.registry.py_modules.len(), 1);
+        let m = &out.registry.py_modules[0];
+        assert_eq!(
+            (
+                m.name.as_str(),
+                m.node_id.as_str(),
+                m.synopsis.as_str(),
+                m.platform.as_str(),
+                m.deprecated,
+                m.lineno
+            ),
+            ("mymod", "module-mymod", "A module.", "Unix", false, 1)
+        );
+    }
+
+    /// Module content stays in place (the id-propagation onto it is the
+    /// same excluded transform); `:deprecated:` reaches the record.
+    #[test]
+    fn module_content_and_deprecated() {
+        let out = parse_py(".. py:module:: secmod\n\n   Module body content.\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'module;\\ secmod',\\ 'module-secmod',\\ '',\\ None)\">\n",
+                "    <target ids=\"module-secmod\" ismod=\"1\">\n",
+                "    <paragraph>\n",
+                "        Module body content.\n",
+            )
+        );
+        let out = parse_py(".. py:module:: oldmod\n   :deprecated:\n");
+        assert!(out.registry.py_modules[0].deprecated);
+        assert_eq!(out.registry.py_modules[0].synopsis, "");
+    }
+
+    /// Trap 6: `:no-index:` on py:module still sets the module scope —
+    /// nothing is emitted or registered for the module itself, but the
+    /// following function is module-qualified. `:no-index-entry:` keeps
+    /// target + registration and drops only the index node.
+    #[test]
+    fn module_noindex_and_noindexentry() {
+        let out = parse_py(".. py:module:: quietmod\n   :no-index:\n\n.. py:function:: f(x)\n");
+        let pf = out.doctree.root.pformat();
+        assert!(!pf.contains("module-quietmod"), "{pf}");
+        assert!(pf.contains(
+            "    <index entries=\"('single',\\ 'f()\\ (in\\ module\\ quietmod)',\\ 'quietmod.f',\\ '',\\ None)\">\n"
+        ));
+        assert!(out.registry.py_modules.is_empty());
+        assert_eq!(
+            objects(&out),
+            owned(&[("quietmod.f", "function", "quietmod.f", false)])
+        );
+
+        let out = parse_py(".. py:module:: halfmod\n   :no-index-entry:\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <target ids=\"module-halfmod\" ismod=\"1\">\n",
+            )
+        );
+        assert_eq!(
+            objects(&out),
+            owned(&[("halfmod", "module", "module-halfmod", false)])
+        );
+        assert_eq!(out.registry.py_modules.len(), 1);
+    }
+
+    /// Row 9 option-spec quirks: PyModule's spec lacks the old
+    /// `noindexentry` spelling → docutils unknown-option ERROR (probe
+    /// module_bad_option: nothing runs, no scope set); `no-typesetting`
+    /// is accepted but unused by PyModule.run (probe module_no_typesetting).
+    #[test]
+    fn module_option_spec_quirks() {
+        let out = parse_py(".. py:module:: m\n   :noindexentry:\n\n.. py:function:: f(x)\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(concat!(
+            "    <system_message level=\"3\" line=\"1\" source=\"<snippet>\" type=\"ERROR\">\n",
+            "        <paragraph>\n",
+            "            Error in \"py:module\" directive:\n",
+            "            unknown option: \"noindexentry\".\n",
+        )));
+        // The directive never ran: no module scope for the function.
+        assert!(pf.contains("('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)"));
+        assert!(out.registry.py_modules.is_empty());
+
+        let out = parse_py(".. py:module:: m2\n   :no-typesetting:\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'module;\\ m2',\\ 'module-m2',\\ '',\\ None)\">\n",
+                "    <target ids=\"module-m2\" ismod=\"1\">\n",
+            ),
+            "accepted-and-inert"
+        );
+    }
+
+    /// Row 9: `py:currentmodule` sets the scope with no nodes and no
+    /// registration; the literal argument `None` pops it (probes
+    /// currentmodule / currentmodule_pop).
+    #[test]
+    fn currentmodule_sets_and_pops() {
+        let out = parse_py(".. py:currentmodule:: curmod\n\n.. py:function:: f(x)\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.starts_with(concat!(
+            "<document source=\"<snippet>\">\n",
+            "    <index entries=\"('single',\\ 'f()\\ (in\\ module\\ curmod)',\\ 'curmod.f',\\ '',\\ None)\">\n",
+        )));
+        assert!(pf.contains(concat!(
+            "            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n",
+            "                curmod.\n",
+        )));
+        assert_eq!(
+            objects(&out),
+            owned(&[("curmod.f", "function", "curmod.f", false)])
+        );
+        assert!(out.registry.py_modules.is_empty());
+
+        let out = parse_py(
+            ".. py:currentmodule:: curmod\n\n.. py:currentmodule:: None\n\n.. py:function:: f(x)\n",
+        );
+        assert!(out
+            .doctree
+            .root
+            .pformat()
+            .contains("('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)"));
+    }
+
+    // ---- registration edges (row 8) ------------------------------------
+
+    #[test]
+    fn canonical_function_adds_an_aliased_record() {
+        let out = parse_py(".. py:function:: new_name()\n   :canonical: old.name\n");
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("new_name", "function", "new_name", false),
+                ("old.name", "function", "new_name", true),
+            ])
+        );
+    }
+
+    /// Row 8/[PY §1.5]: the empty-prefix make_id path — the id IS the
+    /// fullname; the second definition collides and takes the `id0`
+    /// serial (probe duplicate_functions; the duplicate WARNING itself is
+    /// the env layer's job, T9).
+    #[test]
+    fn duplicate_definitions_take_the_id0_serial() {
+        let out = parse_py(".. py:function:: dup()\n\n.. py:function:: dup()\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains("fullname=\"dup\" ids=\"dup\" module=\"True\""));
+        assert!(pf.contains("fullname=\"dup\" ids=\"id0\" module=\"True\""));
+        assert!(pf.contains("('pair',\\ 'built-in\\ function;\\ dup()',\\ 'id0',\\ '',\\ None)"));
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("dup", "function", "dup", false),
+                ("dup", "function", "id0", false),
+            ])
+        );
+    }
+
+    // ---- no-* family (row 7/8, [PY §1.7]) ------------------------------
+
+    #[test]
+    fn no_star_option_quartet() {
+        // :no-index:: empty index node, no ids, nothing registered.
+        let out = parse_py(".. py:function:: hidden()\n   :no-index:\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains("    <index entries=\"\">\n"));
+        assert!(pf.contains("no-index=\"1\""));
+        assert!(pf.contains("noindex=\"1\""));
+        assert!(pf.contains(
+            "        <desc_signature _toc_name=\"hidden()\" _toc_parts=\"('hidden',)\" class=\"\" classes=\"sig sig-object\" fullname=\"hidden\" module=\"True\">\n"
+        ));
+        assert!(objects(&out).is_empty());
+
+        // :noindex: old spelling behaves identically (both attrs 1).
+        let out = parse_py(".. py:function:: hidden()\n   :noindex:\n");
+        let pf2 = out.doctree.root.pformat();
+        assert!(pf2.contains("no-index=\"1\"") && pf2.contains("noindex=\"1\""));
+        assert!(objects(&out).is_empty());
+
+        // :no-index-entry:: registered with ids, no index entry.
+        let out = parse_py(".. py:function:: quiet()\n   :no-index-entry:\n");
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains("    <index entries=\"\">\n"));
+        assert!(pf.contains("fullname=\"quiet\" ids=\"quiet\" module=\"True\""));
+        assert_eq!(
+            objects(&out),
+            owned(&[("quiet", "function", "quiet", false)])
+        );
+
+        // :no-typesetting:: desc collapses to a bare target carrying the
+        // collected ids; index entry + registration survive.
+        let out = parse_py(".. py:function:: invisible()\n   :no-typesetting:\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'built-in\\ function;\\ invisible()',\\ 'invisible',\\ '',\\ None)\">\n",
+                "    <target ids=\"invisible\">\n",
+            )
+        );
+        assert_eq!(
+            objects(&out),
+            owned(&[("invisible", "function", "invisible", false)])
+        );
+    }
+
+    // ---- strip_signature_backslash (row 12) ----------------------------
+
+    #[test]
+    fn strip_signature_backslash_strips_before_parsing() {
+        let cfg = PySigConfig {
+            strip_signature_backslash: true,
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(".. py:function:: f(a\\_b)\n", cfg);
+        assert!(pf.contains(concat!(
+            "                    <desc_sig_name classes=\"n\">\n",
+            "                        a_b\n",
+        )));
+        // Default off: the backslash survives into the (pseudo-parsed)
+        // parameter (probe strip_backslash_off).
+        let pf = pf_py(".. py:function:: f(a\\_b)\n");
+        assert!(pf.contains(concat!(
+            "                    <desc_sig_name classes=\"n\">\n",
+            "                        a\\_b\n",
+        )));
+    }
+
+    // ---- error channels (row 13) ---------------------------------------
+
+    /// Row 13: duplicate parameter names WARN (`could not parse arglist`)
+    /// with the pseudo fallback; tp-list failures WARN (`could not parse
+    /// tp_list`) with the exception text interpolated — bytes pinned by
+    /// probes arglist_dup_warning / tp_list_warning / tp_list_tokerror.
+    #[test]
+    fn arglist_and_tp_list_error_paths_warn() {
+        let out = parse_py(".. py:function:: f(a, a)\n");
+        assert_eq!(
+            out.registry
+                .log_warnings
+                .iter()
+                .map(|w| (w.message.as_str(), w.line))
+                .collect::<Vec<_>>(),
+            vec![(
+                "could not parse arglist ('a, a'): duplicate parameter name: 'a'",
+                1
+            )]
+        );
+        // Pseudo fallback still renders both parameters.
+        let pf = out.doctree.root.pformat();
+        assert_eq!(
+            pf.matches(concat!(
+                "                <desc_parameter xml:space=\"preserve\">\n",
+                "                    <desc_sig_name classes=\"n\">\n",
+                "                        a\n",
+            ))
+            .count(),
+            2
+        );
+
+        let out = parse_py(".. py:function:: f[*Ts: int](x)\n");
+        assert_eq!(
+            out.registry.log_warnings[0].message,
+            "could not parse tp_list ('*Ts: int'): type parameter bound or constraint is not allowed for variadic positional parameters"
+        );
+        // The failed tp list is simply absent; the signature continues.
+        let pf = out.doctree.root.pformat();
+        assert!(!pf.contains("desc_type_parameter_list"));
+        assert!(pf.contains("fullname=\"f\" ids=\"f\""));
+
+        let out = parse_py(".. py:function:: f[(T](x)\n");
+        assert_eq!(
+            out.registry.log_warnings[0].message,
+            "could not parse tp_list ('(T'): ('unexpected EOF in multi-line statement', (1, 0))"
+        );
+
+        // The SyntaxError channel stays SILENT (debug level): brackets
+        // fall back to the pseudo parser with no warning.
+        let out = parse_py(".. py:function:: func(a[, b])\n");
+        assert!(out.registry.log_warnings.is_empty());
+        assert!(out.doctree.root.pformat().contains("<desc_optional"));
+    }
+
+    /// The greedy-arglist edge stays TOTAL but diverges from sphinx:
+    /// sphinx's `_parse_arglist` wraps the captured `x) -> (int, str` in
+    /// `def func(...): pass`, where the stray `)` closes the def and the
+    /// tuple parses as a (discarded) def-level return annotation — params
+    /// [x]. Our arglist grammar rejects the stray `)` (SyntaxError channel,
+    /// silent) and pseudo-parses instead. Known divergence, excluded from
+    /// the T8 corpus; this pin is a totality guard, not an oracle match.
+    #[test]
+    fn greedy_arglist_edge_is_total_and_silent() {
+        let out = parse_py(".. py:function:: f(x) -> (int, str)\n");
+        assert!(out.registry.log_warnings.is_empty());
+        assert_eq!(objects(&out), owned(&[("f", "function", "f", false)]));
+        assert!(out.doctree.root.pformat().contains("x) -> (int"));
+    }
+
+    // ---- toc config variants (row 3, [SIG §2.2]) -----------------------
+
+    #[test]
+    fn toc_entry_config_variants() {
+        // hide: last part only (probe toc_hide: _toc_name "m()").
+        let cfg = PySigConfig {
+            toc_object_entries_show_parents: "hide".to_string(),
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(".. py:method:: C.m(x)\n", cfg);
+        assert!(
+            pf.contains("_toc_name=\"m()\" _toc_parts=\"('C', 'm')\""),
+            "{pf}"
+        );
+
+        // all: every hierarchy part joined — the module joins the parts.
+        let cfg = PySigConfig {
+            toc_object_entries_show_parents: "all".to_string(),
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(".. py:module:: pkg\n\n.. py:method:: C.m(x)\n", cfg);
+        assert!(
+            pf.contains("_toc_name=\"pkg.C.m()\" _toc_parts=\"('pkg', 'C', 'm')\""),
+            "{pf}"
+        );
+
+        // add_function_parentheses=false drops the parens from _toc_name
+        // (and only functions/methods ever get them).
+        let cfg = PySigConfig {
+            add_function_parentheses: false,
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(".. py:method:: C.m(x)\n", cfg);
+        assert!(
+            pf.contains("_toc_name=\"C.m\" _toc_parts=\"('C', 'm')\""),
+            "{pf}"
+        );
+
+        // toc_object_entries=false: empty toc attrs, everything else kept
+        // (probe toc_off).
+        let cfg = PySigConfig {
+            toc_object_entries: false,
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(".. py:function:: f(x)\n", cfg);
+        assert!(pf.contains(
+            "        <desc_signature _toc_name=\"\" _toc_parts=\"()\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n"
+        ));
+    }
+
+    // ---- multi-line signature wrapping ([SIG §2.5] probes) -------------
+
+    #[test]
+    fn long_signatures_wrap_and_single_line_options_suppress() {
+        let cfg = || PySigConfig {
+            maximum_signature_line_length: Some(20),
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(
+            ".. py:function:: really_long_function_name(argument_one, argument_two)\n",
+            cfg(),
+        );
+        assert!(pf.contains(
+            "<desc_parameterlist multi_line_parameter_list=\"1\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">"
+        ));
+        let pf = pf_py_cfg(
+            ".. py:function:: really_long_function_name(argument_one, argument_two)\n   :single-line-parameter-list:\n",
+            cfg(),
+        );
+        assert!(pf.contains(
+            "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">"
+        ));
+        let pf = pf_py_cfg(
+            ".. py:class:: LongName[TypeParamOne, TypeParamTwo]\n",
+            cfg(),
+        );
+        assert!(pf.contains(
+            "<desc_type_parameter_list multi_line_parameter_list=\"1\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">"
+        ));
+        let pf = pf_py_cfg(
+            ".. py:class:: LongName[TypeParamOne, TypeParamTwo]\n   :single-line-type-parameter-list:\n",
+            cfg(),
+        );
+        assert!(pf.contains(
+            "<desc_type_parameter_list multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">"
+        ));
+    }
+
+    // ---- misc: add_module_names off ------------------------------------
+
+    #[test]
+    fn add_module_names_off_drops_the_module_addname() {
+        let cfg = PySigConfig {
+            add_module_names: false,
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(".. py:module:: mymod\n\n.. py:function:: f(x)\n", cfg);
+        assert!(!pf.contains("desc_addname"), "{pf}");
+        // Registration and index stay module-qualified regardless.
+        assert!(pf.contains("ids=\"mymod.f\" module=\"mymod\""));
+        assert!(
+            pf.contains("('single',\\ 'f()\\ (in\\ module\\ mymod)',\\ 'mymod.f',\\ '',\\ None)")
         );
     }
 }
