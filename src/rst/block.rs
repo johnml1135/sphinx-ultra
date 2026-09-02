@@ -11567,6 +11567,45 @@ mod py_desc_tests {
         );
     }
 
+    /// Row 7: the method-family index clsname is module-qualified iff
+    /// `add_module_names` (probes method_module_qualified /
+    /// method_module_qualified_off: `meth() (mymod.C method)` vs
+    /// `meth() (C method)` — the node id stays qualified either way).
+    #[test]
+    fn method_index_clsname_qualification_follows_add_module_names() {
+        let src = ".. py:module:: mymod\n\n.. py:class:: C\n\n   .. py:method:: meth(x)\n";
+        let pf = pf_py(src);
+        assert!(pf.contains(
+            "('single',\\ 'meth()\\ (mymod.C\\ method)',\\ 'mymod.C.meth',\\ '',\\ None)"
+        ));
+        let cfg = PySigConfig {
+            add_module_names: false,
+            ..PySigConfig::default()
+        };
+        let pf = pf_py_cfg(src, cfg);
+        assert!(
+            pf.contains("('single',\\ 'meth()\\ (C\\ method)',\\ 'mymod.C.meth',\\ '',\\ None)")
+        );
+    }
+
+    /// Row 10: a NON-nesting kind with a written prefix scopes its own
+    /// content to that prefix — `before_content`'s `name_prefix.strip('.')`
+    /// branch (probe method_prefix_scope: the xref inside carries
+    /// `py:class="D"`), and the scope pops after the content.
+    #[test]
+    fn a_prefixed_method_scopes_its_content_without_nesting() {
+        let out = parse_py(
+            ".. py:method:: D.meth(x)\n\n   :py:func:`target`\n\n.. py:function:: after(x)\n",
+        );
+        let pf = out.doctree.root.pformat();
+        assert!(pf.contains(
+            "                <pending_xref py:class=\"D\" py:module=\"True\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"0\" reftarget=\"target\" reftype=\"func\" refwarn=\"0\">\n"
+        ));
+        assert!(pf.contains("('single',\\ 'meth()\\ (D\\ method)',\\ 'D.meth',\\ '',\\ None)"));
+        // after_content restored the empty scope for the next directive.
+        assert!(pf.contains("fullname=\"after\" ids=\"after\" module=\"True\""));
+    }
+
     /// [PY §3.1] probe role_in_module_scope: a py role inside a class's
     /// content carries the enclosing ref_context on the pending_xref —
     /// `py:class="C" py:module="mymod"` instead of the None sentinels.
