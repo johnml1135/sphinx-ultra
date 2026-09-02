@@ -431,6 +431,8 @@ impl BlockParser {
             self.sphinx,
             &self.docname,
             self.program.as_deref(),
+            self.py_module.as_deref(),
+            self.py_class.as_deref(),
             &self.py,
         );
         self.role_records.append(&mut result.roles);
@@ -11562,6 +11564,22 @@ mod py_desc_tests {
         assert!(pf.contains("ids=\"mymod.f\" module=\"mymod\""));
         assert!(
             pf.contains("('single',\\ 'f()\\ (in\\ module\\ mymod)',\\ 'mymod.f',\\ '',\\ None)")
+        );
+    }
+
+    /// [PY §3.1] probe role_in_module_scope: a py role inside a class's
+    /// content carries the enclosing ref_context on the pending_xref —
+    /// `py:class="C" py:module="mymod"` instead of the None sentinels.
+    #[test]
+    fn a_py_role_inside_a_scope_stamps_the_ref_context() {
+        let pf = pf_py(".. py:module:: mymod\n\n.. py:class:: C\n\n   :py:func:`target`\n");
+        assert!(
+            pf.contains(concat!(
+                "                <pending_xref py:class=\"C\" py:module=\"mymod\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"0\" reftarget=\"target\" reftype=\"func\" refwarn=\"0\">\n",
+                "                    <literal classes=\"xref py py-func\">\n",
+                "                        target()\n",
+            )),
+            "{pf}"
         );
     }
 }

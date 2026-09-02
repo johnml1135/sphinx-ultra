@@ -218,6 +218,11 @@ struct Inliner<'a> {
     /// `OptionXRefRole.process_link` stamps on every `:option:` reference
     /// (`domains/std/__init__.py:351-364`).
     program: Option<&'a str>,
+    /// `env.ref_context['py:module']` / `['py:class']` — the enclosing
+    /// module/class scope `PyXRefRole.process_link` stamps on every py
+    /// pending_xref (`domains/python/__init__.py:568-569`).
+    py_module: Option<&'a str>,
+    py_class: Option<&'a str>,
     /// The py-domain configuration the roles read; today only
     /// `add_function_parentheses`, in [`Self::emit_xref_node`].
     py: &'a crate::py::PySigConfig,
@@ -1029,23 +1034,65 @@ impl<'a> Inliner<'a> {
             ("std", "ref" | "numref") => {
                 (crate::doctree::ids::fully_normalize_name(&target), display)
             }
-            ("py", _) if target.starts_with('~') && !explicit => {
-                let full = target[1..].to_string();
-                // The shortening runs on the TITLE, not on the target: for a
-                // `fix_parens` role the title is the half that already
-                // carries the `()` decision (probes Q2/Q3).
-                let title = display.strip_prefix('~').unwrap_or(&display);
-                let short = title.rsplit('.').next().unwrap_or(title).to_string();
-                (full, short)
-            }
             _ => (target, display),
+        };
+        // `PyXRefRole.process_link` (`domains/python/__init__.py:559-585`),
+        // which `create_xref_node` runs AFTER `update_title_and_target`
+        // (`roles.py:127-140`).
+        let mut refspecific = false;
+        let (target, display) = if py {
+            let mut title = display;
+            let mut target = target;
+            if !explicit {
+                // `title.lstrip('.')` "only has a meaning for the target";
+                // `target.lstrip('~')` "only has a meaning for the title" —
+                // both strip EVERY leading occurrence (probes
+                // role_title_lstrip_dots / role_target_lstrip_tilde).
+                title = title.trim_start_matches('.').to_string();
+                target = target.trim_start_matches('~').to_string();
+                // ONE leading `~` on the title reduces it to its last
+                // dotted component. The shortening runs on the TITLE, not
+                // the target: for a `fix_parens` role the title is the
+                // half that already carries the `()` decision (Q2/Q3).
+                if title.starts_with('~') {
+                    let rest = title[1..].to_string();
+                    title = match rest.rfind('.') {
+                        Some(dot) => rest[dot + 1..].to_string(),
+                        None => rest,
+                    };
+                }
+            }
+            // A `.`-prefixed target — explicit titles included — loses the
+            // dot and searches more specific namespaces first
+            // (`__init__.py:582-584`, probes roles_tilde_dot /
+            // role_dot_explicit_title).
+            if target.starts_with('.') {
+                target = target[1..].to_string();
+                refspecific = true;
+            }
+            // `_PyDecoXRefRole` (`__init__.py:588-600`) prefixes `@`
+            // UNCONDITIONALLY — explicit titles included (probe
+            // role_deco_explicit: `@custom`).
+            if reftype == "deco" {
+                title = format!("@{title}");
+            }
+            (target, title)
+        } else {
+            (target, display)
         };
         let mut node = Node::elem("pending_xref", self.span);
         if py {
-            // Context attrs (current class/module) are None outside a py
-            // scope; pformat renders None as "True".
-            node.set("py:class", AttrValue::Str("True".to_string()));
-            node.set("py:module", AttrValue::Str("True".to_string()));
+            // `refnode['py:module']`/`['py:class']` from the enclosing
+            // ref_context (`__init__.py:568-569`); None outside a py scope,
+            // which pformat renders as "True".
+            node.set(
+                "py:class",
+                AttrValue::Str(self.py_class.unwrap_or("True").to_string()),
+            );
+            node.set(
+                "py:module",
+                AttrValue::Str(self.py_module.unwrap_or("True").to_string()),
+            );
         }
         node.set("refdoc", AttrValue::Str(self.docname.to_string()));
         node.set("refdomain", AttrValue::Str(domain.clone()));
@@ -1059,6 +1106,12 @@ impl<'a> Inliner<'a> {
             }
         }
         node.set("refexplicit", AttrValue::Int(i64::from(explicit)));
+        if refspecific {
+            // `refnode['refspecific'] = True` is set ONLY on the dot
+            // branch — other py xrefs carry no refspecific attribute at
+            // all (probe roles_basic vs roles_tilde_dot).
+            node.set("refspecific", AttrValue::Int(1));
+        }
         node.set("reftarget", AttrValue::Str(target));
         node.set("reftype", AttrValue::Str(reftype.clone()));
         // `XRefRole.warn_dangling` (`roles.py:134`), which is what makes a
@@ -1738,6 +1791,8 @@ pub fn parse_inline(
         false,
         "index",
         None,
+        None,
+        None,
         &py,
     )
 }
@@ -1752,6 +1807,8 @@ pub fn parse_inline_ext(
     sphinx: bool,
     docname: &str,
     program: Option<&str>,
+    py_module: Option<&str>,
+    py_class: Option<&str>,
     py: &crate::py::PySigConfig,
 ) -> InlineResult {
     let escaped = escape2null(text);
@@ -1764,6 +1821,8 @@ pub fn parse_inline_ext(
         sphinx,
         docname,
         program,
+        py_module,
+        py_class,
         py,
         roles: Vec::new(),
         nodes: Vec::new(),
@@ -1900,6 +1959,8 @@ mod tests {
             "<snippet>",
             true,
             "index",
+            None,
+            None,
             None,
             py,
         )
@@ -2152,6 +2213,138 @@ mod tests {
             xref_title_and_target(":py:func:`~mymod.myfunc()`", false),
             ("myfunc".to_string(), "mymod.myfunc".to_string()),
             "Q3"
+        );
+    }
+
+    // --- PyXRefRole.process_link (`domains/python/__init__.py:559-600`) ----
+    //
+    // Expected shapes pasted from this task's probe_t6 run ([PY §3.1]
+    // probes roles_basic / roles_tilde_dot / role_deco and the
+    // role_*_lstrip / role_dot_explicit_title cases).
+
+    /// [PY §3.1 roles_basic]: every py xref carries the ref_context attrs
+    /// (None → "True" sentinel) and NO refspecific attribute at all.
+    #[test]
+    fn a_py_xref_outside_any_scope_stamps_the_none_sentinels() {
+        let nodes = sphinx_nodes(":py:func:`target`");
+        let xref = &nodes[0];
+        assert_eq!(attr(xref, "py:class"), Some(&AttrValue::Str("True".into())));
+        assert_eq!(
+            attr(xref, "py:module"),
+            Some(&AttrValue::Str("True".into()))
+        );
+        assert_eq!(attr(xref, "refspecific"), None, "absent, not 0");
+    }
+
+    /// [PY §3.1 roles_tilde_dot]: a `.`-prefixed target strips the dot and
+    /// stamps `refspecific="1"`; the implicit title lost the dot too.
+    #[test]
+    fn a_dot_prefixed_target_becomes_refspecific() {
+        let nodes = sphinx_nodes(":py:meth:`.Cls.meth`");
+        let xref = &nodes[0];
+        assert_eq!(attr(xref, "refspecific"), Some(&AttrValue::Int(1)));
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str("Cls.meth".into()))
+        );
+        assert_eq!(xref.astext(), "Cls.meth()");
+
+        // The dot branch sits OUTSIDE the implicit-title guard: an
+        // explicit title keeps its text while the target still turns
+        // refspecific (probe role_dot_explicit_title).
+        let nodes = sphinx_nodes(":py:meth:`M <.Cls.meth>`");
+        let xref = &nodes[0];
+        assert_eq!(attr(xref, "refspecific"), Some(&AttrValue::Int(1)));
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str("Cls.meth".into()))
+        );
+        assert_eq!(xref.astext(), "M");
+    }
+
+    /// Probe role_title_lstrip_dots: `..pkg.f` — the implicit title loses
+    /// EVERY leading dot, the target loses exactly ONE (the refspecific
+    /// branch), leaving `reftarget=".pkg.f"`.
+    #[test]
+    fn title_lstrips_all_dots_while_the_target_loses_one() {
+        let nodes = sphinx_nodes(":py:func:`..pkg.f`");
+        let xref = &nodes[0];
+        assert_eq!(xref.astext(), "pkg.f()");
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str(".pkg.f".into()))
+        );
+        assert_eq!(attr(xref, "refspecific"), Some(&AttrValue::Int(1)));
+    }
+
+    /// Probe role_target_lstrip_tilde: the target `lstrip`s every leading
+    /// `~` while the title's shortening consumes one and keeps the last
+    /// dotted component.
+    #[test]
+    fn the_target_lstrips_every_tilde() {
+        let nodes = sphinx_nodes(":py:func:`~~pkg.f`");
+        let xref = &nodes[0];
+        assert_eq!(xref.astext(), "f()");
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str("pkg.f".into()))
+        );
+        assert_eq!(attr(xref, "refspecific"), None);
+    }
+
+    /// [PY §3.1 role_deco]: `_PyDecoXRefRole` prefixes `@` to the title —
+    /// UNCONDITIONALLY, explicit titles included (probe role_deco_explicit)
+    /// — while the target stays bare; the inner literal is `xref py py-deco`.
+    #[test]
+    fn the_deco_role_prefixes_an_at_sign() {
+        let nodes = sphinx_nodes(":py:deco:`mydeco`");
+        let xref = &nodes[0];
+        assert_eq!(xref.astext(), "@mydeco");
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str("mydeco".into()))
+        );
+        let inner = &xref.children[0];
+        assert_eq!(inner.kind, kinds::LITERAL);
+        assert_eq!(
+            inner.attrs.classes,
+            vec!["xref".to_string(), "py".to_string(), "py-deco".to_string()]
+        );
+
+        let nodes = sphinx_nodes(":py:deco:`custom <target>`");
+        let xref = &nodes[0];
+        assert_eq!(xref.astext(), "@custom");
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str("target".into()))
+        );
+    }
+
+    /// The ref_context stamping path: a parse carrying a module/class
+    /// scope lands both on the xref instead of the sentinels.
+    #[test]
+    fn a_py_xref_inside_a_scope_stamps_the_ref_context() {
+        let mut reg = IdRegistry::new();
+        let py = crate::py::PySigConfig::default();
+        let nodes = parse_inline_ext(
+            ":py:func:`target`",
+            Span::ZERO,
+            1,
+            &mut reg,
+            "<snippet>",
+            true,
+            "index",
+            None,
+            Some("mymod"),
+            Some("C"),
+            &py,
+        )
+        .nodes;
+        let xref = &nodes[0];
+        assert_eq!(attr(xref, "py:class"), Some(&AttrValue::Str("C".into())));
+        assert_eq!(
+            attr(xref, "py:module"),
+            Some(&AttrValue::Str("mymod".into()))
         );
     }
 }
