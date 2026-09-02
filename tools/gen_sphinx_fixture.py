@@ -264,6 +264,26 @@ SUPPORTED_KINDS = {
     "desc_name",
     "desc_addname",
     "desc_content",
+    # wave-4.5 task 8: py-domain signatures, annotations and doc fields
+    "desc_parameterlist",
+    "desc_parameter",
+    "desc_optional",
+    "desc_returns",
+    "desc_annotation",
+    "desc_type_parameter_list",
+    "desc_type_parameter",
+    "desc_sig_name",
+    "desc_sig_operator",
+    "desc_sig_punctuation",
+    "desc_sig_space",
+    "desc_sig_keyword",
+    "desc_sig_keyword_type",
+    "desc_sig_literal_number",
+    "desc_sig_literal_string",
+    "desc_sig_literal_char",
+    "literal_strong",
+    "literal_emphasis",
+    "pending_xref_condition",
 }
 
 CASES = [
@@ -593,6 +613,82 @@ CASES = [
     ('sx_roles', 'option_role', 'Use :option:`--verbose` now.\n'),
     ('sx_roles', 'option_role_in_program_scope', '.. program:: myprog\n\nUse :option:`--verbose` now.\n'),
     ('sx_roles', 'confval_role', 'See :confval:`my_setting` here.\n'),
+    # ----- wave-4.5 task 8: std-desc doc fields (T7 fix round 1) -----
+    # DocFieldTransformer runs for EVERY object description; std kinds use
+    # the empty typemap, so every field takes the unknown branch (renamed,
+    # body untouched).
+    ('sx_std', 'envvar_param_field', '.. envvar:: SIMPLE\n\n   :param x: thing\n'),
+    ('sx_std', 'envvar_meta_private_field', '.. envvar:: METAV\n\n   :meta private:\n'),
+    # T7 re-review quirk: markup in the field name duplicates as raw text +
+    # inline children inside the renamed field_name ("Param em x" AND the
+    # <emphasis> pair).
+    ('sx_std', 'envvar_param_markup_field_name', '.. envvar:: EMPH\n\n   :param *em* x: body\n'),
+    # A system_message inside a field BODY passes through the transform
+    # untouched. (The one-child system_message as a field_list CHILD crashes
+    # real sphinx — EXCLUDED sx_std.confval_bad_type_markup — and a
+    # two-child one is not expressible through parseable rst: block-level
+    # errors land inside field_body, as here.)
+    ('sx_std', 'envvar_field_body_system_message', '.. envvar:: SM\n\n   :param x: text\n     bad\n       indent\n'),
+    # ----- wave-4.5 task 8: py-domain object directives ([PY §1.6/1.7]) -----
+    # Propagation-visible module shapes and known-divergence signatures are
+    # in EXCLUDED above, each with its reason.
+    ('py', 'function_plain_args', '.. py:function:: func(a, b)\n\n   Body.\n'),
+    ('py', 'function_full_markers', '.. py:function:: mymod.func(a, b=1, *args, c: int = 2, **kwargs) -> str\n'),
+    ('py', 'function_posonly', '.. py:function:: func(a, /, b, *, c)\n'),
+    ('py', 'function_posonly_trailing', '.. py:function:: func(a, /)\n'),
+    ('py', 'function_brackets_fallback', '.. py:function:: func(a[, b])\n'),
+    ('py', 'function_default_str', ".. py:function:: func(name='x', items=[])\n"),
+    ('py', 'function_no_arglist', '.. py:function:: func\n'),
+    ('py', 'function_async', '.. py:function:: coro(x)\n   :async:\n'),
+    ('py', 'function_module_option', '.. py:function:: f(x)\n   :module: optmod\n'),
+    ('py', 'function_annotation_option', '.. py:function:: f(x)\n   :annotation: something extra\n'),
+    ('py', 'function_bad_sig', '.. py:function:: not a signature!\n'),
+    ('py', 'function_multi_sig', '.. py:function:: f(x)\n                  g(y)\n\n   Shared body.\n'),
+    ('py', 'module_deprecated', '.. py:module:: oldmod\n   :deprecated:\n'),
+    ('py', 'module_noindex', '.. py:module:: quietmod\n   :no-index:\n'),
+    ('py', 'module_noindexentry', '.. py:module:: halfmod\n   :no-index-entry:\n'),
+    ('py', 'module_notypesetting_inert', '.. py:module:: ntmod\n   :no-typesetting:\n'),
+    ('py', 'module_bad_option', '.. py:module:: badmod\n   :noindexentry:\n'),
+    ('py', 'currentmodule_function', '.. py:currentmodule:: curmod\n\n.. py:function:: f(x)\n'),
+    ('py', 'currentmodule_none_pops', '.. py:currentmodule:: curmod\n\n.. py:currentmodule:: None\n\n.. py:function:: f(x)\n'),
+    ('py', 'class_with_bases', '.. py:class:: MyClass(Base1, Base2)\n\n   .. py:method:: meth(self, arg)\n\n      Body.\n'),
+    ('py', 'method_options', '.. py:class:: C\n\n   .. py:method:: m1(x)\n      :classmethod:\n\n   .. py:method:: m2(x)\n      :staticmethod:\n\n   .. py:method:: m3(x)\n      :abstractmethod:\n      :async:\n      :final:\n'),
+    ('py', 'classmethod_staticmethod_directives', '.. py:class:: C\n\n   .. py:classmethod:: cm(x)\n\n   .. py:staticmethod:: sm(x)\n'),
+    ('py', 'attribute_typed', '.. py:class:: C\n\n   .. py:attribute:: attr\n      :type: int\n      :value: 42\n'),
+    ('py', 'property_typed', '.. py:class:: C\n\n   .. py:property:: prop\n      :type: str\n      :abstractmethod:\n      :classmethod:\n'),
+    ('py', 'data_typed', '.. py:data:: CONST\n   :type: dict[str, int]\n   :value: {}\n'),
+    ('py', 'decorator_basic', '.. py:decorator:: mydeco\n'),
+    ('py', 'decorator_with_args', '.. py:decorator:: mydeco(flag)\n'),
+    ('py', 'decoratormethod_basic', '.. py:class:: C\n\n   .. py:decoratormethod:: dm\n'),
+    ('py', 'type_alias_canonical', '.. py:type:: MyAlias\n   :canonical: list[int]\n'),
+    ('py', 'exception_basic', '.. py:exception:: MyError\n'),
+    ('py', 'nested_classes', '.. py:class:: Outer\n\n   .. py:class:: Inner\n\n      .. py:method:: m(x)\n'),
+    ('py', 'method_class_prefix_given', '.. py:class:: C\n\n   .. py:method:: C.meth(x)\n'),
+    ('py', 'method_other_prefix', '.. py:class:: C\n\n   .. py:method:: D.meth(x)\n'),
+    ('py', 'function_fields', '.. py:function:: f(a, b)\n\n   :param int a: first\n   :param b: second\n   :type b: str\n   :returns: something\n   :rtype: bool\n   :raises ValueError: when bad\n'),
+    ('py', 'function_meta_field', '.. py:function:: f()\n\n   :meta private:\n'),
+    ('py', 'noindex_function', '.. py:function:: hidden()\n   :no-index:\n'),
+    ('py', 'old_noindex_spelling', '.. py:function:: hidden()\n   :noindex:\n'),
+    ('py', 'noindexentry_function', '.. py:function:: quiet()\n   :no-index-entry:\n'),
+    ('py', 'nocontentsentry_function', '.. py:function:: quiet2()\n   :no-contents-entry:\n'),
+    ('py', 'notypesetting_function', '.. py:function:: invisible()\n   :no-typesetting:\n'),
+    ('py', 'canonical_function', '.. py:function:: new_name()\n   :canonical: old.name\n'),
+    ('py', 'duplicate_functions', '.. py:function:: dup()\n\n.. py:function:: dup()\n'),
+    # tp-list/arglist warning spellings (T6 row 13): the WARNING bytes live
+    # in the logger (pinned by src/rst/block.rs arglist_and_tp_list_error_
+    # paths_warn); the fixture pins the fallback TREE shape for exactly the
+    # three probed spellings — other tp failures render exception text this
+    # crate does not reproduce byte-for-byte.
+    ('py', 'arglist_duplicate_param', '.. py:function:: f(a, a)\n'),
+    ('py', 'tp_list_variadic_bound', '.. py:function:: f[*Ts: int](x)\n'),
+    ('py', 'tp_list_tokenerror', '.. py:function:: f[(T](x)\n'),
+    # read-phase xref roles ([PY §3.1]; @ on BOTH deco titles, T6 ledger 1)
+    ('py', 'roles_basic', 'See :py:func:`target` and :py:func:`target()` and :py:func:`custom <target>`.\n'),
+    ('py', 'roles_tilde_dot', 'See :py:meth:`~pkg.Cls.meth` and :py:meth:`.Cls.meth` and :py:mod:`pkg`.\n'),
+    ('py', 'role_deco_implicit_and_explicit', 'See :py:deco:`mydeco` and :py:deco:`custom <mydeco>`.\n'),
+    ('py', 'role_lstrip_edges', 'See :py:func:`..target` and :py:func:`~~pkg.f` and :py:class:`custom <.Cls>`.\n'),
+    ('py', 'role_in_currentmodule_scope', '.. py:currentmodule:: rmod\n\nSee :py:func:`local` here.\n'),
+    ('py', 'role_in_class_scope', '.. py:class:: C\n\n   See :py:meth:`m` here.\n'),
 ]
 
 
@@ -779,6 +875,7 @@ def main() -> int:
         "sx_directives": 18,
         "sx_roles": 6,
         "sx_std": 12,
+        "py": 30,
     }
     counts: dict = {}
     for case in CASES:

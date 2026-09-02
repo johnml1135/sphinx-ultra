@@ -12075,6 +12075,46 @@ mod py_desc_tests {
         );
     }
 
+    /// Two `.. py:module:: dupmod`: the second module target takes the
+    /// `module-0` serial (`make_id` prefix fallback, `util/nodes.py:633-636`)
+    /// and registers over the first — probe duplicate_modules [PY §5].
+    ///
+    /// The sphinx PFORMAT of this case is propagation-dependent (docutils
+    /// PropagateTargets folds the first target's id onto the second:
+    /// `<target ids="module-0 module-dupmod">`), so it is EXCLUDED from the
+    /// sphinx doctree fixture (tools/gen_sphinx_fixture.py EXCLUDED) and the
+    /// module-0 registration is pinned here on our pre-propagation records
+    /// and ids instead. The duplicate WARNING is the env layer's job (T9).
+    #[test]
+    fn duplicate_modules_take_the_module_0_serial() {
+        let out = parse_py(".. py:module:: dupmod\n\n.. py:module:: dupmod\n");
+        assert_eq!(
+            out.doctree.root.pformat(),
+            concat!(
+                "<document source=\"<snippet>\">\n",
+                "    <index entries=\"('pair',\\ 'module;\\ dupmod',\\ 'module-dupmod',\\ '',\\ None)\">\n",
+                "    <target ids=\"module-dupmod\" ismod=\"1\">\n",
+                "    <index entries=\"('pair',\\ 'module;\\ dupmod',\\ 'module-0',\\ '',\\ None)\">\n",
+                "    <target ids=\"module-0\" ismod=\"1\">\n",
+            )
+        );
+        assert_eq!(
+            objects(&out),
+            owned(&[
+                ("dupmod", "module", "module-dupmod", false),
+                ("dupmod", "module", "module-0", false),
+            ])
+        );
+        assert_eq!(
+            out.registry
+                .py_modules
+                .iter()
+                .map(|r| (r.name.as_str(), r.node_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("dupmod", "module-dupmod"), ("dupmod", "module-0")]
+        );
+    }
+
     // ---- no-* family (row 7/8, [PY §1.7]) ------------------------------
 
     #[test]
