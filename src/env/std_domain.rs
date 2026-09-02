@@ -132,7 +132,7 @@ pub struct DocumentSource<'a> {
 /// The path a warning about source-table entry `source` should name —
 /// resolved through the doctree's table, falling back to the document's
 /// own path for an id the table doesn't know.
-fn source_path_of(doc: &DocumentSource<'_>, source: u16) -> PathBuf {
+pub(crate) fn source_path_of(doc: &DocumentSource<'_>, source: u16) -> PathBuf {
     doc.doctree
         .sources
         .get(source as usize)
@@ -147,7 +147,10 @@ fn source_path_of(doc: &DocumentSource<'_>, source: u16) -> PathBuf {
 /// `option`/`envvar`/`confval` registrations
 /// (`ObjectDescription.add_target_and_index`) from the records the parse
 /// layer kept — see [`RegistryExport::program_options`] for why the doctree
-/// cannot carry those.
+/// cannot carry those. The **py domain's** registrations
+/// ([`crate::env::py_domain::collect_registrations`]) replay in the same
+/// parse-time pass, because that is where they fire in Sphinx — their
+/// duplicate warnings interleave with std's in document order.
 ///
 /// `doc2path` renders another document's source path for the duplicate-label
 /// warning [ENV §8 #1], which names the *path*, not the docname.
@@ -159,19 +162,25 @@ pub fn process_doc(
 ) {
     let ids = DocumentIds::of(doc.doctree);
     // Order matters, and it is Sphinx's. Glossary terms and object
-    // descriptions register *during the parse* (`make_glossary_term` ->
-    // `_note_term`, `ObjectDescription.add_target_and_index` ->
-    // `note_object`), while `StandardDomain.process_doc`'s label pass runs
-    // only once the parse has finished. So Sphinx's duplicate-term and
-    // duplicate-object warnings always precede the same document's
-    // duplicate-label warnings, and come out interleaved with each other in
-    // document order. This crate has no domain callbacks in the parse, so
-    // both registration passes run here: each pass replays in its own
-    // record sequence, and the two warning streams merge on DOCTREE order
-    // — where each registration's node sits in the finished tree. (The
-    // old merge sorted by line, which only reproduced document order while
-    // every line came from one source; an included file's registrations
-    // would be shuffled into the includer's. Tree order is document order
+    // descriptions — the py domain's included — register *during the
+    // parse* (`make_glossary_term` -> `_note_term`,
+    // `ObjectDescription.add_target_and_index` -> `note_object`), while
+    // `StandardDomain.process_doc`'s label pass runs only once the parse
+    // has finished. So Sphinx's duplicate-term and duplicate-object
+    // warnings always precede the same document's duplicate-label
+    // warnings, and come out interleaved with each other in document
+    // order — across domains too: a document carrying an envvar
+    // duplicate, a py duplicate and a term duplicate warns in document
+    // position order, not grouped by domain (probe-verified against
+    // sphinx 9.1.0; see `py_domain`'s
+    // `py_duplicate_warnings_interleave_with_std_s_in_document_order`).
+    // This crate has no domain callbacks in the parse, so every
+    // registration pass runs here: each replays in its own record
+    // sequence, and the warning streams merge on DOCTREE order — where
+    // each registration's node sits in the finished tree. (The old merge
+    // sorted by line, which only reproduced document order while every
+    // line came from one source; an included file's registrations would
+    // be shuffled into the includer's. Tree order is document order
     // whatever the source, and a warning's line stays display data.)
     //
     // Still not Sphinx: these warnings interleave with the document's
@@ -181,6 +190,7 @@ pub fn process_doc(
     let mut parse_time: Vec<(usize, BuildWarning)> = Vec::new();
     collect_glossary_terms(env, doc, &ids, &mut parse_time);
     collect_descriptions(env, doc, &ids, &mut parse_time);
+    crate::env::py_domain::collect_registrations(env, doc, &ids, &mut parse_time);
     parse_time.sort_by_key(|(order, _)| *order);
     warnings.extend(parse_time.into_iter().map(|(_, warning)| warning));
     collect_labels(env, doc, &ids, doc2path, warnings);
@@ -516,7 +526,7 @@ impl<'a> DocumentIds<'a> {
         Self { map }
     }
 
-    fn get(&self, id: &str) -> Option<(usize, &'a Node)> {
+    pub(crate) fn get(&self, id: &str) -> Option<(usize, &'a Node)> {
         self.map.get(id).copied()
     }
 

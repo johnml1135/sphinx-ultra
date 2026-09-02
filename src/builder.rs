@@ -1014,10 +1014,17 @@ impl SphinxBuilder {
             self.report_parse_warnings(&result.document, &result.doctree);
 
             // The domains' read-phase hooks, dispatched in the order
-            // `_DomainsContainer._process_doc` walks them — `index` before
-            // `std` — and after the parse diagnostics above, which Sphinx
-            // logs while reading. Warning locations come from node spans
-            // and the doctree's source table, not the document text.
+            // `_DomainsContainer._process_doc` walks them — `c, changeset,
+            // citation, cpp, index, js, math, py, rst, std`, so `index`
+            // before `std` with `py` in between — and after the parse
+            // diagnostics above, which Sphinx logs while reading.
+            // `PythonDomain` defines no `process_doc` hook, so its slot in
+            // that walk is a no-op: the py registrations (and their
+            // duplicate warnings, which are parse-time in Sphinx and
+            // interleave with std's in document order) replay inside
+            // `env_std::process_doc`'s parse-time pass below. Warning
+            // locations come from node spans and the doctree's source
+            // table, not the document text.
             let mut index_warnings = Vec::new();
             env_genindex::process_doc(
                 env,

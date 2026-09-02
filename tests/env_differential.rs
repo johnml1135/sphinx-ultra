@@ -1272,6 +1272,144 @@ fn touching_one_document_re_reads_only_it_and_the_environment_still_matches_a_co
     assert_eq!(env["std"]["labels"], cold_env["std"]["labels"]);
 }
 
+/// `(name, docname, node_id)` of every `py_objects` snapshot record, in
+/// the registration order the snapshot preserves.
+fn py_object_rows(env: &serde_json::Value) -> Vec<(String, String, String)> {
+    env["py_objects"]
+        .as_array()
+        .expect("py_objects is a list")
+        .iter()
+        .map(|o| {
+            (
+                o["name"].as_str().unwrap().to_string(),
+                o["docname"].as_str().unwrap().to_string(),
+                o["node_id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn rows(v: &[(&str, &str, &str)]) -> Vec<(String, String, String)> {
+    v.iter()
+        .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+        .collect()
+}
+
+/// The py domain across incremental rebuilds, pinned cell by cell to what
+/// a real sphinx 9.1.0 build does with this exact project (dummy builder,
+/// touching one file at a time):
+///
+/// - cold: `a` registers `dup` first (docname order), `b`'s re-definition
+///   warns naming `a` and wins **in `a`'s insertion slot**;
+/// - steady warm: nothing is read, so nothing warns and nothing moves;
+/// - touch `a` (whose registration lost): only `a` is re-read; clearing it
+///   leaves `b`'s surviving `dup`, so the replay finds it and the warning
+///   RE-FIRES from `a` naming `b` — and `a`'s other entries move to the
+///   end of the registration order, exactly like Sphinx's dict after
+///   clear + re-insert. Warm therefore does NOT equal cold here, because
+///   it doesn't in Sphinx either;
+/// - touch `b` (whose registration won): clearing `b` removes `dup`
+///   entirely, the replay re-registers it without a prior entry, and no
+///   warning fires at all.
+#[test]
+fn py_registrations_across_incremental_rebuilds_match_sphinx_s_clear_and_replay() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    write(
+        &source_dir,
+        "index",
+        "Idx\n===\n\n.. toctree::\n\n   a\n   b\n",
+    );
+    let doc_a = "A\n=\n\n.. py:function:: dup()\n\n.. py:module:: alpha\n";
+    let doc_b = "B\n=\n\n.. py:function:: dup()\n\n.. py:module:: beta\n";
+    write(&source_dir, "a", doc_a);
+    write(&source_dir, "b", doc_b);
+    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+
+    let duplicate_warning = |docname: &str, other: &str| {
+        format!(
+            "<project>/{docname}.rst:4: WARNING: duplicate object description of dup, \
+             other instance in {other}, use :no-index: for one of them"
+        )
+    };
+
+    let out = tmp.path().join("out");
+    let (_, cold_env, cold_warnings) = incremental_build(&source_dir, &out);
+    assert_eq!(cold_warnings, vec![duplicate_warning("b", "a")]);
+    assert_eq!(
+        py_object_rows(&cold_env),
+        rows(&[
+            ("dup", "b", "dup"),
+            ("alpha", "a", "module-alpha"),
+            ("beta", "b", "module-beta"),
+        ])
+    );
+    assert_eq!(
+        cold_env["py_modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["name"].as_str().unwrap(), m["docname"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        vec![("alpha", "a"), ("beta", "b")]
+    );
+
+    // Steady state: three cache hits, no replay, warm == cold everywhere.
+    let (hits, steady_env, steady_warnings) = incremental_build(&source_dir, &out);
+    assert_eq!(hits, 3);
+    assert!(
+        steady_warnings.is_empty(),
+        "an unread document re-fires no duplicate warnings: {steady_warnings:?}"
+    );
+    assert_eq!(steady_env["py_objects"], cold_env["py_objects"]);
+    assert_eq!(steady_env["py_modules"], cold_env["py_modules"]);
+
+    // Touch the document whose registration LOST the duplicate.
+    write(&source_dir, "a", doc_a);
+    let (hits, env, warnings) = incremental_build(&source_dir, &out);
+    assert_eq!(hits, 2);
+    assert_eq!(
+        warnings,
+        vec![duplicate_warning("a", "b")],
+        "the re-read finds b's surviving entry, so the warning re-fires \
+         naming b — sphinx does exactly this"
+    );
+    assert_eq!(
+        py_object_rows(&env),
+        rows(&[
+            // `dup` keeps slot 0 (b's entry was overwritten in place) but
+            // now belongs to `a`; `alpha` was cleared and re-appended.
+            ("dup", "a", "dup"),
+            ("beta", "b", "module-beta"),
+            ("alpha", "a", "module-alpha"),
+        ])
+    );
+
+    // Touch the document whose registration WON, against a fresh build.
+    let out2 = tmp.path().join("out2");
+    let (_, _, cold2_warnings) = incremental_build(&source_dir, &out2);
+    assert_eq!(cold2_warnings.len(), 1);
+    write(&source_dir, "b", doc_b);
+    let (hits, env, warnings) = incremental_build(&source_dir, &out2);
+    assert_eq!(hits, 2);
+    assert!(
+        warnings.is_empty(),
+        "clearing b removed the only `dup` entry, so its replay registers \
+         silently: {warnings:?}"
+    );
+    assert_eq!(
+        py_object_rows(&env),
+        rows(&[
+            // Clearing b removed `dup` from slot 0; the replay re-appends
+            // it after the surviving `alpha`.
+            ("alpha", "a", "module-alpha"),
+            ("dup", "b", "dup"),
+            ("beta", "b", "module-beta"),
+        ])
+    );
+}
+
 /// A document that disappears is cleared from the environment, and both
 /// diagnostics a cold build would now report show up: the reference into
 /// the deleted document dangles (resolution, recomputed for every document
