@@ -558,6 +558,13 @@ const IMAGE_CANDIDATES: &str = "`ImageCollector.process_doc` stamps `candidates`
 const PROPAGATE_TARGETS: &str = "docutils' `PropagateTargets` transform (which moves a \
      block-level target's ids and names onto the node after it) is replayed for label \
      collection but not applied to the tree itself";
+const PROPAGATE_MODULE_TARGETS: &str = "plan §Scope-3: a `py:module` target's ids \
+     migrate onto the following node in Sphinx's tree (docutils `PropagateTargets`, \
+     plus the index/target reorder around it) — the in-tree application is deferred \
+     to wave 5; the registration records (`py_objects`/`py_modules`) pin the \
+     pre-propagation node ids for these same documents, and a module registered as \
+     a document's LAST node (py_dup's `a`) compares clean because a trailing \
+     target has nothing to propagate onto";
 
 /// Per-document `resolved_pformat` divergences this task deliberately does
 /// not close, each pinned to what would close it. Checked **strictly**,
@@ -608,6 +615,20 @@ const KNOWN_RESOLVED_GAPS: &[(&str, &str, &str)] = &[
     ("labels_dups", "a", PROPAGATE_TARGETS),
     ("labels_dups", "b", PROPAGATE_TARGETS),
     ("index_entries", "a", PROPAGATE_TARGETS),
+    // Wave 4.5 py projects: toctree-bearing index documents share the
+    // write-phase gap above; module-bearing documents are §Scope-3
+    // propagation-visible (verified: each diff is exactly the module
+    // target ids moving onto the section/following target, nothing else).
+    ("py_basic", "index", TOCTREE_RESOLUTION),
+    ("py_dup", "index", TOCTREE_RESOLUTION),
+    ("py_toc", "index", TOCTREE_RESOLUTION),
+    ("py_toc_parents", "index", TOCTREE_RESOLUTION),
+    ("py_basic", "a", PROPAGATE_MODULE_TARGETS),
+    ("py_dup", "b", PROPAGATE_MODULE_TARGETS),
+    ("py_toc", "mod", PROPAGATE_MODULE_TARGETS),
+    ("py_toc_parents", "mod", PROPAGATE_MODULE_TARGETS),
+    ("py_modindex", "index", PROPAGATE_MODULE_TARGETS),
+    ("py_modindex_prefix", "index", PROPAGATE_MODULE_TARGETS),
 ];
 
 fn known_resolved_gap(project: &str, docname: &str) -> Option<&'static str> {

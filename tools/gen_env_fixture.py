@@ -700,6 +700,230 @@ Leaf content for sub/c.
 """,
         },
     },
+    # -----------------------------------------------------------------------
+    # Wave 4.5: py-domain projects (plan Task 14). Documents that carry a
+    # `py:module` directive are PropagateTargets-visible (plan Scope-3: the
+    # module target's ids migrate onto the following node in Sphinx's tree,
+    # a transform this crate defers to wave 5), so their resolved_pformat is
+    # gap-tabled in the consumer while every other key — registration
+    # records, modindex, tocs, warnings, xref-bearing sibling documents —
+    # compares in full.
+    # -----------------------------------------------------------------------
+    {
+        # module + class + method + functions registered in NON-alphabetical
+        # order (zeta before alpha) so the registration-order semantics of
+        # py_objects/py_modules are pinned; doc b resolves xrefs against
+        # them, including the ambiguous fuzzy `.same` ref -> warning.
+        "name": "py_basic",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+.. py:module:: zmod
+
+.. py:class:: Widget
+
+   .. py:method:: render(x)
+
+.. py:function:: zeta.same()
+
+.. py:function:: alpha.same()
+
+.. py:function:: helper(arg=1)
+""",
+            "b": """\
+B
+=
+
+See :py:class:`zmod.Widget` and :py:meth:`~zmod.Widget.render` and
+:py:func:`zmod.helper` and :py:mod:`zmod` and :py:func:`.same`.
+""",
+        },
+    },
+    {
+        # Duplicate objects ACROSS documents (dupfn, dupmod: a then b,
+        # last-wins in a's insertion slot) plus a duplicate module WITHIN
+        # one document (b's second dupmod -> node id falls back to the
+        # `module-0` serial) — [PY spec section 8 item 3] warning bytes and
+        # the last-wins registry both land in the fixture.
+        "name": "py_dup",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+.. py:function:: dupfn()
+
+.. py:class:: Keeper
+
+.. py:module:: dupmod
+""",
+            "b": """\
+B
+=
+
+.. py:function:: dupfn()
+
+.. py:module:: dupmod
+
+.. py:module:: dupmod
+""",
+        },
+    },
+    {
+        # The [SIG A.2] toc-object-entries project, default config: the
+        # class/method/function entries join env.tocs with the shared
+        # anchorname counter and `skip_section_number` stamps.
+        "name": "py_toc",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   mod
+""",
+            "mod": """\
+Mod
+===
+
+.. py:module:: pkg.mymod
+
+.. py:class:: MyClass
+
+   Class body.
+
+   .. py:method:: my_method(arg)
+
+      Method body.
+
+.. py:function:: my_func(x)
+
+   Function body.
+""",
+        },
+    },
+    {
+        # The same files under `toc_object_entries_show_parents = 'all'`
+        # (an enum string, -D-expressible): every toc entry spells its full
+        # dotted path.
+        "name": "py_toc_parents",
+        "conf": {"toc_object_entries_show_parents": "all"},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   mod
+""",
+            "mod": """\
+Mod
+===
+
+.. py:module:: pkg.mymod
+
+.. py:class:: MyClass
+
+   Class body.
+
+   .. py:method:: my_method(arg)
+
+      Method body.
+
+.. py:function:: my_func(x)
+
+   Function body.
+""",
+        },
+    },
+    {
+        # The [PY section 4] modindex_shapes project: dummy parent (orphan,
+        # subtype 1 with empty fields), parent promotion (pkg -> subtype 1),
+        # submodules carrying platform / synopsis / deprecated fields, and
+        # collapse=False (3 submodules vs 2 top-levels: 5-2=3 < 2 is false).
+        "name": "py_modindex",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. py:module:: pkg
+
+.. py:module:: pkg.sub
+   :synopsis: Sub synopsis.
+
+.. py:module:: pkg.sub2
+   :platform: Windows
+
+.. py:module:: orphan.child
+
+.. py:module:: zzz
+   :deprecated:
+""",
+        },
+    },
+    {
+        # The [PY section 4] modindex_common_prefix project, exercising the
+        # array-conf harness extension: `pkg.` is stripped for sorting and
+        # bucketing while display names keep it, and every module counts as
+        # top-level -> collapse=True.
+        "name": "py_modindex_prefix",
+        "conf": {"modindex_common_prefix": ["pkg."]},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. py:module:: pkg.aaa
+
+.. py:module:: pkg.bbb
+
+.. py:module:: other
+""",
+        },
+    },
+    {
+        # nitpicky mode: missing py refs warn in the generic non-std shape
+        # with [ref.{typ}], while builtin_resolver silences `int` (no
+        # warning, literal kept with no reference wrapper). Offline —
+        # nitpicky only, no intersphinx.
+        "name": "py_nitpicky",
+        "conf": {"nitpicky": True},
+        "files": {
+            "index": """\
+Index
+=====
+
+Ref :py:func:`missing_fn` and :py:class:`int` and :py:class:`Missing`.
+""",
+        },
+    },
 ]
 
 
