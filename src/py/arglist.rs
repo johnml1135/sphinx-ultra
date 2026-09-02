@@ -2751,6 +2751,102 @@ mod tests {
         ));
     }
 
+    // -- post-commit probe pins (probe task5/probe_arglist2, see report) ---
+
+    /// Probe task5/neg_default: a unary minus renders flush against the
+    /// numeric SOURCE segment — `y=- 2` becomes `-2`.
+    #[test]
+    fn sig_negative_defaults_render_flush() {
+        let params = signature_from_str("x=-1, y=- 2").unwrap();
+        assert_eq!(params[0].default.as_deref(), Some("-1"));
+        assert_eq!(params[1].default.as_deref(), Some("-2"));
+    }
+
+    /// Probe task5/none_default_str_ann: a string annotation survives as
+    /// its repr (and task 4 renders it as a literal string, not an xref);
+    /// `None` defaults are repr'd.
+    #[test]
+    fn sig_string_annotation_and_none_default() {
+        let params = signature_from_str("x: 'A[int]' = None").unwrap();
+        assert_eq!(params[0].annotation.as_deref(), Some("'A[int]'"));
+        assert_eq!(params[0].default.as_deref(), Some("None"));
+    }
+
+    /// Probe task5/varargs_annotated: annotations attach after the
+    /// `*`/`**` operator + name pair inside the same desc_parameter.
+    #[test]
+    fn arglist_annotated_variadics() {
+        assert_eq!(
+            parsed("*args: int, **kw: str"),
+            [
+                PL_HEAD,
+                concat!(
+                    "    <desc_parameter xml:space=\"preserve\">\n",
+                    "        <desc_sig_operator classes=\"o\">\n",
+                    "            *\n",
+                    "        <desc_sig_name classes=\"n\">\n",
+                    "            args\n",
+                    "        <desc_sig_punctuation classes=\"p\">\n",
+                    "            :\n",
+                    "        <desc_sig_space classes=\"w\">\n",
+                    "             \n",
+                    "        <desc_sig_name classes=\"n\">\n",
+                    "            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"int\" reftype=\"class\">\n",
+                    "                int\n",
+                    "    <desc_parameter xml:space=\"preserve\">\n",
+                    "        <desc_sig_operator classes=\"o\">\n",
+                    "            **\n",
+                    "        <desc_sig_name classes=\"n\">\n",
+                    "            kw\n",
+                    "        <desc_sig_punctuation classes=\"p\">\n",
+                    "            :\n",
+                    "        <desc_sig_space classes=\"w\">\n",
+                    "             \n",
+                    "        <desc_sig_name classes=\"n\">\n",
+                    "            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"str\" reftype=\"class\">\n",
+                    "                str\n",
+                )
+            ]
+            .concat()
+        );
+    }
+
+    /// Probe task5/pseudo_empty_default: `f(a=[, b])` — the pseudo
+    /// parser's `if default_value:` truthiness drops an empty default
+    /// entirely (the `[` was already stripped as an optional-opener).
+    #[test]
+    fn pseudo_empty_default_is_dropped() {
+        assert_eq!(
+            pseudo("a=[, b]"),
+            [
+                PL_HEAD,
+                concat!(
+                    "    <desc_parameter xml:space=\"preserve\">\n",
+                    "        <desc_sig_name classes=\"n\">\n",
+                    "            a\n",
+                    "    <desc_optional xml:space=\"preserve\">\n",
+                    "        <desc_parameter xml:space=\"preserve\">\n",
+                    "            <desc_sig_name classes=\"n\">\n",
+                    "                b\n",
+                )
+            ]
+            .concat()
+        );
+    }
+
+    /// Probe task5/eq_in_string_default + tuple_default: `=`/`:` inside
+    /// string literals never split, and tuple defaults keep canonical
+    /// parens.
+    #[test]
+    fn sig_string_and_tuple_default_edges() {
+        let params = signature_from_str("x='a=b', y: str='c:d', z=(1, 2), w=()").unwrap();
+        assert_eq!(params[0].default.as_deref(), Some("'a=b'"));
+        assert_eq!(params[1].annotation.as_deref(), Some("str"));
+        assert_eq!(params[1].default.as_deref(), Some("'c:d'"));
+        assert_eq!(params[2].default.as_deref(), Some("(1, 2)"));
+        assert_eq!(params[3].default.as_deref(), Some("()"));
+    }
+
     // -- totality ----------------------------------------------------------
 
     /// No entry point panics on arbitrary garbage (grammar, lexer and
