@@ -31,8 +31,11 @@
 //!   CPython's tokenizer.
 //! * `repr()`'s "printable" test for exotic non-ASCII characters inside
 //!   string constants uses `char::is_control` plus a curated Zs/Zl/Zp/Cf/Co
-//!   table rather than full Unicode category data (unassigned code points
-//!   may print unescaped where CPython would escape them).
+//!   table rather than full Unicode category data. A full-codespace sweep
+//!   against the pinned interpreter shows the table never over-escapes, and
+//!   the only remaining under-escape class is the unassigned (Cn) code
+//!   points, which render unescaped where CPython would escape them — a
+//!   sanctioned, documented divergence.
 
 use std::fmt;
 
@@ -191,8 +194,14 @@ pub fn unparse(e: &PyExpr) -> String {
 // Tokenizer
 // ---------------------------------------------------------------------------
 
-/// Nesting cap so hostile input hits `Err` instead of a stack overflow
-/// (CPython raises `SyntaxError: too many nested parentheses` similarly).
+/// Combined complexity budget: bounds active parser recursion (nesting)
+/// *and*, via [`Parser::charge_node`], the left-extending chains built
+/// iteratively (attribute/call/subscript trailers, binop folds). Together
+/// they guarantee any `Ok` tree has height O(`MAX_DEPTH`), keeping the
+/// recursive [`unparse`] walk and the derived recursive `Drop` of nested
+/// `Box<PyExpr>` stack-safe. Hostile input hits `Err` instead of a stack
+/// overflow (CPython raises `SyntaxError: too many nested parentheses`
+/// similarly).
 const MAX_DEPTH: u32 = 200;
 
 /// Python's hard keywords (`keyword.kwlist`, 3.12). Soft keywords
@@ -614,8 +623,14 @@ fn based_digits_to_decimal(digits: &str, base: u32) -> String {
 /// fixed notation iff the decimal exponent is in `-4..16`, else scientific
 /// with a signed, two-digit-minimum exponent). Infinities — only reachable
 /// via overflowing literals like `1e400` — print as `ast._Unparser`'s
-/// `_INFSTR`, `1e309`.
+/// `_INFSTR`, `1e309`. Callers pass magnitudes only: a Python float
+/// literal has no sign (negatives are `UnaryOp`), and the digit-placement
+/// arithmetic below is only correct for non-negative inputs.
 fn py_float_repr(v: f64) -> String {
+    debug_assert!(
+        v >= 0.0 || v.is_nan(),
+        "py_float_repr takes magnitudes only"
+    );
     if v.is_infinite() {
         return "1e309".to_string();
     }
@@ -871,6 +886,22 @@ impl Parser {
         }
     }
 
+    /// Charge one unit of the [`MAX_DEPTH`] budget for a node built by an
+    /// *iterative* loop (postfix trailers, binop folds). Unlike the
+    /// recursion guards in `parse_expr`/`parse_factor` this charge is never
+    /// refunded: those loops deepen the tree without deepening the parser
+    /// stack, so `a` + `.b` × N would otherwise return an `Ok` tree whose
+    /// recursive `unparse`/`Drop` aborts the process. The permanent charge
+    /// makes `MAX_DEPTH` a whole-expression complexity budget that bounds
+    /// the height of every `Ok` tree.
+    fn charge_node(&mut self) -> Result<(), PyExprError> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(PyExprError::new("expression is too deeply nested"));
+        }
+        Ok(())
+    }
+
     fn parse_top(&mut self) -> Result<PyExpr, PyExprError> {
         let first = self.parse_star_or_expr()?;
         let mut elts = vec![first];
@@ -885,11 +916,17 @@ impl Parser {
         if self.peek().is_some() {
             return Err(PyExprError::new("unexpected trailing input"));
         }
+        // `ast.parse(mode='eval')` rejects starred expressions at the top
+        // level even inside a bare tuple (`*a, b`, `b, *a`, `*a,` are all
+        // SyntaxError, oracle-verified) — only displays, calls and
+        // subscripts take them.
+        if elts.iter().any(|e| matches!(e, PyExpr::Starred(_))) {
+            return Err(PyExprError::new("cannot use starred expression here"));
+        }
         if tuple {
             return Ok(PyExpr::Tuple(elts));
         }
         match elts.into_iter().next() {
-            Some(PyExpr::Starred(_)) => Err(PyExprError::new("cannot use starred expression here")),
             Some(e) => Ok(e),
             None => Err(PyExprError::new("empty expression")),
         }
@@ -935,6 +972,7 @@ impl Parser {
         let mut left = self.parse_binop(level + 1)?;
         while let Some(op) = self.peek().and_then(|t| level_op(level, t)) {
             self.pos += 1;
+            self.charge_node()?;
             let right = self.parse_binop(level + 1)?;
             left = PyExpr::BinOp {
                 left: Box::new(left),
@@ -991,6 +1029,10 @@ impl Parser {
     fn parse_postfix(&mut self) -> Result<PyExpr, PyExprError> {
         let mut e = self.parse_atom()?;
         loop {
+            if !matches!(self.peek(), Some(Tok::Dot | Tok::LParen | Tok::LBracket)) {
+                return Ok(e);
+            }
+            self.charge_node()?;
             if self.eat(&Tok::Dot) {
                 let attr = match self.peek() {
                     Some(Tok::Name(n)) => n.clone(),
@@ -1603,7 +1645,7 @@ fn is_nonprintable_nonascii(c: char) -> bool {
         0xa0 | 0xad
         | 0x600..=0x605 | 0x61c | 0x6dd | 0x70f | 0x890..=0x891 | 0x8e2
         | 0x1680 | 0x180e
-        | 0x2000..=0x200f | 0x2028..=0x202e | 0x205f..=0x2064 | 0x2066..=0x206f
+        | 0x2000..=0x200f | 0x2028..=0x202f | 0x205f..=0x2064 | 0x2066..=0x206f
         | 0x3000 | 0xfeff | 0xfff9..=0xfffb
         | 0xe000..=0xf8ff
         | 0x110bd | 0x110cd | 0x13430..=0x1343f | 0x1bca0..=0x1bca3
@@ -1766,6 +1808,7 @@ mod tests {
         ("'\\x85'", "'\\x85'"),
         ("'\\xa0'", "'\\xa0'"),
         ("'\\u2028'", "'\\u2028'"),
+        ("'\u{202f}'", "'\\u202f'"),
         ("'\\x7f'", "'\\x7f'"),
         ("'\\x00'", "'\\x00'"),
         ("'\\v'", "'\\x0b'"),
@@ -1912,6 +1955,9 @@ mod tests {
         // plain syntax errors (Python errs too)
         "*x",
         "(*x)",
+        "*a, b",
+        "b, *a",
+        "*a,",
         "x = 1",
         "01",
         "09",
@@ -1975,12 +2021,27 @@ mod tests {
     }
 
     /// Pathologically nested input must hit the depth limit (Err), not
-    /// overflow the stack.
+    /// overflow the stack. The right-extending shapes stress the recursion
+    /// guards; the left-extending shapes (trailer loops, binop folds)
+    /// stress the `charge_node` budget — without it they would return an
+    /// `Ok` tree whose recursive `unparse`/`Drop` aborts the process.
     #[test]
     fn deep_nesting_is_an_error_not_a_stack_overflow() {
         for (open, close) in [("(", ")"), ("[", "]"), ("-", "")] {
             let src = format!("{}1{}", open.repeat(5000), close.repeat(5000));
             assert!(parse_py_expr(&src).is_err(), "expected Err for deep {open}");
+        }
+        for src in [
+            format!("a{}", ".b".repeat(5000)),
+            format!("x{}", "[1]".repeat(5000)),
+            format!("f{}", "()".repeat(5000)),
+            format!("1{}", "+1".repeat(5000)),
+        ] {
+            assert!(
+                parse_py_expr(&src).is_err(),
+                "expected Err for left-deep input starting {:?}",
+                &src[..8]
+            );
         }
     }
 
