@@ -10972,19 +10972,28 @@ impl LiteralIncludeReader {
         ))
     }
 
-    /// `pyobject_filter` (`code.py:268-289`): the FIRST chain slot.
+    /// `pyobject_filter` (`code.py:268-289`): the FIRST chain slot —
+    /// `lines[start-1:end]` over the 1-based inclusive tag, and
+    /// `lineno-match` ASSIGNS `lineno_start = start`.
     ///
-    /// TODO(T15): `crate::py::pycode::find_tags` is a stub that always
-    /// errs with an honest not-yet-supported text through the standard
-    /// except→reporter channel; T15 replaces the stub with the
-    /// `DefinitionFinder` port and this slot's slice/lineno arithmetic
-    /// goes live (sphinx: `lines[start-1:end]`, 1-based inclusive tags;
-    /// `lineno-match` ASSIGNS `lineno_start = start`).
+    /// Sphinx builds its tags from a SECOND read of the file
+    /// (`ModuleAnalyzer.for_file`, `tokenize.open`); we hand
+    /// [`crate::py::pycode::find_tags`] the text this reader already
+    /// decoded, which costs nothing in line numbers (see that module's
+    /// divergence notes). An analyzer failure carries sphinx's
+    /// `parsing %r failed: ` prefix (`SP/pycode/__init__.py:158-160`)
+    /// with our own detail in place of the CPython `SyntaxError` repr
+    /// sphinx interpolates there.
     fn pyobject_filter(&mut self, lines: Vec<String>) -> Result<Vec<String>, String> {
         let Some(pyobject) = self.options.pyobject.clone() else {
             return Ok(lines);
         };
-        let tags = crate::py::pycode::find_tags(&lines.concat()).map_err(|e| e.to_string())?;
+        let tags = crate::py::pycode::find_tags(&lines.concat()).map_err(|e| {
+            format!(
+                "parsing {} failed: {e}",
+                py_repr(Some(&self.filename_str()))
+            )
+        })?;
         match tags.get(pyobject.as_str()) {
             Some(&(_, start, end)) => {
                 let (from, to) = py_slice(
@@ -17024,21 +17033,126 @@ mod literalinclude_reader_tests {
         assert_eq!(count, 5);
     }
 
-    /// `pyobject` is the FIRST chain slot: with a start-at that would
-    /// also fail, the pyobject path errs first. TODO(T15): the stub errs
-    /// unconditionally with the honest not-yet-supported text; T15
-    /// replaces it with the DefinitionFinder port and this test's
-    /// expectation moves to the real tag texts.
+    /// `pyobject` is the FIRST chain slot: `start-at` searches the tag's
+    /// slice, not the file, so a pattern that exists OUTSIDE the object
+    /// (`def top`, line 6) is not found (probe
+    /// `pyobject_startat_outside`).
     #[test]
-    fn pyobject_slot_runs_first_and_gates_honestly_until_t15() {
+    fn pyobject_slot_runs_before_the_start_filter() {
         let options = LiteralIncludeOptions {
             pyobject: Some("Foo".to_string()),
-            start_at: Some("NOPE".to_string()),
+            start_at: Some("def top".to_string()),
             ..Default::default()
         };
         assert_eq!(
             read(options).err().unwrap(),
-            "pyobject is not yet supported by sphinx-ultra"
+            "start-at pattern not found: def top"
+        );
+    }
+
+    /// `lines[start - 1:end]` over the 1-based inclusive tag, and
+    /// `lineno-match` ASSIGNS `lineno_start = start` (probe
+    /// `pyobject_method_lineno_match`: `linenostart: 16`). The class tag
+    /// carries its interior blank lines and stops at 17 — its trailing
+    /// blanks were trimmed by the analyzer (probe `fixture`).
+    #[test]
+    fn pyobject_slices_the_tag_and_lineno_match_assigns_its_start() {
+        let mut reader = LiteralIncludeReader::new(
+            example(),
+            LiteralIncludeOptions {
+                pyobject: Some("Foo.method".to_string()),
+                lineno_match: true,
+                ..Default::default()
+            },
+        )
+        .expect("no option conflict");
+        let (text, count) = reader.read().expect("Foo.method is a tag");
+        assert_eq!(text, "    def method(self):\n        return self.attr\n");
+        assert_eq!(count, 2);
+        assert_eq!(reader.lineno_start, 16);
+
+        let options = LiteralIncludeOptions {
+            pyobject: Some("Foo".to_string()),
+            ..Default::default()
+        };
+        let (text, count) = read(options).expect("Foo is a tag");
+        assert_eq!(
+            text,
+            "class Foo:\n    \"\"\"A class.\"\"\"\n\n    attr = 2\n\n\
+             \x20   def method(self):\n        return self.attr\n"
+        );
+        assert_eq!(count, 7);
+    }
+
+    /// The pyobject start ASSIGNS, the later filters ADD: probe
+    /// `pyobject_startat_linenomatch` pins `linenostart: 14` for
+    /// `Foo` (11) plus the `attr` offset (3).
+    #[test]
+    fn lineno_match_composes_the_pyobject_start_with_the_start_filter() {
+        let mut reader = LiteralIncludeReader::new(
+            example(),
+            LiteralIncludeOptions {
+                pyobject: Some("Foo".to_string()),
+                start_at: Some("attr".to_string()),
+                lineno_match: true,
+                ..Default::default()
+            },
+        )
+        .expect("no option conflict");
+        let (text, _) = reader.read().expect("Foo is a tag");
+        assert_eq!(
+            text,
+            "    attr = 2\n\n    def method(self):\n        return self.attr\n"
+        );
+        assert_eq!(reader.lineno_start, 14);
+    }
+
+    /// An unknown object name errs with the `_StrPath(...)` text (probe
+    /// `pyobject_missing`) — reached only because the analyzer succeeded
+    /// and simply has no such tag.
+    #[test]
+    fn an_unknown_pyobject_names_the_include_file() {
+        let options = LiteralIncludeOptions {
+            pyobject: Some("Nope".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            read(options).err().unwrap(),
+            format!(
+                "Object named 'Nope' not found in include file _StrPath('{}')",
+                example().display()
+            )
+        );
+    }
+
+    /// An analyzer failure keeps sphinx's `parsing %r failed: ` prefix with
+    /// our own detail: sphinx interpolates a CPython `SyntaxError` repr
+    /// there, which this port cannot reproduce (probe
+    /// `pyobject_broken_triple`: `parsing '<abs>/broken2.py' failed:
+    /// SyntaxError('unterminated triple-quoted string literal (detected at
+    /// line 3)', ('<unknown>', 1, 5, 'x = """abc', 1, 5))`). See
+    /// `crate::py::pycode` for the divergence.
+    #[test]
+    fn an_analyzer_failure_errs_with_the_parsing_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let broken = tmp.path().join("broken2.py");
+        std::fs::write(&broken, "x = \"\"\"abc\ndef f():\n    pass\n").unwrap();
+        let options = LiteralIncludeOptions {
+            pyobject: Some("f".to_string()),
+            ..Default::default()
+        };
+        let err = LiteralIncludeReader::new(broken.clone(), options)
+            .expect("no option conflict")
+            .read()
+            .err()
+            .unwrap();
+        assert_eq!(
+            err,
+            format!(
+                "parsing '{}' failed: unterminated triple-quoted string literal \
+                 (detected at line 3)",
+                broken.display()
+            )
         );
     }
 
@@ -17836,6 +17950,32 @@ mod literalinclude_tests {
         );
     }
 
+    /// `:pyobject:` end to end (probe `pyobject_method_lineno_match`): the
+    /// `Foo.method` tag slices lines 16-17 out of the fixture module and
+    /// `lineno-match` renders `linenostart: 16`.
+    #[test]
+    fn pyobject_extracts_a_method_and_lineno_match_numbers_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\
+             \x20  :pyobject: Foo.method\n\
+             \x20  :lineno-match:\n",
+        );
+        let p = tmp.path().display();
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 16}}\" \
+                 linenos=\"1\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 \x20       def method(self):\n\
+                 \x20           return self.attr\n"
+            )
+        );
+        assert!(messages_of(&output).is_empty());
+        assert!(output.registry.log_warnings.is_empty());
+    }
+
     #[test]
     fn lineno_start_sets_linenos_and_linenostart() {
         let tmp = tempfile::tempdir().unwrap();
@@ -18134,6 +18274,11 @@ mod literalinclude_tests {
     fn reader_errors_funnel_into_one_reporter_warning() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("bad.bin"), b"caf\xe9\n").unwrap();
+        std::fs::write(
+            tmp.path().join("broken2.py"),
+            "x = \"\"\"abc\ndef f():\n    pass\n",
+        )
+        .unwrap();
         let p = tmp.path().display().to_string();
         for (main, line, message) in [
             (
@@ -18182,11 +18327,20 @@ mod literalinclude_tests {
                 "invalid line number spec: '5-3'".to_string(),
             ),
             (
-                // TODO(T15): the honest pyobject gate — the stub's text
-                // rides the standard except→reporter channel.
-                ".. literalinclude:: example.py\n\x20  :pyobject: Foo\n".to_string(),
+                // probe `pyobject_missing`.
+                ".. literalinclude:: example.py\n\x20  :pyobject: Nope\n".to_string(),
                 1,
-                "pyobject is not yet supported by sphinx-ultra".to_string(),
+                format!("Object named 'Nope' not found in include file _StrPath('{p}/example.py')"),
+            ),
+            (
+                // The analyzer-failure funnel: sphinx's prefix, our detail
+                // (probe `pyobject_broken_triple`; see `py::pycode`).
+                ".. literalinclude:: broken2.py\n\x20  :pyobject: f\n".to_string(),
+                1,
+                format!(
+                    "parsing '{p}/broken2.py' failed: unterminated triple-quoted \
+                     string literal (detected at line 3)"
+                ),
             ),
         ] {
             let output = parse(tmp.path(), &main);
