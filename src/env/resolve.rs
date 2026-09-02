@@ -23,6 +23,7 @@ use crate::intersphinx::{self, Diagnostic, HookOutcome, Intersphinx, XrefQuery};
 
 /// One `pending_xref` to resolve — the attributes Sphinx's resolvers read
 /// off the node.
+#[derive(Clone, Copy)]
 pub struct XrefRequest<'a> {
     /// The document being resolved (Sphinx's `fromdocname`).
     pub fromdoc: &'a str,
@@ -466,6 +467,95 @@ impl Resolver<'_> {
         node
     }
 
+    /// The candidate walk behind `:any:` —
+    /// `ReferencesResolver._resolve_pending_any_xref`
+    /// (`post_transforms/__init__.py:180-233`) minus the winner-picking and
+    /// warning, which [`resolve_any_ref`] owns. Order is load-bearing (the
+    /// FIRST candidate wins): `:doc:` resolution first (role `'doc'`, no
+    /// `std:` prefix), then `StandardDomain.resolve_any_xref`
+    /// (`std/__init__.py`: `'ref'` with the LOWERCASED target, `'option'`
+    /// with the target as written, then the `objects` walk over
+    /// [`STD_OBJECT_TYPE_ROLES`]), then — `domains.sorted()` is
+    /// alphabetical and only `py` has a resolver here —
+    /// `PythonDomain.resolve_any_xref`.
+    fn resolve_any(
+        &self,
+        req: &XrefRequest<'_>,
+        py_module: Option<&str>,
+        py_class: Option<&str>,
+        resolved_children: Option<&Vec<Node>>,
+    ) -> Vec<AnyCandidate> {
+        let mut results: Vec<AnyCandidate> = Vec::new();
+        let mut push = |role: String, node: ResolvedXref| {
+            // `_stringify`: `node.get('reftitle', node.astext())`.
+            let label = node.reftitle.clone().unwrap_or_else(|| match &node.inner {
+                Inner::Inline { text, .. } => text.clone(),
+                Inner::Contnode => req.contnode_text.to_string(),
+                Inner::Children(children) => children.iter().map(Node::astext).collect(),
+            });
+            results.push(AnyCandidate { role, node, label });
+        };
+
+        // "first, try resolving as :doc:".
+        if let XrefOutcome::Resolved(node) = self.resolve_doc(&XrefRequest {
+            reftype: "doc",
+            ..*req
+        }) {
+            push("doc".to_string(), node);
+        }
+
+        // "next, do the standard domain (makes this a priority)":
+        // StandardDomain.resolve_any_xref. ":ref: lowercases its target
+        // automatically", so the any walk hands it the lowercased form;
+        // "do not try 'keyword'".
+        let ltarget = req.reftarget.to_lowercase();
+        if let XrefOutcome::Resolved(node) = self.resolve_ref(&XrefRequest {
+            reftype: "ref",
+            reftarget: &ltarget,
+            ..*req
+        }) {
+            push("std:ref".to_string(), node);
+        }
+        if let XrefOutcome::Resolved(node) = self.resolve_option(&XrefRequest {
+            reftype: "option",
+            ..*req
+        }) {
+            push("std:option".to_string(), node);
+        }
+        for (objtype, role) in STD_OBJECT_TYPE_ROLES {
+            let name = if *objtype == "term" {
+                // Terms alone are looked up lowercased — which only hits
+                // entries whose as-written form IS lowercase, since the
+                // objects key keeps the term's case (probe: `:any:`Aterm``
+                // and `:any:`aterm`` both dangle against a glossary term
+                // `Aterm`).
+                ltarget.clone()
+            } else {
+                req.reftarget.to_string()
+            };
+            let key = ((*objtype).to_string(), name);
+            if let Some((docname, labelid)) = self.env.std.objects.get(&key) {
+                push(
+                    format!("std:{role}"),
+                    self.make_refnode(req.fromdoc, docname, Some(labelid)),
+                );
+            }
+        }
+
+        // PythonDomain.resolve_any_xref, non-module entries adopting the
+        // `resolved`-condition children exactly like resolve_xref's path.
+        for (role, target) in crate::env::py_domain::resolve_any_xref(
+            &self.env.py,
+            py_module,
+            py_class,
+            req.reftarget,
+        ) {
+            let node = self.py_refnode(req.fromdoc, target, resolved_children.cloned());
+            push(role, node);
+        }
+        results
+    }
+
     /// `StandardDomain.build_reference_node` (`:1002-1032`), which replaces
     /// the content node with a fresh `inline` carrying the section name.
     fn build_reference_node(
@@ -506,6 +596,31 @@ impl Resolver<'_> {
         }
         node
     }
+}
+
+/// `StandardDomain.object_types` in declaration order (dict order is the
+/// `resolve_any_xref` walk order), paired with each ObjType's first role
+/// (`Domain.role_for_objtype`): term/token/label/confval/envvar/cmdoption/
+/// doc → term/token/ref/confval/envvar/option/doc. Labels and documents
+/// never live in `objects` (they have their own registries), so those two
+/// keys are dead weight carried for fidelity.
+const STD_OBJECT_TYPE_ROLES: &[(&str, &str)] = &[
+    ("term", "term"),
+    ("token", "token"),
+    ("label", "ref"),
+    ("confval", "confval"),
+    ("envvar", "envvar"),
+    ("cmdoption", "option"),
+    ("doc", "doc"),
+];
+
+/// One `:any:` candidate: the role string Sphinx's resolvers hand back
+/// (`'doc'`, `'std:ref'`, `'py:func'`, ...), the node it built, and the
+/// text half of the ambiguity warning's ``:role:`label``` form.
+struct AnyCandidate {
+    role: String,
+    node: ResolvedXref,
+    label: String,
 }
 
 /// The label a reference resolved to, as `build_reference_node` takes it.
@@ -820,6 +935,30 @@ fn resolve_one(
         );
     }
 
+    // `:any:` is the one role with no domain (`refdomain=""` routes
+    // `_resolve_pending_xref_in_domain` to the "really hardwired reference
+    // types" branch, `post_transforms/__init__.py:216-222`).
+    if refdomain.is_empty() && reftype == "any" {
+        return resolve_any_ref(
+            resolver,
+            nitpick,
+            docname,
+            &query,
+            PyRefContext {
+                module: py_module.as_deref(),
+                class: py_class.as_deref(),
+                searchmode: 1,
+                refwarn,
+            },
+            program.as_deref(),
+            children,
+            span,
+            line,
+            path,
+            out,
+        );
+    }
+
     // Domains this build has no resolver for (`c:`, `cpp:`, `js:`, ...)
     // are left alone: warning about them would report every such reference
     // in every project as broken. The count feeds the build's one-line
@@ -1062,6 +1201,137 @@ fn resolve_py(
     children.fallback(out, line, path)
 }
 
+/// `ReferencesResolver._resolve_pending_any_xref` wired into the event
+/// order: the candidate walk ([`Resolver::resolve_any`]), the ambiguity
+/// warning (`[ref.any]`, fired even though the first candidate still
+/// wins), the winner's class extension, then — on no candidates — the
+/// `missing-reference` event (intersphinx; `builtin_resolver` never fires
+/// for `any`, its reftype gate is `{class, obj, exc}`), the
+/// self-referential retry, and the dangling warning (`:any:` is
+/// `warn_dangling=True`).
+#[allow(clippy::too_many_arguments)]
+fn resolve_any_ref(
+    resolver: &Resolver<'_>,
+    nitpick: &NitpickConfig<'_>,
+    docname: &str,
+    query: &XrefQuery<'_>,
+    ctx: PyRefContext<'_>,
+    program: Option<&str>,
+    children: XrefChildren,
+    span: crate::doctree::Span,
+    line: usize,
+    path: &Path,
+    out: &mut DocumentResolution,
+) -> Vec<Node> {
+    let contnode = children.contnode();
+    let contnode_text = contnode.as_ref().map(Node::astext).unwrap_or_default();
+    let req = XrefRequest {
+        fromdoc: docname,
+        refdoc: query.refdoc,
+        reftype: "any",
+        reftarget: query.reftarget,
+        refexplicit: query.refexplicit,
+        program,
+        contnode_text: &contnode_text,
+    };
+
+    // One resolution attempt over a target (the self-referential retry runs
+    // the same code over the stripped spelling, ambiguity warning included).
+    let attempt = |target: &str, out: &mut DocumentResolution| -> Option<Node> {
+        let mut results = resolver.resolve_any(
+            &XrefRequest {
+                reftarget: target,
+                ..req
+            },
+            ctx.module,
+            ctx.class,
+            children.resolved.as_ref(),
+        );
+        if results.is_empty() {
+            return None;
+        }
+        if results.len() > 1 {
+            let candidates = results
+                .iter()
+                .map(|candidate| format!(":{}:`{}`", candidate.role, candidate.label))
+                .collect::<Vec<_>>()
+                .join(" or ");
+            out.warnings.push(
+                BuildWarning::new(
+                    path.to_path_buf(),
+                    Some(line),
+                    format!(
+                        "more than one target found for 'any' cross-reference {}: \
+                         could be {candidates}",
+                        py_repr_str(target)
+                    ),
+                    WarningType::BrokenCrossReference,
+                )
+                // `type='ref', subtype='any'` (`:227-233`).
+                .with_category(Some("ref.any".to_string())),
+            );
+        }
+        let AnyCandidate { role, node, .. } = results.remove(0);
+        let mut built = reference_node(node, children.contnode(), span);
+        // 'Override "any" class with the actual role type' (`:236-247`):
+        // the winner's first child — when it is an element that has classes
+        // — gains `[domain, role.replace(':', '-')]`. Note `'doc'` has no
+        // colon, so both halves are `doc` (probe: `classes="doc doc doc"`),
+        // and a `std:ref` winner's fresh inline doubles up to
+        // `std std-ref std std-ref`.
+        if let Some(first) = built.children.first_mut() {
+            if first.kind != kinds::TEXT && !first.attrs.classes.is_empty() {
+                let domain_half = role.split(':').next().unwrap_or_default().to_string();
+                first.attrs.classes.push(domain_half);
+                first.attrs.classes.push(role.replace(':', "-"));
+            }
+        }
+        Some(built)
+    };
+
+    if let Some(node) = attempt(query.reftarget, out) {
+        return vec![node];
+    }
+
+    // The `missing-reference` event: intersphinx's handler resolves `any`
+    // by sweeping every domain's objtypes.
+    let mut diagnostics = Vec::new();
+    let outcome = resolver.intersphinx.resolve_detect(query, &mut diagnostics);
+    report(out, diagnostics, line, path);
+    match outcome {
+        HookOutcome::Resolved(resolution) => {
+            return vec![intersphinx_node(resolution, contnode, span)];
+        }
+        HookOutcome::SelfReferential(stripped) => {
+            if let Some(node) = attempt(&stripped, out) {
+                return vec![node];
+            }
+        }
+        HookOutcome::Missing => {}
+    }
+
+    if let Some(message) = missing_reference_warning(
+        resolver.env,
+        nitpick,
+        "",
+        "any",
+        query.reftarget,
+        ctx.refwarn,
+    ) {
+        out.warnings.push(
+            BuildWarning::new(
+                path.to_path_buf(),
+                Some(line),
+                message,
+                WarningType::BrokenCrossReference,
+            )
+            // `logger.warning(..., type='ref', subtype=typ)`.
+            .with_category(Some("ref.any".to_string())),
+        );
+    }
+    children.fallback(out, line, path)
+}
+
 /// `IntersphinxRoleResolver.run` (`ext/intersphinx/_resolve.py:543-565`),
 /// plus the two checks Sphinx's `:external:` role makes at parse time and
 /// this port defers to here (see
@@ -1277,8 +1547,12 @@ fn missing_reference_warning(
     let mut warn = refwarn;
     if nitpick.nitpicky {
         warn = true;
+        // `dtype = f'{domain.name}:{typ}' if domain else typ` — a
+        // domainless node (`:any:`) has NO domain-qualified spelling.
         let dtype = if py {
             format!("py:{typ}")
+        } else if refdomain.is_empty() {
+            typ.to_string()
         } else {
             format!("std:{typ}")
         };
@@ -1851,6 +2125,160 @@ mod tests {
         };
         assert!(
             missing_reference_warning(&env, &nitpicky, "std", "envvar", "PATH", false).is_some()
+        );
+    }
+
+    // ---- the :any: candidate walk (`_resolve_pending_any_xref`) ----------
+
+    /// Candidate labels for the walk over one request.
+    fn any_roles(resolver: &Resolver<'_>, req: &XrefRequest<'_>) -> Vec<(String, String)> {
+        resolver
+            .resolve_any(req, None, None, None)
+            .into_iter()
+            .map(|candidate| (candidate.role, candidate.label))
+            .collect()
+    }
+
+    /// The std half's candidate sets, in walk order: `:doc:` first (role
+    /// `'doc'`, unprefixed), then `'ref'` over the LOWERCASED target, then
+    /// `'option'`, then the objects table in `object_types` order.
+    #[test]
+    fn any_walks_doc_then_ref_then_option_then_the_objects_table() {
+        let mut env = BuildEnvironment::default();
+        env.all_docs.insert("same".to_string(), 0);
+        let mut title = Node::elem(kinds::TITLE, crate::doctree::Span::ZERO);
+        title
+            .children
+            .push(Node::text_node("Doc Title", crate::doctree::Span::ZERO));
+        env.titles.insert("same".to_string(), title);
+        env.std.labels.insert(
+            "same".to_string(),
+            ("a".to_string(), "same".to_string(), "Sect".to_string()),
+        );
+        env.std.note_object("envvar", "same", "a", "envvar-same");
+        env.py.note_object(
+            "m.same",
+            crate::env::py_domain::PyObjectEntry {
+                docname: "a".to_string(),
+                node_id: "m.same".to_string(),
+                objtype: "function".to_string(),
+                aliased: false,
+            },
+        );
+        let formats = BTreeMap::new();
+        let resolver = resolver(&env, &formats);
+
+        let req = request("a", "any", "same");
+        assert_eq!(
+            any_roles(&resolver, &req),
+            vec![
+                ("doc".to_string(), "Doc Title".to_string()),
+                ("std:ref".to_string(), "Sect".to_string()),
+                // make_refnode keeps the contnode, so the label is its text.
+                ("std:envvar".to_string(), "same".to_string()),
+                // py candidates label with the make_refnode reftitle.
+                ("py:func".to_string(), "m.same".to_string()),
+            ]
+        );
+    }
+
+    /// Only the `'ref'` arm lowercases; the objects walk lowercases the
+    /// TERM key alone — so a glossary term registered with an uppercase
+    /// letter is unreachable through `:any:` under either spelling
+    /// (probe: `:any:`Aterm`` and `:any:`aterm`` both dangle).
+    #[test]
+    fn any_lowercases_the_ref_arm_and_the_term_key_only() {
+        let mut env = BuildEnvironment::default();
+        env.std.labels.insert(
+            "mixed".to_string(),
+            ("a".to_string(), "mixed".to_string(), "Sect".to_string()),
+        );
+        env.std.note_term("Aterm", "a", "term-Aterm");
+        env.std.note_term("bterm", "a", "term-bterm");
+        let formats = BTreeMap::new();
+        let resolver = resolver(&env, &formats);
+
+        assert_eq!(
+            any_roles(&resolver, &request("a", "any", "MIXED"))
+                .iter()
+                .map(|(role, _)| role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["std:ref"],
+            "the ref arm sees the lowercased target"
+        );
+        assert!(
+            any_roles(&resolver, &request("a", "any", "Aterm")).is_empty(),
+            "objects holds ('term', 'Aterm') but the walk asks for ('term', 'aterm')"
+        );
+        assert!(
+            any_roles(&resolver, &request("a", "any", "aterm")).is_empty(),
+            "and 'aterm' was never registered"
+        );
+        assert_eq!(
+            any_roles(&resolver, &request("a", "any", "BTERM"))
+                .iter()
+                .map(|(role, _)| role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["std:term"],
+            "a lowercase-registered term is reachable under any case"
+        );
+    }
+
+    /// A module candidate's label is the full `_make_module_refnode`
+    /// reftitle — the ambiguity warning renders it verbatim.
+    #[test]
+    fn any_module_candidates_label_with_the_synopsis_reftitle() {
+        let mut env = BuildEnvironment::default();
+        env.py.note_object(
+            "syn",
+            crate::env::py_domain::PyObjectEntry {
+                docname: "a".to_string(),
+                node_id: "module-syn".to_string(),
+                objtype: "module".to_string(),
+                aliased: false,
+            },
+        );
+        env.py.note_module(
+            "syn",
+            crate::env::py_domain::PyModuleEntry {
+                docname: "a".to_string(),
+                node_id: "module-syn".to_string(),
+                synopsis: "The syn module.".to_string(),
+                platform: String::new(),
+                deprecated: false,
+            },
+        );
+        let formats = BTreeMap::new();
+        let resolver = resolver(&env, &formats);
+        assert_eq!(
+            any_roles(&resolver, &request("a", "any", "syn")),
+            vec![("py:mod".to_string(), "syn: The syn module.".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_missing_any_reference_warns_with_the_domainless_spelling() {
+        let env = BuildEnvironment::default();
+        let quiet = NitpickConfig {
+            nitpicky: false,
+            ignore: &[],
+            ignore_regex: &[],
+        };
+        assert_eq!(
+            missing_reference_warning(&env, &quiet, "", "any", "missing_thing", true).unwrap(),
+            "'any' reference target not found: missing_thing"
+        );
+        // Nitpick-ignore matches the BARE ('any', target) pair — there is
+        // no domain-qualified spelling for a domainless node.
+        let ignore = vec![("any".to_string(), "missing_thing".to_string())];
+        let nitpicky = NitpickConfig {
+            nitpicky: true,
+            ignore: &ignore,
+            ignore_regex: &[],
+        };
+        assert_eq!(
+            missing_reference_warning(&env, &nitpicky, "", "any", "missing_thing", true),
+            None
         );
     }
 

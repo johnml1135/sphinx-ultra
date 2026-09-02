@@ -69,6 +69,28 @@ pub struct InlineResult {
     pub roles: Vec<super::RoleRecord>,
 }
 
+/// `ws_re.sub(' ', target)` — the base `XRefRole.process_link` munging
+/// (`sphinx/roles.py`): every whitespace run becomes one space.
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_ws = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            in_ws = true;
+        } else {
+            if in_ws {
+                out.push(' ');
+                in_ws = false;
+            }
+            out.push(c);
+        }
+    }
+    if in_ws {
+        out.push(' ');
+    }
+    out
+}
+
 fn is_start_prefix_ok(prev: Option<char>) -> bool {
     match prev {
         None => true,
@@ -198,6 +220,41 @@ fn is_emailc(c: char) -> bool {
     ) || c.is_ascii_alphanumeric()
 }
 
+/// The slice of sphinx's `env.ref_context` the inline roles read: the
+/// values `OptionXRefRole`/`PyXRefRole` stamp on their pending_xrefs, plus
+/// the key-*existence* flags `AnyXRefRole.process_link`'s blanket
+/// `refnode.attributes.update(env.ref_context)` (`sphinx/roles.py`) needs —
+/// a ref_context key can exist holding Python `None` (pformat's `"True"`
+/// sentinel) or a list that the balanced directive nesting has drained back
+/// to `[]` (pformat `""`) by the time the doctree is serialized, so a bare
+/// `Option<&str>` cannot distinguish "absent" from those.
+#[derive(Clone, Copy, Default)]
+pub struct RefContext<'a> {
+    /// `env.ref_context['std:program']` — the `.. program::` in scope, which
+    /// `OptionXRefRole.process_link` stamps on every `:option:` reference
+    /// (`domains/std/__init__.py:351-364`).
+    pub program: Option<&'a str>,
+    /// `env.ref_context['py:module']` / `['py:class']` — the enclosing
+    /// module/class scope `PyXRefRole.process_link` stamps on every py
+    /// pending_xref (`domains/python/__init__.py:568-569`).
+    pub py_module: Option<&'a str>,
+    pub py_class: Option<&'a str>,
+    /// `'py:class' in env.ref_context`: true once any py object directive
+    /// set a class prefix (`before_content`) or completed (`after_content`
+    /// always assigns the key, `_object.py:482-503`) — the value may be
+    /// `None` (`py_class` absent), which the `:any:` role still stamps.
+    pub py_class_key: bool,
+    /// `'py:classes' in env.ref_context`: created by `before_content` for
+    /// nesting kinds and unconditionally by `after_content`'s `setdefault`.
+    /// The *list* is what `AnyXRefRole` copies onto the node, and balanced
+    /// nesting drains it to `[]` by end of parse — so it renders `""`.
+    pub py_classes_key: bool,
+    /// `'py:modules' in env.ref_context`: created when a `:module:` option
+    /// pushed (`before_content`/`after_content`, `_object.py:477-480`).
+    /// Same aliased-list story as `py_classes_key`: always drained.
+    pub py_modules_key: bool,
+}
+
 struct Inliner<'a> {
     /// escape2null'd text as a char vector (positions are char indices).
     chars: Vec<char>,
@@ -214,15 +271,8 @@ struct Inliner<'a> {
     /// (no messages) and every role occurrence is recorded.
     sphinx: bool,
     docname: &'a str,
-    /// `env.ref_context['std:program']` — the `.. program::` in scope, which
-    /// `OptionXRefRole.process_link` stamps on every `:option:` reference
-    /// (`domains/std/__init__.py:351-364`).
-    program: Option<&'a str>,
-    /// `env.ref_context['py:module']` / `['py:class']` — the enclosing
-    /// module/class scope `PyXRefRole.process_link` stamps on every py
-    /// pending_xref (`domains/python/__init__.py:568-569`).
-    py_module: Option<&'a str>,
-    py_class: Option<&'a str>,
+    /// The enclosing document's ref_context state (see [`RefContext`]).
+    ctx: RefContext<'a>,
     /// The py-domain configuration the roles read; today only
     /// `add_function_parentheses`, in [`Self::emit_xref_node`].
     py: &'a crate::py::PySigConfig,
@@ -892,6 +942,11 @@ impl<'a> Inliner<'a> {
                     | "token" | "program" | "confval" => "std",
                     "func" | "class" | "meth" | "mod" | "attr" | "data" | "exc" | "obj"
                     | "const" | "deco" => "py",
+                    // `AnyXRefRole` is registered domainless (`roles.py`
+                    // `specific_docroles`), so `XRefRole.run`'s name split
+                    // leaves `refdomain=''` — which is what routes the node
+                    // into `_resolve_pending_any_xref` instead of a domain.
+                    "any" => "",
                     _ => "std",
                 };
                 (d.to_string(), lower.to_string())
@@ -1030,10 +1085,15 @@ impl<'a> Inliner<'a> {
         // backtick is "start-string without end-string", verified against
         // docutils 0.22.4). py targets drop a leading `~` from the target
         // while the title keeps only the last dotted segment.
+        // `:any:` (the one domainless role here) takes the BASE
+        // `XRefRole.process_link`, whose only munging is the whitespace
+        // collapse — no lowercasing, no paren fixing.
+        let any = domain.is_empty() && reftype == "any";
         let (target, display) = match (domain.as_str(), reftype.as_str()) {
             ("std", "ref" | "numref") => {
                 (crate::doctree::ids::fully_normalize_name(&target), display)
             }
+            ("", "any") => (collapse_whitespace(&target), display),
             _ => (target, display),
         };
         // `PyXRefRole.process_link` (`domains/python/__init__.py:559-585`),
@@ -1087,12 +1147,41 @@ impl<'a> Inliner<'a> {
             // which pformat renders as "True".
             node.set(
                 "py:class",
-                AttrValue::Str(self.py_class.unwrap_or("True").to_string()),
+                AttrValue::Str(self.ctx.py_class.unwrap_or("True").to_string()),
             );
             node.set(
                 "py:module",
-                AttrValue::Str(self.py_module.unwrap_or("True").to_string()),
+                AttrValue::Str(self.ctx.py_module.unwrap_or("True").to_string()),
             );
+        }
+        if any {
+            // `AnyXRefRole.process_link`: "add all possible context info
+            // (i.e. std:program, py:module etc.)" —
+            // `refnode.attributes.update(env.ref_context)`. Only keys that
+            // EXIST are copied (no "True" sentinels for absent ones, unlike
+            // `PyXRefRole`), and the two *list* values (`py:classes`,
+            // `py:modules`) are copied by reference, so the balanced
+            // directive nesting has drained them back to `[]` — rendering
+            // `""` — by the time the doctree is serialized (probe: an
+            // `:any:` inside a class body still shows `py:classes=""`).
+            if self.ctx.py_class_key {
+                node.set(
+                    "py:class",
+                    AttrValue::Str(self.ctx.py_class.unwrap_or("True").to_string()),
+                );
+            }
+            if self.ctx.py_classes_key {
+                node.set("py:classes", AttrValue::Str(String::new()));
+            }
+            if let Some(module) = self.ctx.py_module {
+                node.set("py:module", AttrValue::Str(module.to_string()));
+            }
+            if self.ctx.py_modules_key {
+                node.set("py:modules", AttrValue::Str(String::new()));
+            }
+            if let Some(program) = self.ctx.program {
+                node.set("std:program", AttrValue::Str(program.to_string()));
+            }
         }
         node.set("refdoc", AttrValue::Str(self.docname.to_string()));
         node.set("refdomain", AttrValue::Str(domain.clone()));
@@ -1126,12 +1215,14 @@ impl<'a> Inliner<'a> {
         // `:608-626`), which produce plain inline nodes in real Sphinx and
         // resolve nothing. Defaulting those to `warn_dangling` made every
         // document that used one warn `'kbd' reference target not found`.
+        // ... plus `:any:`, constructed `AnyXRefRole(warn_dangling=True)`
+        // (`roles.py`, `specific_docroles`).
         let warn_dangling = matches!(
             (domain.as_str(), reftype.as_str()),
             (
                 "std",
                 "ref" | "numref" | "doc" | "term" | "keyword" | "option" | "confval"
-            )
+            ) | ("", "any")
         );
         node.set("refwarn", AttrValue::Int(i64::from(warn_dangling)));
         // `OptionXRefRole.process_link` (`domains/std/__init__.py:351-364`).
@@ -1140,7 +1231,7 @@ impl<'a> Inliner<'a> {
         if domain == "std" && reftype == "option" {
             node.set(
                 "std:program",
-                AttrValue::Str(self.program.unwrap_or("True").to_string()),
+                AttrValue::Str(self.ctx.program.unwrap_or("True").to_string()),
             );
         }
         // `XRefRole.innernodeclass` (`roles.py:67`): `literal` unless the
@@ -1158,11 +1249,17 @@ impl<'a> Inliner<'a> {
             },
             self.span,
         );
-        inner.attrs.classes = vec![
-            "xref".to_string(),
-            domain.clone(),
-            format!("{domain}-{reftype}"),
-        ];
+        // `XRefRole.run` (`roles.py`): a domainless role's inner node gets
+        // `['xref', reftype]` — probe: `:any:` yields `classes="xref any"`.
+        inner.attrs.classes = if domain.is_empty() {
+            vec!["xref".to_string(), reftype.clone()]
+        } else {
+            vec![
+                "xref".to_string(),
+                domain.clone(),
+                format!("{domain}-{reftype}"),
+            ]
+        };
         inner.children.push(Node::text_node(display, self.span));
         node.children.push(inner);
         self.flush_text();
@@ -1790,9 +1887,7 @@ pub fn parse_inline(
         source_path,
         false,
         "index",
-        None,
-        None,
-        None,
+        RefContext::default(),
         &py,
     )
 }
@@ -1806,9 +1901,7 @@ pub fn parse_inline_ext(
     source_path: &str,
     sphinx: bool,
     docname: &str,
-    program: Option<&str>,
-    py_module: Option<&str>,
-    py_class: Option<&str>,
+    ctx: RefContext<'_>,
     py: &crate::py::PySigConfig,
 ) -> InlineResult {
     let escaped = escape2null(text);
@@ -1820,9 +1913,7 @@ pub fn parse_inline_ext(
         registry,
         sphinx,
         docname,
-        program,
-        py_module,
-        py_class,
+        ctx,
         py,
         roles: Vec::new(),
         nodes: Vec::new(),
@@ -1950,6 +2041,11 @@ mod tests {
 
     /// The same, under a chosen py-domain configuration.
     fn sphinx_nodes_with(text: &str, py: &crate::py::PySigConfig) -> Vec<Node> {
+        sphinx_nodes_in(text, RefContext::default(), py)
+    }
+
+    /// The same, under a chosen ref_context.
+    fn sphinx_nodes_in(text: &str, ctx: RefContext<'_>, py: &crate::py::PySigConfig) -> Vec<Node> {
         let mut reg = IdRegistry::new();
         parse_inline_ext(
             text,
@@ -1959,9 +2055,7 @@ mod tests {
             "<snippet>",
             true,
             "index",
-            None,
-            None,
-            None,
+            ctx,
             py,
         )
         .nodes
@@ -2324,27 +2418,110 @@ mod tests {
     /// scope lands both on the xref instead of the sentinels.
     #[test]
     fn a_py_xref_inside_a_scope_stamps_the_ref_context() {
-        let mut reg = IdRegistry::new();
         let py = crate::py::PySigConfig::default();
-        let nodes = parse_inline_ext(
+        let nodes = sphinx_nodes_in(
             ":py:func:`target`",
-            Span::ZERO,
-            1,
-            &mut reg,
-            "<snippet>",
-            true,
-            "index",
-            None,
-            Some("mymod"),
-            Some("C"),
+            RefContext {
+                py_module: Some("mymod"),
+                py_class: Some("C"),
+                ..RefContext::default()
+            },
             &py,
-        )
-        .nodes;
+        );
         let xref = &nodes[0];
         assert_eq!(attr(xref, "py:class"), Some(&AttrValue::Str("C".into())));
         assert_eq!(
             attr(xref, "py:module"),
             Some(&AttrValue::Str("mymod".into()))
         );
+    }
+
+    // --- AnyXRefRole (`sphinx/roles.py`), probe-verified 2026-09-02 --------
+
+    /// `:any:` is registered domainless: `refdomain=""`, `reftype="any"`,
+    /// `warn_dangling=True`, inner `literal classes="xref any"` — and with
+    /// NO ref_context in scope, no context attribute at all (unlike
+    /// `PyXRefRole`'s "True" sentinels).
+    #[test]
+    fn an_any_role_emits_a_domainless_pending_xref() {
+        let nodes = sphinx_nodes(":any:`target`");
+        let xref = &nodes[0];
+        assert_eq!(xref.kind, "pending_xref");
+        assert_eq!(attr(xref, "refdomain"), Some(&AttrValue::Str("".into())));
+        assert_eq!(attr(xref, "reftype"), Some(&AttrValue::Str("any".into())));
+        assert_eq!(attr(xref, "refwarn"), Some(&AttrValue::Int(1)));
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str("target".into()))
+        );
+        for absent in [
+            "py:class",
+            "py:classes",
+            "py:module",
+            "py:modules",
+            "std:program",
+        ] {
+            assert_eq!(attr(xref, absent), None, "{absent} must not be stamped");
+        }
+        let inner = &xref.children[0];
+        assert_eq!(inner.kind, kinds::LITERAL);
+        assert_eq!(
+            inner.attrs.classes,
+            vec!["xref".to_string(), "any".to_string()]
+        );
+    }
+
+    /// `AnyXRefRole.process_link` copies every EXISTING ref_context key:
+    /// values for the strings, `""` for the (drained) list keys, and the
+    /// `"True"` sentinel for a `py:class` key holding `None`.
+    #[test]
+    fn an_any_role_copies_the_ref_context_keys_that_exist() {
+        let py = crate::py::PySigConfig::default();
+        let nodes = sphinx_nodes_in(
+            ":any:`target`",
+            RefContext {
+                program: Some("prog"),
+                py_module: Some("m"),
+                py_class: None,
+                py_class_key: true,
+                py_classes_key: true,
+                py_modules_key: false,
+            },
+            &py,
+        );
+        let xref = &nodes[0];
+        assert_eq!(attr(xref, "py:class"), Some(&AttrValue::Str("True".into())));
+        assert_eq!(attr(xref, "py:classes"), Some(&AttrValue::Str("".into())));
+        assert_eq!(attr(xref, "py:module"), Some(&AttrValue::Str("m".into())));
+        assert_eq!(attr(xref, "py:modules"), None);
+        assert_eq!(
+            attr(xref, "std:program"),
+            Some(&AttrValue::Str("prog".into()))
+        );
+    }
+
+    /// The base `XRefRole.process_link` munging is the ONLY one `:any:`
+    /// takes: whitespace runs collapse, case is kept, parens are kept, and
+    /// an explicit title stays untouched.
+    #[test]
+    fn an_any_target_collapses_whitespace_and_nothing_else() {
+        let nodes = sphinx_nodes(":any:`Foo()`");
+        assert_eq!(
+            attr(&nodes[0], "reftarget"),
+            Some(&AttrValue::Str("Foo()".into()))
+        );
+        let nodes = sphinx_nodes(":any:`two\nlines`");
+        assert_eq!(
+            attr(&nodes[0], "reftarget"),
+            Some(&AttrValue::Str("two lines".into()))
+        );
+        let nodes = sphinx_nodes(":any:`Click <target>`");
+        let xref = &nodes[0];
+        assert_eq!(attr(xref, "refexplicit"), Some(&AttrValue::Int(1)));
+        assert_eq!(
+            attr(xref, "reftarget"),
+            Some(&AttrValue::Str("target".into()))
+        );
+        assert_eq!(xref.astext(), "Click");
     }
 }

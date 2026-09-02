@@ -234,6 +234,24 @@ pub(crate) fn objtypes_for_role(role: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// `Domain.role_for_objtype`: `_role2type`'s inverse — each ObjType's FIRST
+/// role (`sphinx/domains/__init__.py`, `_type2role[name] = roles[0]`).
+/// `None` is the defensive stand-in for an objtype no directive of ours can
+/// register (Sphinx would raise concatenating `'py:' + None`).
+pub(crate) fn role_for_objtype(objtype: &str) -> Option<&'static str> {
+    Some(match objtype {
+        "function" => "func",
+        "data" => "data",
+        "class" => "class",
+        "exception" => "exc",
+        "method" | "classmethod" | "staticmethod" => "meth",
+        "attribute" | "property" => "attr",
+        "type" => "type",
+        "module" => "mod",
+        _ => return None,
+    })
+}
+
 /// `PythonDomain.find_obj` (`__init__.py:855-928`): find candidates for
 /// `name`, perhaps using the given module/class context. Returns `(fullname,
 /// entry)` pairs in match order.
@@ -427,36 +445,7 @@ pub fn resolve_xref<'a>(
     };
 
     if entry.objtype == "module" {
-        // `_make_module_refnode` reads `self.modules[name]` — a module
-        // *object* entry is only ever written alongside its module entry
-        // (and cleared with it), so the lookup cannot miss; Missing is the
-        // defensive stand-in for Sphinx's would-be KeyError.
-        let Some(&index) = data.modules_index.get(&name) else {
-            return (None, warning);
-        };
-        let module = &data.modules[index].1;
-        let mut reftitle = name;
-        if !module.synopsis.is_empty() {
-            reftitle.push_str(": ");
-            reftitle.push_str(&module.synopsis);
-        }
-        if module.deprecated {
-            reftitle.push_str(" (deprecated)");
-        }
-        if !module.platform.is_empty() {
-            reftitle.push_str(" (");
-            reftitle.push_str(&module.platform);
-            reftitle.push(')');
-        }
-        (
-            Some(PyXrefTarget {
-                docname: &module.docname,
-                node_id: &module.node_id,
-                reftitle,
-                is_module: true,
-            }),
-            warning,
-        )
+        (module_xref_target(data, name), warning)
     } else {
         (
             Some(PyXrefTarget {
@@ -468,6 +457,79 @@ pub fn resolve_xref<'a>(
             warning,
         )
     }
+}
+
+/// `_make_module_refnode`'s target (`:1039-1054`): the module entry with
+/// the `{name}[: {synopsis}][ (deprecated)][ ({platform})]` reftitle —
+/// deprecated BEFORE platform (probe: a module with all three shows
+/// `both: Some synopsis. (deprecated) (Unix, Windows)`).
+///
+/// Sphinx reads `self.modules[name]` — a module *object* entry is only
+/// ever written alongside its module entry (and cleared with it), so the
+/// lookup cannot miss; `None` is the defensive stand-in for Sphinx's
+/// would-be KeyError.
+fn module_xref_target(data: &PyDomainData, name: String) -> Option<PyXrefTarget<'_>> {
+    let &index = data.modules_index.get(&name)?;
+    let module = &data.modules[index].1;
+    let mut reftitle = name;
+    if !module.synopsis.is_empty() {
+        reftitle.push_str(": ");
+        reftitle.push_str(&module.synopsis);
+    }
+    if module.deprecated {
+        reftitle.push_str(" (deprecated)");
+    }
+    if !module.platform.is_empty() {
+        reftitle.push_str(" (");
+        reftitle.push_str(&module.platform);
+        reftitle.push(')');
+    }
+    Some(PyXrefTarget {
+        docname: &module.docname,
+        node_id: &module.node_id,
+        reftitle,
+        is_module: true,
+    })
+}
+
+/// `PythonDomain.resolve_any_xref` (`__init__.py:996-1037`): always
+/// `find_obj(..., type=None, searchmode=1)`; when there are several
+/// matches, aliased entries are skipped; a module match yields
+/// `('py:mod', module_refnode)`, everything else
+/// `('py:' + role_for_objtype(objtype), refnode)` — in `find_obj`'s match
+/// order, which is what the generic any-resolver's first-wins rule and its
+/// ambiguity candidate list run on.
+pub fn resolve_any_xref<'a>(
+    data: &'a PyDomainData,
+    modname: Option<&str>,
+    classname: Option<&str>,
+    target: &str,
+) -> Vec<(String, PyXrefTarget<'a>)> {
+    let matches = find_obj(data, modname, classname, target, None, 1);
+    let multiple = matches.len() > 1;
+    let mut results = Vec::new();
+    for (name, entry) in matches {
+        if multiple && entry.aliased {
+            // "Skip duplicated matches" (`:1013-1016`).
+            continue;
+        }
+        if entry.objtype == "module" {
+            if let Some(target) = module_xref_target(data, name) {
+                results.push(("py:mod".to_string(), target));
+            }
+        } else if let Some(role) = role_for_objtype(&entry.objtype) {
+            results.push((
+                format!("py:{role}"),
+                PyXrefTarget {
+                    docname: &entry.docname,
+                    node_id: &entry.node_id,
+                    reftitle: name,
+                    is_module: false,
+                },
+            ));
+        }
+    }
+    results
 }
 
 /// The names `inspect.isclass(getattr(builtins, name, None))` accepts under
@@ -1127,6 +1189,83 @@ mod tests {
                 is_module: true,
             })
         );
+    }
+
+    // ---- resolve_any_xref ([PY §3.4]) ----------------------------------
+
+    /// `:any:` always searches refspecific with `type=None`: every objtype
+    /// participates, and the result role is `py:` + the objtype's first
+    /// role — probe `resolve_any_role` (f → py-func, m → py-mod).
+    #[test]
+    fn resolve_any_finds_functions_and_modules_with_their_roles() {
+        let mut data = PyDomainData::default();
+        data.note_object("m", entry("index", "module-m", "module", false));
+        data.note_module("m", module_entry("index", "module-m"));
+        data.note_object("m.f", entry("index", "m.f", "function", false));
+
+        let f = resolve_any_xref(&data, Some("m"), None, "f");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0, "py:func");
+        assert_eq!(f[0].1.reftitle, "m.f");
+        assert!(!f[0].1.is_module);
+
+        let m = resolve_any_xref(&data, Some("m"), None, "m");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].0, "py:mod");
+        assert_eq!(m[0].1.node_id, "module-m");
+        assert!(m[0].1.is_module);
+
+        // find_obj's `()` strip is inherited: `:any:`f()`` resolves.
+        let parens = resolve_any_xref(&data, Some("m"), None, "f()");
+        assert_eq!(parens.len(), 1);
+        assert_eq!(parens[0].1.reftitle, "m.f");
+    }
+
+    /// Aliased entries are skipped when there is more than one match —
+    /// and kept when they are the ONLY match.
+    #[test]
+    fn resolve_any_skips_aliased_entries_only_among_multiple_matches() {
+        let mut data = PyDomainData::default();
+        data.note_object("zeta.same", entry("index", "zeta.same", "function", false));
+        data.note_object("beta.same", entry("index", "zeta.same", "function", true));
+        data.note_object(
+            "alpha.same",
+            entry("index", "alpha.same", "function", false),
+        );
+        let results = resolve_any_xref(&data, None, None, "same");
+        let names: Vec<&str> = results.iter().map(|(_, t)| t.reftitle.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["zeta.same", "alpha.same"],
+            "registration order, alias dropped"
+        );
+
+        let mut lone = PyDomainData::default();
+        lone.note_object("old.name", entry("index", "new_name", "function", true));
+        let only = resolve_any_xref(&lone, None, None, "name");
+        assert_eq!(only.len(), 1, "a single aliased match is kept");
+        assert_eq!(only[0].1.reftitle, "old.name");
+    }
+
+    /// A module candidate carries the full `_make_module_refnode` reftitle
+    /// (the ambiguity warning renders it verbatim — probe:
+    /// ``:py:mod:`syn: The syn module.``).
+    #[test]
+    fn resolve_any_module_candidates_carry_the_synopsis_reftitle() {
+        let mut data = PyDomainData::default();
+        data.note_object("syn", entry("index", "module-syn", "module", false));
+        data.note_module(
+            "syn",
+            PyModuleEntry {
+                docname: "index".to_string(),
+                node_id: "module-syn".to_string(),
+                synopsis: "The syn module.".to_string(),
+                platform: String::new(),
+                deprecated: false,
+            },
+        );
+        let results = resolve_any_xref(&data, None, None, "syn");
+        assert_eq!(results[0].1.reftitle, "syn: The syn module.");
     }
 
     // ---- builtin_resolver ([PY §3.5]) ----------------------------------

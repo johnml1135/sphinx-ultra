@@ -2470,3 +2470,241 @@ fn py_builtins_in_a_loaded_inventory_resolve_externally_before_the_silencer() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// `:any:` resolution: `ReferencesResolver._resolve_pending_any_xref`
+// (`post_transforms/__init__.py:180-250`), each expectation byte-pinned to a
+// sphinx 9.1.0 dummy build (probe_any.py, session of 2026-09-02).
+// ---------------------------------------------------------------------------
+
+/// [PY §3.4] `resolve_any_role`: `f` → py-func with refid, `m` → py-mod —
+/// the winner's inner literal classes are extended with
+/// `[domain, role.replace(':', '-')]`, and find_obj's `()` strip makes
+/// `:any:`f()`` resolve too.
+#[test]
+fn any_refs_resolve_py_targets_and_extend_the_literal_classes() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        ".. py:module:: m\n\n.. py:function:: f()\n\n\
+         Ref: :any:`f` and :any:`m` and :any:`f()`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"m.f\" reftitle=\"m.f\">\n            \
+             <literal classes=\"xref any py py-func\">\n                f\n"
+        ),
+        "{index}"
+    );
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"module-m\" reftitle=\"m\">\n            \
+             <literal classes=\"xref any py py-mod\">\n                m\n"
+        ),
+        "{index}"
+    );
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"m.f\" reftitle=\"m.f\">\n            \
+             <literal classes=\"xref any py py-func\">\n                f()\n"
+        ),
+        "{index}"
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// An explicit title rides through, and a miss warns `'any' reference
+/// target not found` with `[ref.any]` — `:any:` is `warn_dangling=True`,
+/// so this fires OUTSIDE nitpicky mode.
+#[test]
+fn any_misses_warn_outside_nitpicky_and_explicit_titles_survive() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        ".. py:function:: g()\n\nRef: :any:`click <g>` and :any:`missing_thing`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"g\" reftitle=\"g\">\n            \
+             <literal classes=\"xref any py py-func\">\n                click\n"
+        ),
+        "{index}"
+    );
+    assert!(
+        index.contains("<literal classes=\"xref any\">\n            missing_thing\n"),
+        "the miss keeps the bare contnode: {index}"
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:3: WARNING: 'any' reference target not found: \
+             missing_thing [ref.any]"
+        ]
+    );
+}
+
+/// A std-vs-py ambiguity: std wins (it resolves before the other domains),
+/// the winner's fresh `std std-ref` inline is extended AGAIN (probe:
+/// `classes="std std-ref std std-ref"`), and the warning joins the
+/// candidates with ` or ` in resolution order — byte-pinned.
+#[test]
+fn any_ambiguity_prefers_std_and_warns_with_the_or_joined_candidates() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "Head\n====\n\n.. _same:\n\nSect\n----\n\n.. py:function:: same()\n\n\
+         Ref: :any:`same`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"same\">\n                    \
+             <inline classes=\"std std-ref std std-ref\">\n                        Sect\n"
+        ),
+        "{index}"
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:11: WARNING: more than one target found for 'any' \
+             cross-reference 'same': could be :std:ref:`Sect` or :py:func:`same` [ref.any]"
+        ]
+    );
+}
+
+/// A lone std label hit through `:any:` — no warning, and the doubled
+/// class extension again.
+#[test]
+fn any_resolves_a_std_label_silently() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "Head\n====\n\n.. _mylabel:\n\nSect\n----\n\nRef: :any:`mylabel`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"mylabel\">\n                    \
+             <inline classes=\"std std-ref std std-ref\">\n                        Sect\n"
+        ),
+        "{index}"
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}
+
+/// `:doc:` resolution runs FIRST and its role string is the unprefixed
+/// `doc`, so the winner's inline gains `doc doc` (probe:
+/// `classes="doc doc doc"`) and the candidate list spells `:doc:`.
+#[test]
+fn any_tries_doc_first_and_the_doc_winner_triples_its_class() {
+    let (resolved, warnings) = py_build(&[
+        (
+            "index",
+            "Head\n====\n\n.. toctree::\n\n   other\n\nRef: :any:`other`.\n",
+        ),
+        (
+            "other",
+            "Other Title\n===========\n\n.. py:function:: other()\n",
+        ),
+    ]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refuri=\"\">\n                \
+             <inline classes=\"doc doc doc\">\n                    Other Title\n"
+        ),
+        "{index}"
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:8: WARNING: more than one target found for 'any' \
+             cross-reference 'other': could be :doc:`Other Title` or :py:func:`other` \
+             [ref.any]"
+        ]
+    );
+}
+
+/// The std objects walk: envvar/option/confval hits keep the contnode
+/// literal (extended `xref any std std-*`), while a glossary term is only
+/// looked up LOWERCASED against its as-written objects key — so `Aterm`
+/// dangles under both spellings (probe-pinned quirk).
+#[test]
+fn any_hits_std_objects_but_mixed_case_terms_dangle() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        "Head\n====\n\n.. envvar:: MYVAR\n\n.. program:: prog\n\n.. option:: --flag\n\n\
+         .. glossary::\n\n   Aterm\n      Def.\n\n.. confval:: setting\n\n\
+         Ref: :any:`MYVAR` and :any:`--flag` and :any:`Aterm` \
+         and :any:`aterm` and :any:`setting`.\n",
+    )]);
+    let index = &resolved["index"];
+    for hit in [
+        "<reference internal=\"1\" refid=\"envvar-MYVAR\">\n                \
+         <literal classes=\"xref any std std-envvar\">\n                    MYVAR\n",
+        "<reference internal=\"1\" refid=\"cmdoption-prog-flag\">\n                \
+         <literal classes=\"xref any std std-option\">\n                    --flag\n",
+        "<reference internal=\"1\" refid=\"confval-setting\">\n                \
+         <literal classes=\"xref any std std-confval\">\n                    setting\n",
+    ] {
+        assert!(index.contains(hit), "missing {hit:?} in {index}");
+    }
+    assert!(
+        index.contains("<literal classes=\"xref any\">\n                Aterm\n"),
+        "{index}"
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:17: WARNING: 'any' reference target not found: \
+             Aterm [ref.any]",
+            "<project>/index.rst:17: WARNING: 'any' reference target not found: \
+             aterm [ref.any]",
+        ]
+    );
+}
+
+/// A py-only fuzzy ambiguity through `:any:`: candidates in REGISTRATION
+/// order, first match wins — byte-pinned to the probe.
+#[test]
+fn any_py_fuzzy_ambiguity_lists_candidates_in_registration_order() {
+    let (resolved, warnings) = py_build(&[(
+        "index",
+        ".. py:function:: zeta.same()\n   :no-index-entry:\n\n\
+         .. py:function:: alpha.same()\n   :no-index-entry:\n\n\
+         Ref: :any:`same`.\n",
+    )]);
+    let index = &resolved["index"];
+    assert!(
+        index.contains(
+            "<reference internal=\"1\" refid=\"zeta.same\" reftitle=\"zeta.same\">\n            \
+             <literal classes=\"xref any py py-func\">\n                same\n"
+        ),
+        "{index}"
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:7: WARNING: more than one target found for 'any' \
+             cross-reference 'same': could be :py:func:`zeta.same` or \
+             :py:func:`alpha.same` [ref.any]"
+        ]
+    );
+}
+
+/// A module candidate renders its FULL `_make_module_refnode` reftitle in
+/// the candidate list — `:py:mod:`syn: The syn module.`` (probe-pinned).
+#[test]
+fn any_ambiguity_candidates_render_module_reftitles_verbatim() {
+    let (_, warnings) = py_build(&[(
+        "index",
+        "Head\n====\n\n.. _syn:\n\nSect\n----\n\n.. py:module:: syn\n   \
+         :synopsis: The syn module.\n\nRef: :any:`syn`.\n",
+    )]);
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:12: WARNING: more than one target found for 'any' \
+             cross-reference 'syn': could be :std:ref:`Sect` or \
+             :py:mod:`syn: The syn module.` [ref.any]"
+        ]
+    );
+}

@@ -228,6 +228,14 @@ pub(crate) struct BlockParser {
     /// sphinx `env.ref_context['py:classes']` — the `allow_nesting`
     /// (class/exception) nesting stack.
     py_classes: Vec<String>,
+    /// Key-existence flags mirroring `'py:class' in env.ref_context` etc. —
+    /// the `:any:` role copies every EXISTING ref_context key onto its
+    /// pending_xref (`AnyXRefRole.process_link`), and a key can exist
+    /// holding `None`/`[]`, which the value fields above cannot express
+    /// (see [`super::inline::RefContext`]).
+    py_class_key: bool,
+    py_classes_key: bool,
+    py_modules_key: bool,
     /// Sphinx-mode class/rst-class pending classes (the ClassAttribute
     /// transform effect applied inline).
     pending_classes: Option<Vec<String>>,
@@ -304,6 +312,9 @@ impl BlockParser {
             py_modules: Vec::new(),
             py_class: None,
             py_classes: Vec::new(),
+            py_class_key: false,
+            py_classes_key: false,
+            py_modules_key: false,
             pending_classes: None,
             equation_serial: 0,
             directive_records: Vec::new(),
@@ -430,9 +441,14 @@ impl BlockParser {
             &source_path,
             self.sphinx,
             &self.docname,
-            self.program.as_deref(),
-            self.py_module.as_deref(),
-            self.py_class.as_deref(),
+            super::inline::RefContext {
+                program: self.program.as_deref(),
+                py_module: self.py_module.as_deref(),
+                py_class: self.py_class.as_deref(),
+                py_class_key: self.py_class_key,
+                py_classes_key: self.py_classes_key,
+                py_modules_key: self.py_modules_key,
+            },
             &self.py,
         );
         self.role_records.append(&mut result.roles);
@@ -489,6 +505,9 @@ impl BlockParser {
         sub.py_modules = self.py_modules.clone();
         sub.py_class = self.py_class.clone();
         sub.py_classes = self.py_classes.clone();
+        sub.py_class_key = self.py_class_key;
+        sub.py_classes_key = self.py_classes_key;
+        sub.py_modules_key = self.py_modules_key;
         let top = std::mem::take(&mut sub.top);
         let nodes = sub.parse_elements(&top);
         self.sources = sub.sources;
@@ -4319,13 +4338,16 @@ impl BlockParser {
         }
         if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
             self.py_class = Some(prefix.clone());
+            self.py_class_key = true;
             if py.allow_nesting() {
                 self.py_classes.push(prefix);
+                self.py_classes_key = true;
             }
         }
         if let Some(OptVal::Str(module)) = opt_get(&input.options, "module") {
             self.py_modules.push(self.py_module.take());
             self.py_module = Some(module.clone());
+            self.py_modules_key = true;
         }
     }
 
@@ -4337,10 +4359,15 @@ impl BlockParser {
             self.py_classes.pop();
         }
         self.py_class = self.py_classes.last().cloned();
+        // `after_content` `setdefault`s `py:classes` and assigns `py:class`
+        // unconditionally, so both keys exist from here on.
+        self.py_class_key = true;
+        self.py_classes_key = true;
         if opt_get(&input.options, "module").is_some() {
             // `modules.pop()` when the stack has entries, else the
             // ref_context key is removed — both read back as None here.
             self.py_module = self.py_modules.pop().flatten();
+            self.py_modules_key = true;
         }
     }
 
