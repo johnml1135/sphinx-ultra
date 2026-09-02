@@ -6,6 +6,7 @@
 //! task; nothing here walks a doctree.
 
 pub mod annotations;
+pub mod arglist;
 pub mod expr;
 
 #[cfg(test)]
