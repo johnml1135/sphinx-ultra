@@ -90,27 +90,54 @@ impl SourceTable {
     }
 }
 
-/// What a directive hands back besides the nodes it pushed: lines of a new
-/// source to insert into the running line stream right after the directive
-/// (T12's `include` is the intended producer; only a test directive
-/// returns it this wave). Plain data — a directive builds one from its
-/// input alone, with no access to parser internals.
+/// What a directive hands back besides the nodes it pushed: lines of new
+/// sources to insert into the running line stream right after the
+/// directive (the `include` directive is the shipping producer). Plain
+/// data — a directive builds one from its input alone, with no access to
+/// parser internals.
+///
+/// Segments become consecutive source-table entries spliced contiguously
+/// at the parse loop's cursor. `include` uses three, mirroring docutils'
+/// `StateMachine.insert_input` layout (`statemachine.py:385-393`,
+/// [INC PROBE 1]): a padding blank with synthetic source `internal
+/// padding before <source>` (offset −1, here lineno 0), the included
+/// lines plus the appended `''` and `.. end of inclusion from "<source>"`
+/// marker pair (both carrying the included source with continuing
+/// linenos), and a padding blank `internal padding after <source>`
+/// (offset len, here lineno len+1).
 #[derive(Debug)]
 pub(crate) struct SpliceRequest {
-    /// Raw lines of the new source, exactly as read (they are processed —
-    /// tab expansion, trailing-whitespace strip — on insertion).
+    pub segments: Vec<SpliceSegment>,
+}
+
+/// One source's worth of spliced lines.
+#[derive(Debug)]
+pub(crate) struct SpliceSegment {
+    /// Lines of the new source (re-processed — tab expansion at width 8,
+    /// trailing-whitespace strip — on insertion; producers hand over
+    /// already-processed text, for which that is a no-op).
     pub lines: Vec<String>,
     /// The path messages and spans attribute the lines to.
     pub source_path: String,
-    /// First line number of the spliced lines; `None` numbers from 1 (an
-    /// included file), `Some(n)` keeps a caller-chosen base.
-    pub base_lineno_override: Option<u32>,
+    /// Line number of the first line (subsequent lines count up from it).
+    pub first_lineno: u32,
+}
+
+impl SpliceRequest {
+    /// A single-segment request numbering its lines from 1.
+    #[cfg(test)]
+    fn single(lines: Vec<String>, source_path: String) -> SpliceRequest {
+        SpliceRequest {
+            segments: vec![SpliceSegment {
+                lines,
+                source_path,
+                first_lineno: 1,
+            }],
+        }
+    }
 }
 
 /// What running a directive produced beyond its nodes.
-// Only the test directive produces a splice until T12's include lands, so
-// outside test builds the channel is currently unconsumed.
-#[allow(dead_code)]
 enum DirectiveOutcome {
     Done,
     Splice(SpliceRequest),
@@ -276,6 +303,13 @@ pub(crate) struct BlockParser {
     /// A [`SpliceRequest`] a directive just returned, waiting for the
     /// enclosing block-parse loop to insert it at its cursor.
     pending_splice: Option<SpliceRequest>,
+    /// docutils `document.include_log` (`nodes.py:1802-1803`): the open
+    /// inclusions as `(source display path, clip options)` pairs. Seeded
+    /// with the root document (and an empty clip) on first use
+    /// (`misc.py:253-256`); an entry is pushed before each splice and
+    /// popped when the comment path reaches the matching
+    /// `.. end of inclusion from "..."` marker.
+    include_log: Vec<(String, IncludeClip)>,
 }
 
 #[derive(Debug, Default)]
@@ -334,6 +368,7 @@ impl BlockParser {
             substitution_names_seen: Vec::new(),
             substitution_dupnames: Vec::new(),
             pending_splice: None,
+            include_log: Vec::new(),
         }
     }
 
@@ -514,10 +549,15 @@ impl BlockParser {
         sub.py_class_key = self.py_class_key;
         sub.py_classes_key = self.py_classes_key;
         sub.py_modules_key = self.py_modules_key;
+        // The include log is document-level state shared with every nested
+        // state machine in docutils (`misc.py:251-262` reads it through
+        // `self.state.document`), so it transfers in and back out.
+        sub.include_log = std::mem::take(&mut self.include_log);
         let top = std::mem::take(&mut sub.top);
         let nodes = sub.parse_elements(&top);
         self.sources = sub.sources;
         self.registry = sub.registry;
+        self.include_log = std::mem::take(&mut sub.include_log);
         self.directive_records.append(&mut sub.directive_records);
         self.role_records.append(&mut sub.role_records);
         self.toctree_records.append(&mut sub.toctree_records);
@@ -549,21 +589,35 @@ impl BlockParser {
 
     /// Insert a [`SpliceRequest`]'s lines into `lines` at `at` (the
     /// block-parse loop's cursor, right past the directive that returned
-    /// it): the request's text becomes a new source-table entry and its
-    /// records join the running stream. On id-space exhaustion the request
-    /// is dropped (same totality guard as [`Self::push_source`]).
+    /// it): each segment's text becomes a new source-table entry and their
+    /// records join the running stream contiguously. On id-space
+    /// exhaustion the remaining segments are dropped (same totality guard
+    /// as [`Self::push_source`]).
     fn apply_splice(&mut self, lines: &mut Vec<LineRec>, at: usize, request: SpliceRequest) {
-        let SpliceRequest {
-            lines: raw_lines,
-            source_path,
-            base_lineno_override,
-        } = request;
-        let text = raw_lines.join("\n");
-        let first_lineno = base_lineno_override.unwrap_or(1);
-        let Some((_id, recs)) = self.push_source(Arc::from(source_path), &text, first_lineno)
-        else {
-            return;
-        };
+        let mut recs: Vec<LineRec> = Vec::new();
+        for segment in request.segments {
+            let SpliceSegment {
+                lines: raw_lines,
+                source_path,
+                first_lineno,
+            } = segment;
+            let text = raw_lines.join("\n");
+            let Some((id, mut segment_recs)) =
+                self.push_source(Arc::from(source_path), &text, first_lineno)
+            else {
+                break;
+            };
+            // `Lines` never yields a line after the final newline (and an
+            // all-empty text yields none at all), but a segment's line
+            // count is authoritative — a padding segment IS one blank
+            // line. Restore trailing blanks as zero-width views.
+            while segment_recs.len() < raw_lines.len() {
+                let lineno = first_lineno + segment_recs.len() as u32;
+                let end = self.sources.text(id).len() as u32;
+                segment_recs.push(LineRec::new(id, lineno, end, end, ""));
+            }
+            recs.extend(segment_recs);
+        }
         let at = at.min(lines.len());
         lines.splice(at..at, recs);
     }
@@ -2021,6 +2075,23 @@ impl BlockParser {
             }
         }
 
+        // Include marker (docutils Body.comment, states.py:2425-2433): a
+        // comment line opening with `end of inclusion from "` whose next
+        // line is blank pops the include log and emits NO node — that pop
+        // is what makes two sequential includes of the same file legal.
+        // The empty-log guard is a totality divergence: docutils pops
+        // unguarded and dies with IndexError on a hand-written marker
+        // (probe-verified); here such a line stays an ordinary comment.
+        if construct_error.is_none()
+            && rest.starts_with(INCLUDE_MARKER_PREFIX)
+            && lines.get(*pos + 1).map(|l| l.is_blank()).unwrap_or(true)
+            && !self.include_log.is_empty()
+        {
+            self.include_log.pop();
+            *pos += 1;
+            return;
+        }
+
         // Comment. Probe-verified continuation rules: a comment with first-
         // line text absorbs the following indented block THROUGH internal
         // blank lines; a bare `..` takes a body only when the indented block
@@ -3260,6 +3331,10 @@ impl BlockParser {
             }
             DirectiveKind::PyModule => self.run_py_module(input, out),
             DirectiveKind::PyCurrentModule => self.run_py_currentmodule(input),
+            DirectiveKind::Include => {
+                let outcome = self.run_include(input, out);
+                self.finish_directive(outcome);
+            }
             DirectiveKind::ProgramDir => self.run_program(input),
             // `DefaultDomain.run` sets `env.current_document.default_domain`
             // and returns []. This crate implements no domain whose
@@ -3277,9 +3352,8 @@ impl BlockParser {
 
     /// Bank a directive's [`DirectiveOutcome`] for the enclosing
     /// block-parse loop: a splice waits in `pending_splice` until the loop
-    /// reaches its cursor. Splice-producing directive arms (T12's include)
+    /// reaches its cursor. Splice-producing directive arms (`include`)
     /// route their return value through here.
-    #[allow(dead_code)] // see DirectiveOutcome
     fn finish_directive(&mut self, outcome: DirectiveOutcome) {
         if let DirectiveOutcome::Splice(request) = outcome {
             self.pending_splice = Some(request);
@@ -3297,11 +3371,436 @@ impl BlockParser {
             .iter()
             .map(|l| self.sources.line_text(*l).to_string())
             .collect();
+        DirectiveOutcome::Splice(SpliceRequest::single(lines, input.arguments[0].clone()))
+    }
+
+    // ------------------------------------------------------------------
+    // include (docutils misc.py Include + the sphinx other.py override)
+    // ------------------------------------------------------------------
+
+    /// The `include` directive (`DU/parsers/rst/directives/misc.py:42-267`;
+    /// sphinx-mode path rewrite per `SP/directives/other.py:371-416`).
+    /// Insert mode returns a splice for the enclosing parse loop; the
+    /// literal/code/parser modes and every error path push nodes and
+    /// return [`DirectiveOutcome::Done`].
+    fn run_include(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) -> DirectiveOutcome {
+        // `settings.file_insertion_enabled` is not modeled (always true —
+        // this crate has no docutils settings surface).
+        let tab_width = opt_i64(&input.options, "tab-width").unwrap_or(8);
+        // The circular-inclusion identity 4-tuple (`misc.py:85-88`).
+        let clip: IncludeClip = (
+            opt_i64(&input.options, "start-line"),
+            opt_i64(&input.options, "end-line"),
+            match opt_get(&input.options, "start-after") {
+                Some(OptVal::Str(s)) => s.clone(),
+                _ => String::new(),
+            },
+            match opt_get(&input.options, "end-before") {
+                Some(OptVal::Str(s)) => s.clone(),
+                _ => String::new(),
+            },
+        );
+        // `directives.path` (`__init__.py:196-206`): join a multi-line
+        // argument, stripping each line.
+        let path_arg: String = input
+            .arguments
+            .first()
+            .map(|a| a.lines().map(str::trim).collect())
+            .unwrap_or_default();
+        let target = self.resolve_include_target(&path_arg, input.span.source);
+        let Some(text) = self.include_read_file(&target, &input, &clip, out) else {
+            return DirectiveOutcome::Done;
+        };
+        let display = target.display().to_string();
+        // Mode precedence: literal wins over code wins over parser (the
+        // `if` chain order, `misc.py:102-107`).
+        if opt_get(&input.options, "literal").is_some() {
+            self.include_as_literal(&text, &display, tab_width, &input, out);
+            return DirectiveOutcome::Done;
+        }
+        if opt_get(&input.options, "code").is_some() {
+            self.include_as_code(&text, &display, tab_width, &input, out);
+            return DirectiveOutcome::Done;
+        }
+        if opt_get(&input.options, "parser").is_some() {
+            // §Scope-decision: documented divergence — docutils re-parses
+            // with the named parser; this crate does not ship one yet.
+            out.push(self.directive_run_message(
+                messages::SEVERE,
+                "Problem with \"include\" directive:\nparser mode is not supported by \
+                 sphinx-ultra (planned with MyST, M2 wave 6)",
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
+            return DirectiveOutcome::Done;
+        }
+        self.include_insert(&text, display, tab_width, clip, &input, out)
+    }
+
+    /// Path resolution: the standard-include guard (`misc.py:90-92`), then
+    /// sphinx's docname-relative `relfn2path` rewrite when a project is
+    /// attached (§Scope-2a: EVERY include argument, nested ones too,
+    /// resolves against the current *document*'s directory —
+    /// `SP/directives/other.py:413-416` rewrites before docutils ever
+    /// sees the path), else docutils' containing-file-relative branch
+    /// (`adapt_path`, `misc.py:28-39`).
+    fn resolve_include_target(&self, path_arg: &str, at_source: u16) -> IncludeTarget {
+        if path_arg.len() >= 2 && path_arg.starts_with('<') && path_arg.ends_with('>') {
+            return IncludeTarget::Standard(path_arg[1..path_arg.len() - 1].to_string());
+        }
+        if self.sphinx {
+            if let Some(srcdir) = &self.srcdir {
+                let rel = crate::utils::relfn2path_rel(path_arg, &self.docname);
+                let abs = crate::utils::relfn2path(path_arg, &self.docname, srcdir);
+                // §Scope-8: every path-bearing surface of included content
+                // spells the srcdir-relative form (deliberate divergence
+                // from sphinx's environment-dependent cwd-relative
+                // spelling).
+                return IncludeTarget::File {
+                    io_path: abs,
+                    display: rel,
+                };
+            }
+        }
+        // docutils mode: relative to the directory of the file containing
+        // the directive (which may itself be an included file).
+        let source_path = self.sources.path(at_source);
+        let base = match source_path.rsplit_once('/') {
+            Some((dir, _)) => dir,
+            None => "",
+        };
+        let joined = if path_arg.starts_with('/') || base.is_empty() {
+            path_arg.to_string()
+        } else {
+            format!("{base}/{path_arg}")
+        };
+        let display = if let Some(rest) = joined.strip_prefix('/') {
+            format!("/{}", crate::utils::normalize_dot_segments(rest))
+        } else {
+            crate::utils::normalize_dot_segments(&joined)
+        };
+        IncludeTarget::File {
+            io_path: std::path::PathBuf::from(&display),
+            display,
+        }
+    }
+
+    /// `read_file` (`misc.py:111-157`): open + decode + clip, with the
+    /// probe-pinned SEVERE texts. `None` means an error node was pushed.
+    fn include_read_file(
+        &mut self,
+        target: &IncludeTarget,
+        input: &DirectiveInput<'_>,
+        clip: &IncludeClip,
+        out: &mut Vec<Node>,
+    ) -> Option<String> {
+        let severe = |me: &Self, text: &str| {
+            me.directive_run_message(
+                messages::SEVERE,
+                text,
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            )
+        };
+        let mut text = match target {
+            IncludeTarget::Standard(name) => match standard_include_text(name) {
+                Some(text) => text.to_string(),
+                None => {
+                    // Divergence (documented): docutils spells the missing
+                    // standard file cwd-relative into its installation
+                    // directory; the `<name>` form is the only stable
+                    // spelling this crate has.
+                    out.push(severe(
+                        self,
+                        &format!(
+                            "Problems with \"{}\" directive path:\nInputError: [Errno 2] No \
+                             such file or directory: '{}'.",
+                            input.name,
+                            target.display()
+                        ),
+                    ));
+                    return None;
+                }
+            },
+            IncludeTarget::File { io_path, display } => {
+                let bytes = match std::fs::read(io_path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        out.push(severe(
+                            self,
+                            &format!(
+                                "Problems with \"{}\" directive path:\n{}.",
+                                input.name,
+                                py_input_error_text(&error, display)
+                            ),
+                        ));
+                        return None;
+                    }
+                };
+                // A successful open records the dependency BEFORE reading
+                // (`misc.py:130`) — a decode failure below still records.
+                self.record_include_dependency(io_path, display);
+                let encoding = match opt_get(&input.options, "encoding") {
+                    Some(OptVal::Str(name)) => {
+                        lookup_encoding(name).expect("the encoding converter validated the name")
+                    }
+                    _ => IncludeEncoding::Utf8,
+                };
+                match decode_include_bytes(&bytes, encoding) {
+                    Ok(text) => text,
+                    Err(error_text) => {
+                        out.push(severe(
+                            self,
+                            &format!("Problem with \"{}\" directive:\n{error_text}", input.name),
+                        ));
+                        return None;
+                    }
+                }
+            }
+        };
+        // Universal newlines (docutils reads in text mode).
+        if text.contains('\r') {
+            text = text.replace("\r\n", "\n").replace('\r', "\n");
+        }
+        // Clip: line slice, then start-after, then end-before, each on the
+        // previous result (`misc.py:136-157`).
+        let (startline, endline, starttext, endtext) = clip;
+        if startline.map(|v| v != 0).unwrap_or(false) || endline.is_some() {
+            let lines = py_splitlines(&text);
+            let (from, to) = py_slice(lines.len(), *startline, *endline);
+            text = lines[from..to].join("\n");
+        }
+        if !starttext.is_empty() {
+            match text.find(starttext.as_str()) {
+                Some(index) => text = text[index + starttext.len()..].to_string(),
+                None => {
+                    out.push(severe(
+                        self,
+                        &format!(
+                            "Problem with \"start-after\" option of \"{}\" \
+                             directive:\nText not found.",
+                            input.name
+                        ),
+                    ));
+                    return None;
+                }
+            }
+        }
+        if !endtext.is_empty() {
+            match text.find(endtext.as_str()) {
+                Some(index) => text.truncate(index),
+                None => {
+                    out.push(severe(
+                        self,
+                        &format!(
+                            "Problem with \"end-before\" option of \"{}\" \
+                             directive:\nText not found.",
+                            input.name
+                        ),
+                    ));
+                    return None;
+                }
+            }
+        }
+        Some(text)
+    }
+
+    /// Parse-time record channel (filled in with the RegistryExport
+    /// wiring; standard includes never reach here — §Scope-2b).
+    fn record_include_dependency(&mut self, _io_path: &std::path::Path, _display: &str) {}
+
+    /// `insert_into_input_lines` (`misc.py:236-267`): length check,
+    /// circular check, marker suffix, splice.
+    fn include_insert(
+        &mut self,
+        text: &str,
+        display: String,
+        tab_width: i64,
+        clip: IncludeClip,
+        input: &DirectiveInput<'_>,
+        out: &mut Vec<Node>,
+    ) -> DirectiveOutcome {
+        let textlines = string2lines_tw(text, tab_width);
+        // Excessively long lines abort with a WARNING (`misc.py:245-250`);
+        // the reported number restarts at the clip, like everything else.
+        for (i, line) in textlines.iter().enumerate() {
+            if line.chars().count() > LINE_LENGTH_LIMIT {
+                let line_no = i as i64 + 1 + clip.0.unwrap_or(0);
+                out.push(self.directive_run_message(
+                    messages::WARNING,
+                    &format!("\"{display}\": line {line_no} exceeds the line-length-limit."),
+                    input.span.source,
+                    input.lineno,
+                    input.rawsource,
+                ));
+                return DirectiveOutcome::Done;
+            }
+        }
+        // Circular inclusion (`misc.py:251-262`), keyed on
+        // (source, clip options): the same file with different clipping is
+        // legal, and sequential re-includes are legal because the marker
+        // comment pops the log entry.
+        if self.include_log.is_empty() {
+            let root = self.include_display_of(input.span.source);
+            self.include_log
+                .push((root, (None, None, String::new(), String::new())));
+        }
+        if self
+            .include_log
+            .iter()
+            .any(|(source, opts)| *source == display && *opts == clip)
+        {
+            let chain: Vec<&str> = std::iter::once(display.as_str())
+                .chain(self.include_log.iter().rev().map(|(s, _)| s.as_str()))
+                .collect();
+            out.push(self.directive_run_message(
+                messages::WARNING,
+                &format!(
+                    "circular inclusion in \"{}\" directive:\n{}",
+                    input.name,
+                    chain.join("\n> ")
+                ),
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
+            return DirectiveOutcome::Done;
+        }
+        self.include_log.push((display.clone(), clip));
+        // Marker suffix for the comment-path pop (`misc.py:264`). The
+        // blank line is load-bearing: without it an included file ending
+        // in paragraph text would absorb the marker as a continuation
+        // line.
+        let mut lines = textlines;
+        lines.push(String::new());
+        lines.push(format!(".. end of inclusion from \"{display}\""));
+        let after_lineno = lines.len() as u32 + 1;
         DirectiveOutcome::Splice(SpliceRequest {
-            lines,
-            source_path: input.arguments[0].clone(),
-            base_lineno_override: None,
+            segments: vec![
+                SpliceSegment {
+                    lines: vec![String::new()],
+                    source_path: format!("internal padding before {display}"),
+                    first_lineno: 0,
+                },
+                SpliceSegment {
+                    lines,
+                    source_path: display.clone(),
+                    first_lineno: 1,
+                },
+                SpliceSegment {
+                    lines: vec![String::new()],
+                    source_path: format!("internal padding after {display}"),
+                    first_lineno: after_lineno,
+                },
+            ],
         })
+    }
+
+    /// The display spelling of `source`'s path — srcdir-relative when a
+    /// project is attached (§Scope-8), the table path otherwise. Seeds the
+    /// include log with the root document's spelling.
+    fn include_display_of(&self, source: u16) -> String {
+        let path = self.sources.path(source);
+        if self.sphinx {
+            if let Some(srcdir) = &self.srcdir {
+                if let Ok(rel) = std::path::Path::new(path).strip_prefix(srcdir) {
+                    return rel.to_string_lossy().replace('\\', "/");
+                }
+            }
+        }
+        path.to_string()
+    }
+
+    /// `:literal:` mode (`misc.py:159-185`).
+    fn include_as_literal(
+        &mut self,
+        text: &str,
+        display: &str,
+        tab_width: i64,
+        input: &DirectiveInput<'_>,
+        out: &mut Vec<Node>,
+    ) {
+        // Tabs expand unless `tab_width` is negative (`misc.py:165-167`).
+        let text = if tab_width >= 0 {
+            py_expandtabs(text, tab_width)
+        } else {
+            text.to_string()
+        };
+        let mut node = Node::elem(kinds::LITERAL_BLOCK, input.span);
+        node.set("source", AttrValue::Str(display.to_string()));
+        if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
+            node.attrs.classes.extend(classes.iter().cloned());
+        }
+        node.set("xml:space", AttrValue::Str("preserve".to_string()));
+        self.directive_add_name(
+            &mut node,
+            &input.options,
+            input.span.source,
+            input.lineno,
+            out,
+        );
+        match opt_get(&input.options, "number-lines") {
+            Some(value) => {
+                // `firstline = options['number-lines'] or 1` — a bare flag
+                // is Python None and an explicit 0 is falsy; both mean 1.
+                let firstline = match value {
+                    OptVal::Int(n) if *n != 0 => *n,
+                    OptVal::Str(s) => saturating_i64(s),
+                    _ => 1,
+                };
+                let text = text.strip_suffix('\n').unwrap_or(&text);
+                let code_lines: Vec<String> = text.split('\n').map(String::from).collect();
+                push_number_lines(&mut node, &code_lines, firstline, input.span);
+            }
+            None => node.children.push(Node::text_node(text, input.span)),
+        }
+        out.push(node);
+    }
+
+    /// `:code:` mode (`misc.py:187-205`): delegate to the `code` directive
+    /// machinery with the option value as the language argument. This
+    /// crate's `code` is the Pygments-less docutils shape (wave 3), so a
+    /// language argument fails with the pygments WARNING — a pinned
+    /// divergence from the sphinx oracle, which ships pygments.
+    fn include_as_code(
+        &mut self,
+        text: &str,
+        display: &str,
+        tab_width: i64,
+        input: &DirectiveInput<'_>,
+        out: &mut Vec<Node>,
+    ) {
+        let text = if tab_width >= 0 {
+            py_expandtabs(text, tab_width)
+        } else {
+            text.to_string()
+        };
+        let text = text.strip_suffix('\n').unwrap_or(&text);
+        let language = match opt_get(&input.options, "code") {
+            Some(OptVal::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        // `CodeBlock(self.name, [options.pop('code')], self.options,
+        // [text.removesuffix('\n')], ...)` — an empty language behaves as
+        // no argument (`body.py:159-162`: `language = ''` is falsy).
+        let arguments = if language.is_empty() {
+            Vec::new()
+        } else {
+            vec![language]
+        };
+        let sub_input = DirectiveInput {
+            name: input.name,
+            arguments,
+            options: input.options.clone(),
+            content: Vec::new(),
+            span: input.span,
+            lineno: input.lineno,
+            rawsource: input.rawsource,
+        };
+        let code_lines: Vec<String> = text.split('\n').map(String::from).collect();
+        self.run_code_with_lines(&sub_input, code_lines, Some(display), out);
     }
 
     /// `.. program::` (`domains/std/__init__.py:333-348`): pure
@@ -6054,6 +6553,25 @@ impl BlockParser {
             ));
             return;
         }
+        let code_lines: Vec<String> = input
+            .content
+            .iter()
+            .map(|l| self.sources.line_text(*l).to_string())
+            .collect();
+        self.run_code_with_lines(&input, code_lines, None, out);
+    }
+
+    /// The `code` node construction shared by the directive itself and the
+    /// `include` directive's `:code:` mode (which passes its file text as
+    /// the lines and its path as the `source` attribute —
+    /// `CodeBlock.run`'s "if called from include" branch).
+    fn run_code_with_lines(
+        &mut self,
+        input: &DirectiveInput<'_>,
+        code_lines: Vec<String>,
+        source_attr: Option<&str>,
+        out: &mut Vec<Node>,
+    ) {
         if !input.arguments.is_empty() {
             out.push(self.directive_run_message(
                 messages::WARNING,
@@ -6080,40 +6598,24 @@ impl BlockParser {
                     }
                 }
             }
+            // The include directive's converter is flag-or-int
+            // (`value_or((None,), int)`): a bare flag is Python None, and
+            // `CodeBlock` numbers it from `int(None or 1)`.
+            Some(OptVal::Null) => Some(1),
+            Some(OptVal::Int(n)) => Some(*n),
             _ => None,
         };
-        let code_lines: Vec<String> = input
-            .content
-            .iter()
-            .map(|l| self.sources.line_text(*l).to_string())
-            .collect();
         let mut node = Node::elem(kinds::LITERAL_BLOCK, input.span);
         node.attrs.classes.push("code".to_string());
         if let Some(OptVal::StrList(classes)) = opt_get(&input.options, "class") {
             node.attrs.classes.extend(classes.iter().cloned());
         }
+        if let Some(source) = source_attr {
+            node.set("source", AttrValue::Str(source.to_string()));
+        }
         node.set("xml:space", AttrValue::Str("preserve".to_string()));
         match number_lines {
-            Some(start) => {
-                // NumberLines (docutils/utils/code_analyzer.py): a padded
-                // 'ln' inline before every line.
-                let endline = start.saturating_add(input.content.len() as i64);
-                let width = endline.to_string().len();
-                for (i, line) in code_lines.iter().enumerate() {
-                    let lineno = start.saturating_add(i as i64);
-                    let mut ln = Node::elem("inline", input.span);
-                    ln.attrs.classes.push("ln".to_string());
-                    ln.children
-                        .push(Node::text_node(format!("{lineno:>width$} "), input.span));
-                    node.children.push(ln);
-                    let text = if i + 1 == code_lines.len() {
-                        (*line).to_string()
-                    } else {
-                        format!("{line}\n")
-                    };
-                    node.children.push(Node::text_node(text, input.span));
-                }
-            }
+            Some(start) => push_number_lines(&mut node, &code_lines, start, input.span),
             None => {
                 node.children
                     .push(Node::text_node(code_lines.join("\n"), input.span));
@@ -7071,6 +7573,9 @@ enum DirectiveKind {
     /// `.. py:currentmodule::` — pure ref_context state, emits nothing
     /// (`__init__.py:539-556`).
     PyCurrentModule,
+    /// `.. include::` (`DU/parsers/rst/directives/misc.py:42-267`; the
+    /// sphinx override only rewrites the path and records env state).
+    Include,
     /// `.. program::` (`domains/std/__init__.py:333-348`).
     ProgramDir,
     /// `.. default-domain::` (`directives/__init__.py:353-366`).
@@ -8908,9 +9413,14 @@ enum Conv {
     Choice(&'static [&'static str]),
     Path,
     Uri,
-    /// codecs.lookup validation is approximated as accept-any (hardening
-    /// note: exotic names docutils rejects are accepted here).
+    /// codecs.lookup validation against the encodings this crate can
+    /// decode (see [`lookup_encoding`]), with docutils' `unknown
+    /// encoding` error text. Valid-but-undecodable Python codec names
+    /// (utf-16, cp1252, ...) are rejected too — documented divergence.
     Encoding,
+    /// `directives.value_or((None,), int)` — the include directive's
+    /// `number-lines`: a bare flag is Python None, else `int(arg)`.
+    FlagOrInt,
     /// figure :figwidth:: the literal 'image' keyword or a length.
     Figwidth,
     /// Plain Python int() — negatives allowed (sphinx maxdepth).
@@ -9004,6 +9514,373 @@ const RAW_OPTS: &[(&str, Conv)] = &[
     ("encoding", Conv::Encoding),
     ("class", Conv::ClassOption),
 ];
+
+/// The include option spec (`misc.py:59-71`). `parser` is accepted
+/// unvalidated (its docutils converter resolves a parser class; the mode
+/// itself is the §Scope-decision SEVERE).
+const INCLUDE_OPTS: &[(&str, Conv)] = &[
+    ("literal", Conv::Flag),
+    ("code", Conv::Unchanged),
+    ("encoding", Conv::Encoding),
+    ("parser", Conv::Unchanged),
+    ("tab-width", Conv::PyIntAny),
+    ("start-line", Conv::PyIntAny),
+    ("end-line", Conv::PyIntAny),
+    ("start-after", Conv::UnchangedRequired),
+    ("end-before", Conv::UnchangedRequired),
+    ("number-lines", Conv::FlagOrInt),
+    ("class", Conv::ClassOption),
+    ("name", Conv::Unchanged),
+];
+
+// ----------------------------------------------------------------------
+// include helpers (docutils misc.py Include)
+// ----------------------------------------------------------------------
+
+/// The comment-line prefix that pops [`BlockParser::include_log`]
+/// (`DU/parsers/rst/states.py:2425-2433`).
+const INCLUDE_MARKER_PREFIX: &str = "end of inclusion from \"";
+
+/// docutils `settings.line_length_limit` default
+/// (`DU/parsers/__init__.py:76`).
+const LINE_LENGTH_LIMIT: usize = 10_000;
+
+/// The circular-inclusion identity's clip half: `(start-line, end-line,
+/// start-after, end-before)` exactly as `misc.py:85-88` builds it.
+type IncludeClip = (Option<i64>, Option<i64>, String, String);
+
+/// A resolved include argument.
+enum IncludeTarget {
+    /// `<name>` — one of the vendored docutils standard include files.
+    Standard(String),
+    /// A project file: the filesystem path to open, and the display
+    /// spelling every path-bearing surface uses (§Scope-8: srcdir-relative
+    /// in sphinx mode).
+    File {
+        io_path: std::path::PathBuf,
+        display: String,
+    },
+}
+
+impl IncludeTarget {
+    fn display(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            // The `<name>` spelling is the only environment-independent
+            // one this crate has for a standard include (docutils prints
+            // its installation directory, cwd-relative).
+            IncludeTarget::Standard(name) => std::borrow::Cow::Owned(format!("<{name}>")),
+            IncludeTarget::File { display, .. } => std::borrow::Cow::Borrowed(display),
+        }
+    }
+}
+
+/// An int-converted option's value; canonical big-int strings (beyond
+/// i64) saturate — every consumer clamps anyway.
+fn opt_i64(options: &[(String, OptVal)], name: &str) -> Option<i64> {
+    match opt_get(options, name) {
+        Some(OptVal::Int(n)) => Some(*n),
+        Some(OptVal::Str(s)) => Some(saturating_i64(s)),
+        _ => None,
+    }
+}
+
+fn saturating_i64(canonical: &str) -> i64 {
+    canonical
+        .parse::<i64>()
+        .unwrap_or(if canonical.starts_with('-') {
+            i64::MIN
+        } else {
+            i64::MAX
+        })
+}
+
+/// Python `str.splitlines()`: the full boundary set (`\n`, `\r`, `\r\n`,
+/// `\v`, `\f`, `\x1c`-`\x1e`, `\u{85}`, `\u{2028}`, `\u{2029}`), no
+/// trailing empty line for a terminal boundary.
+fn py_splitlines(text: &str) -> Vec<&str> {
+    let is_boundary = |c: char| {
+        matches!(
+            c,
+            '\n' | '\r'
+                | '\x0b'
+                | '\x0c'
+                | '\x1c'
+                | '\x1d'
+                | '\x1e'
+                | '\u{85}'
+                | '\u{2028}'
+                | '\u{2029}'
+        )
+    };
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if is_boundary(c) {
+            out.push(&text[start..i]);
+            if c == '\r' {
+                if let Some(&(_, '\n')) = chars.peek() {
+                    chars.next();
+                }
+            }
+            start = chars.peek().map(|&(j, _)| j).unwrap_or(text.len());
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+/// Python `str.expandtabs(tabsize)`: the column resets at `\n`/`\r` and
+/// counts characters; `tabsize <= 0` removes tabs outright.
+fn py_expandtabs(text: &str, tabsize: i64) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut col: i64 = 0;
+    for c in text.chars() {
+        match c {
+            '\t' => {
+                if tabsize > 0 {
+                    let pad = tabsize - (col % tabsize);
+                    for _ in 0..pad {
+                        out.push(' ');
+                    }
+                    col += pad;
+                }
+            }
+            '\n' | '\r' => {
+                out.push(c);
+                col = 0;
+            }
+            _ => {
+                out.push(c);
+                col += 1;
+            }
+        }
+    }
+    out
+}
+
+/// docutils `statemachine.string2lines(text, tab_width,
+/// convert_whitespace=True)` (`DU/statemachine.py:1497-1516`): `\v`/`\f`
+/// to spaces, splitlines, per-line `expandtabs(tab_width)` + `rstrip()`.
+fn string2lines_tw(text: &str, tab_width: i64) -> Vec<String> {
+    let converted = text.replace(['\x0b', '\x0c'], " ");
+    py_splitlines(&converted)
+        .into_iter()
+        .map(|line| {
+            let expanded = py_expandtabs(line, tab_width);
+            expanded.trim_end().to_string()
+        })
+        .collect()
+}
+
+/// Python `sequence[start:end]` slice bounds: negatives count from the
+/// end, everything clamps, `end < start` yields the empty slice.
+fn py_slice(len: usize, start: Option<i64>, end: Option<i64>) -> (usize, usize) {
+    let n = len as i64;
+    let index = |v: i64| -> i64 {
+        if v < 0 {
+            (n + v).max(0)
+        } else {
+            v.min(n)
+        }
+    };
+    let from = start.map(&index).unwrap_or(0);
+    let to = end.map(&index).unwrap_or(n).max(from);
+    (from as usize, to as usize)
+}
+
+/// The docutils `io.FileInput` open-failure spelling: `io.error_string`
+/// renders `InputError: [Errno N] <strerror>: '<path>'` (`DU/io.py:72-75`
+/// wraps the OSError as its `InputError` subclass). Probe-pinned for
+/// errno 2 (missing), 13 (permission denied) and 21 (directory).
+fn py_input_error_text(error: &std::io::Error, path: &str) -> String {
+    match error.raw_os_error() {
+        Some(errno) => {
+            // Rust renders a raw OS error as "<strerror> (os error N)";
+            // Python's message is the bare strerror.
+            let rendered = std::io::Error::from_raw_os_error(errno).to_string();
+            let suffix = format!(" (os error {errno})");
+            let strerror = rendered.strip_suffix(suffix.as_str()).unwrap_or(&rendered);
+            format!("InputError: [Errno {errno}] {strerror}: '{path}'")
+        }
+        None => format!("InputError: {error}: '{path}'"),
+    }
+}
+
+/// The text encodings the include directive can actually decode. The
+/// `encoding` option converter validates against this set, so a
+/// valid-but-unsupported Python codec name (utf-16, cp1252, ...) earns
+/// docutils' `unknown encoding` option error — a documented divergence
+/// (docutils accepts every `codecs.lookup` name).
+#[derive(Clone, Copy, PartialEq)]
+enum IncludeEncoding {
+    Utf8,
+    Utf8Sig,
+    Ascii,
+    Latin1,
+}
+
+/// `codecs.lookup` normalization + alias resolution for the supported
+/// set. Python lowercases and collapses runs of punctuation to `_`.
+fn lookup_encoding(name: &str) -> Option<IncludeEncoding> {
+    let mut normalized = String::with_capacity(name.len());
+    let mut pending_sep = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_sep && !normalized.is_empty() {
+                normalized.push('_');
+            }
+            pending_sep = false;
+            normalized.push(c.to_ascii_lowercase());
+        } else {
+            pending_sep = true;
+        }
+    }
+    match normalized.as_str() {
+        "utf_8" | "utf8" | "utf" | "u8" | "cp65001" => Some(IncludeEncoding::Utf8),
+        "utf_8_sig" => Some(IncludeEncoding::Utf8Sig),
+        "ascii" | "us_ascii" | "us" | "646" | "cp367" | "ibm367" | "ansi_x3_4_1968"
+        | "ansi_x3_4_1986" | "iso646_us" | "iso_ir_6" | "csascii" => Some(IncludeEncoding::Ascii),
+        "latin_1" | "latin1" | "latin" | "l1" | "iso_8859_1" | "iso8859_1" | "iso8859" | "8859"
+        | "cp819" | "ibm819" | "iso_ir_100" | "csisolatin1" => Some(IncludeEncoding::Latin1),
+        _ => None,
+    }
+}
+
+/// Decode with Python's exact `UnicodeDecodeError` message on failure
+/// (the SEVERE body text — probe-pinned, no trailing period).
+fn decode_include_bytes(bytes: &[u8], encoding: IncludeEncoding) -> Result<String, String> {
+    match encoding {
+        IncludeEncoding::Utf8 => std::str::from_utf8(bytes)
+            .map(str::to_string)
+            .map_err(|e| py_utf8_error_text(bytes, e)),
+        IncludeEncoding::Utf8Sig => {
+            let stripped = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(bytes);
+            std::str::from_utf8(stripped)
+                .map(str::to_string)
+                .map_err(|e| py_utf8_error_text(stripped, e))
+        }
+        IncludeEncoding::Ascii => match bytes.iter().position(|&b| b >= 0x80) {
+            None => Ok(std::str::from_utf8(bytes)
+                .expect("pure ASCII is valid UTF-8")
+                .to_string()),
+            Some(i) => Err(format!(
+                "UnicodeDecodeError: 'ascii' codec can't decode byte 0x{:02x} in position {}: \
+                 ordinal not in range(128)",
+                bytes[i], i
+            )),
+        },
+        IncludeEncoding::Latin1 => Ok(bytes.iter().map(|&b| b as char).collect()),
+    }
+}
+
+/// CPython's UTF-8 decode error message: reason and error range follow
+/// the "maximal subpart" convention std's `Utf8Error` also uses.
+fn py_utf8_error_text(bytes: &[u8], error: std::str::Utf8Error) -> String {
+    let start = error.valid_up_to();
+    let (len, reason) = match error.error_len() {
+        Some(len) => {
+            // 0xC2..=0xF4 are the legal multi-byte lead bytes; anything
+            // else at the error position is an invalid start byte.
+            let reason = if matches!(bytes[start], 0xC2..=0xF4) {
+                "invalid continuation byte"
+            } else {
+                "invalid start byte"
+            };
+            (len, reason)
+        }
+        None => (bytes.len() - start, "unexpected end of data"),
+    };
+    if len == 1 {
+        format!(
+            "UnicodeDecodeError: 'utf-8' codec can't decode byte 0x{:02x} in position {}: {}",
+            bytes[start], start, reason
+        )
+    } else {
+        format!(
+            "UnicodeDecodeError: 'utf-8' codec can't decode bytes in position {}-{}: {}",
+            start,
+            start + len - 1,
+            reason
+        )
+    }
+}
+
+/// NumberLines (docutils/utils/code_analyzer.py): a padded 'ln' inline
+/// before every line; the number width comes from the last line's number.
+fn push_number_lines(node: &mut Node, code_lines: &[String], start: i64, span: Span) {
+    let endline = start.saturating_add(code_lines.len() as i64);
+    let width = endline.to_string().len();
+    for (i, line) in code_lines.iter().enumerate() {
+        let lineno = start.saturating_add(i as i64);
+        let mut ln = Node::elem("inline", span);
+        ln.attrs.classes.push("ln".to_string());
+        ln.children
+            .push(Node::text_node(format!("{lineno:>width$} "), span));
+        node.children.push(ln);
+        let text = if i + 1 == code_lines.len() {
+            line.to_string()
+        } else {
+            format!("{line}\n")
+        };
+        node.children.push(Node::text_node(text, span));
+    }
+}
+
+/// The docutils standard include files (`.. include:: <isonum.txt>`),
+/// vendored byte-exact from the pinned docutils 0.22.4 wheel — provenance
+/// in src/rst/include/README.md. docutils resolves the `<name>` form
+/// against its own installation's `parsers/rst/include/` directory
+/// (`misc.py:73,90-92`); this table is that directory.
+fn standard_include_text(name: &str) -> Option<&'static str> {
+    macro_rules! table {
+        ($($file:literal),* $(,)?) => {
+            match name {
+                $($file => Some(include_str!(concat!("include/", $file))),)*
+                _ => None,
+            }
+        };
+    }
+    table!(
+        "README.rst",
+        "html-roles.txt",
+        "isoamsa.txt",
+        "isoamsb.txt",
+        "isoamsc.txt",
+        "isoamsn.txt",
+        "isoamso.txt",
+        "isoamsr.txt",
+        "isobox.txt",
+        "isocyr1.txt",
+        "isocyr2.txt",
+        "isodia.txt",
+        "isogrk1.txt",
+        "isogrk2.txt",
+        "isogrk3.txt",
+        "isogrk4-wide.txt",
+        "isogrk4.txt",
+        "isolat1.txt",
+        "isolat2.txt",
+        "isomfrk-wide.txt",
+        "isomfrk.txt",
+        "isomopf-wide.txt",
+        "isomopf.txt",
+        "isomscr-wide.txt",
+        "isomscr.txt",
+        "isonum.txt",
+        "isopub.txt",
+        "isotech.txt",
+        "mmlalias.txt",
+        "mmlextra-wide.txt",
+        "mmlextra.txt",
+        "s5defs.txt",
+        "xhtml1-lat1.txt",
+        "xhtml1-special.txt",
+        "xhtml1-symbol.txt",
+    )
+}
 
 fn directive_spec(lower: &str) -> Option<DirectiveSpec> {
     let adm = |k: &'static str| {
@@ -9124,6 +10001,14 @@ fn directive_spec(lower: &str) -> Option<DirectiveSpec> {
             has_content: true,
             option_spec: RAW_OPTS,
             kind: DirectiveKind::Raw,
+        }),
+        "include" => Some(DirectiveSpec {
+            required_arguments: 1,
+            optional_arguments: 0,
+            final_argument_whitespace: true,
+            has_content: false,
+            option_spec: INCLUDE_OPTS,
+            kind: DirectiveKind::Include,
         }),
         "line-block" => Some(DirectiveSpec {
             required_arguments: 0,
@@ -9485,8 +10370,21 @@ fn convert_option(conv: Conv, value: Option<&str>) -> Result<OptVal, String> {
             let Some(v) = value else {
                 return Err("argument required but none supplied".to_string());
             };
+            if lookup_encoding(v).is_none() {
+                return Err(format!("unknown encoding: \"{v}\""));
+            }
             Ok(OptVal::Str(v.to_string()))
         }
+        Conv::FlagOrInt => match value {
+            None => Ok(OptVal::Null),
+            Some(v) => match py_int_canonical(v) {
+                Some((neg, digits)) => Ok(int_optval(neg, &digits)),
+                None => Err(format!(
+                    "invalid literal for int() with base 10: {}",
+                    py_repr(Some(v))
+                )),
+            },
+        },
         Conv::Figwidth => {
             let Some(v) = value else {
                 return Err("expected string or bytes-like object, got 'NoneType'".to_string());
@@ -10491,11 +11389,10 @@ mod tests {
         p.apply_splice(
             &mut stream,
             1,
-            SpliceRequest {
-                lines: vec!["alpha".to_string(), "beta".to_string()],
-                source_path: "inc.rst".to_string(),
-                base_lineno_override: None,
-            },
+            SpliceRequest::single(
+                vec!["alpha".to_string(), "beta".to_string()],
+                "inc.rst".to_string(),
+            ),
         );
 
         assert_eq!(
@@ -13595,5 +14492,894 @@ mod py_docfield_tests {
             )),
             "{pf}"
         );
+    }
+}
+
+// ----------------------------------------------------------------------
+// include tests (T12; expectations pinned against docutils 0.22.4 /
+// sphinx 9.1.0 probes — [INC §1-2, §5] and this task's probe_t12 run —
+// with the §Scope-8 srcdir-relative path spellings where noted)
+// ----------------------------------------------------------------------
+
+#[cfg(test)]
+mod include_tests {
+    use super::*;
+    use crate::doctree::Doctree;
+    use crate::rst::{parse_rst, ParseOptions};
+    use std::path::Path;
+
+    fn write(dir: &Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Sphinx-mode parse of `main` as `<docname>.rst` inside `srcdir`.
+    fn parse_sphinx(srcdir: &Path, docname: &str, main: &str) -> Doctree {
+        parse_rst(
+            main,
+            &ParseOptions {
+                source_path: srcdir.join(format!("{docname}.rst")).display().to_string(),
+                sphinx: true,
+                docname: docname.to_string(),
+                found_docs: None,
+                exclude_patterns: Vec::new(),
+                py: Default::default(),
+                srcdir: Some(srcdir.to_path_buf()),
+            },
+        )
+    }
+
+    /// Docutils-mode parse with an absolute source path (the containing-
+    /// file-relative branch resolves against its directory).
+    fn parse_docutils(source_path: &Path, main: &str) -> Doctree {
+        parse_rst(
+            main,
+            &ParseOptions {
+                source_path: source_path.display().to_string(),
+                sphinx: false,
+                docname: "index".to_string(),
+                found_docs: None,
+                exclude_patterns: Vec::new(),
+                py: Default::default(),
+                srcdir: None,
+            },
+        )
+    }
+
+    fn messages_of(tree: &Doctree) -> Vec<(i64, i64, String, String)> {
+        fn walk(node: &Node, out: &mut Vec<(i64, i64, String, String)>) {
+            if node.kind == kinds::SYSTEM_MESSAGE {
+                let level = match node.get("level") {
+                    Some(AttrValue::Int(n)) => *n,
+                    _ => 0,
+                };
+                let line = match node.get("line") {
+                    Some(AttrValue::Int(n)) => *n,
+                    _ => 0,
+                };
+                let source = match node.get("source") {
+                    Some(AttrValue::Str(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let text = node
+                    .children
+                    .first()
+                    .map(|p| p.astext())
+                    .unwrap_or_default();
+                out.push((level, line, source, text));
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&tree.root, &mut out);
+        out
+    }
+
+    /// Top-level paragraphs only (message paragraphs live inside
+    /// system_message nodes and are not collected).
+    fn paragraphs_of(tree: &Doctree) -> Vec<String> {
+        tree.root
+            .children
+            .iter()
+            .filter(|n| n.kind == kinds::PARAGRAPH)
+            .map(|n| n.astext())
+            .collect()
+    }
+
+    // ---- row 1: option spec + converters -----------------------------
+
+    #[test]
+    fn number_lines_rejects_a_non_integer_value_with_the_int_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "L1\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :literal:\n   :number-lines: x7\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1, "{}", tree.root.pformat());
+        assert_eq!(msgs[0].0, 3);
+        assert_eq!(
+            msgs[0].3,
+            "Error in \"include\" directive:\ninvalid option value: (option: \"number-lines\"; \
+             value: 'x7')\ninvalid literal for int() with base 10: 'x7'."
+        );
+    }
+
+    #[test]
+    fn an_unknown_encoding_fails_option_conversion_with_the_docutils_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "L1\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :encoding: bogus-enc\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1, "{}", tree.root.pformat());
+        assert_eq!(
+            msgs[0].3,
+            "Error in \"include\" directive:\ninvalid option value: (option: \"encoding\"; \
+             value: 'bogus-enc')\nunknown encoding: \"bogus-enc\"."
+        );
+    }
+
+    #[test]
+    fn negative_tab_width_disables_expansion_in_literal_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "a\tb\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :literal:\n   :tab-width: -1\n",
+        );
+        let pf = tree.root.pformat();
+        assert!(pf.contains("a\tb"), "tabs must survive: {pf}");
+    }
+
+    // ---- row 2: path resolution (§Scope-2a) --------------------------
+
+    #[test]
+    fn sphinx_mode_resolves_relative_to_the_document_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "part.rst", "from part\n");
+        write(tmp.path(), "sub/doc.rst", "unused\n");
+        let tree = parse_sphinx(tmp.path(), "sub/doc", ".. include:: ../part.rst\n");
+        assert_eq!(paragraphs_of(&tree), vec!["from part".to_string()]);
+        assert!(
+            tree.sources.contains(&"part.rst".to_string()),
+            "provenance spells the srcdir-relative path: {:?}",
+            tree.sources
+        );
+    }
+
+    #[test]
+    fn a_leading_slash_resolves_against_srcdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "sub/abs_part.rst", "abs part para\n");
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: /sub/abs_part.rst\n");
+        assert_eq!(paragraphs_of(&tree), vec!["abs part para".to_string()]);
+        assert!(tree.sources.contains(&"sub/abs_part.rst".to_string()));
+    }
+
+    /// Sphinx rewrites EVERY include argument through relfn2path before
+    /// docutils resolves anything, so a nested relative include resolves
+    /// against the current *document*'s directory — NOT the directory of
+    /// the included file containing the directive ([INC §2 item 3]).
+    #[test]
+    fn nested_includes_resolve_against_the_document_not_the_containing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "sub/inner.rst", ".. include:: x.rst\n");
+        write(tmp.path(), "x.rst", "x at srcdir root\n");
+        write(tmp.path(), "sub/x.rst", "x beside inner\n");
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: /sub/inner.rst\n");
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec!["x at srcdir root".to_string()],
+            "{}",
+            tree.root.pformat()
+        );
+    }
+
+    /// Docutils mode keeps the containing-file-relative branch
+    /// (`adapt_path`, `misc.py:28-39`).
+    #[test]
+    fn docutils_mode_resolves_against_the_containing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "sub/inner.rst", ".. include:: deep.rst\n");
+        write(tmp.path(), "sub/deep.rst", "deep beside inner\n");
+        let tree = parse_docutils(&tmp.path().join("main.rst"), ".. include:: sub/inner.rst\n");
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec!["deep beside inner".to_string()],
+            "{}",
+            tree.root.pformat()
+        );
+    }
+
+    // ---- row 3: standard includes ------------------------------------
+
+    #[test]
+    fn a_standard_include_splices_the_vendored_file() {
+        let tree = parse_rst(
+            "x |rarr| y\n\n.. include:: <isonum.txt>\n",
+            &ParseOptions::default(),
+        );
+        let pf = tree.root.pformat();
+        assert!(
+            pf.contains("<substitution_definition names=\"rarr\">"),
+            "{pf}"
+        );
+        assert!(
+            tree.sources.contains(&"<isonum.txt>".to_string()),
+            "provenance spells the bracketed form: {:?}",
+            &tree.sources[..3.min(tree.sources.len())]
+        );
+    }
+
+    #[test]
+    fn a_missing_standard_include_is_a_severe_with_the_bracketed_spelling() {
+        let tree = parse_rst(".. include:: <bogus.txt>\n", &ParseOptions::default());
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, 4);
+        // Documented divergence: docutils spells its installation
+        // directory here (environment-dependent); ours is the argument.
+        assert_eq!(
+            msgs[0].3,
+            "Problems with \"include\" directive path:\nInputError: [Errno 2] No such file or \
+             directory: '<bogus.txt>'."
+        );
+    }
+
+    // ---- row 4: read_file error texts --------------------------------
+
+    #[test]
+    fn a_missing_file_is_a_severe_with_the_input_error_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: nothere.rst\n");
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1, "{}", tree.root.pformat());
+        assert_eq!(msgs[0].0, 4);
+        assert_eq!(msgs[0].1, 1);
+        assert_eq!(
+            msgs[0].3,
+            "Problems with \"include\" directive path:\nInputError: [Errno 2] No such file or \
+             directory: 'nothere.rst'."
+        );
+        // The rawsource literal rides the message (states.py:2285-2291).
+        let pf = tree.root.pformat();
+        assert!(
+            pf.contains(
+                "        <literal_block xml:space=\"preserve\">\n            .. include:: nothere.rst\n"
+            ),
+            "{pf}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_file_is_a_severe_with_errno_13() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "sekrit.rst", "hi\n");
+        std::fs::set_permissions(
+            tmp.path().join("sekrit.rst"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: sekrit.rst\n");
+        std::fs::set_permissions(
+            tmp.path().join("sekrit.rst"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0].3,
+            "Problems with \"include\" directive path:\nInputError: [Errno 13] Permission \
+             denied: 'sekrit.rst'."
+        );
+    }
+
+    #[test]
+    fn a_decode_failure_is_a_severe_with_pythons_unicode_error_no_period() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("inc.rst"), b"caf\xe9 latin-1 bytes\n").unwrap();
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :encoding: utf-8\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, 4);
+        assert_eq!(
+            msgs[0].3,
+            "Problem with \"include\" directive:\nUnicodeDecodeError: 'utf-8' codec can't \
+             decode byte 0xe9 in position 3: invalid continuation byte"
+        );
+    }
+
+    #[test]
+    fn latin_1_decodes_the_bytes_utf_8_rejects() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("inc.rst"), b"caf\xe9\n").unwrap();
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :encoding: latin-1\n",
+        );
+        assert_eq!(paragraphs_of(&tree), vec!["caf\u{e9}".to_string()]);
+    }
+
+    // ---- row 5: clipping ---------------------------------------------
+
+    fn clipped(tmp: &Path, options: &str) -> Vec<String> {
+        write(tmp, "inc.rst", "L1\nL2\nL3\nL4\nL5\n");
+        let tree = parse_sphinx(tmp, "main", &format!(".. include:: inc.rst\n{options}"));
+        paragraphs_of(&tree)
+    }
+
+    #[test]
+    fn start_and_end_line_slice_zero_based_end_exclusive() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            clipped(tmp.path(), "   :start-line: 1\n   :end-line: 3\n"),
+            vec!["L2\nL3".to_string()]
+        );
+    }
+
+    #[test]
+    fn negative_start_line_counts_from_the_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            clipped(tmp.path(), "   :start-line: -2\n"),
+            vec!["L4\nL5".to_string()]
+        );
+    }
+
+    #[test]
+    fn out_of_range_slices_clamp_silently() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            clipped(tmp.path(), "   :start-line: 99\n"),
+            Vec::<String>::new()
+        );
+        let tmp2 = tempfile::tempdir().unwrap();
+        assert_eq!(
+            clipped(tmp2.path(), "   :end-line: 99\n"),
+            vec!["L1\nL2\nL3\nL4\nL5".to_string()]
+        );
+    }
+
+    #[test]
+    fn start_line_zero_alone_is_a_no_op_trigger() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            clipped(tmp.path(), "   :start-line: 0\n"),
+            vec!["L1\nL2\nL3\nL4\nL5".to_string()]
+        );
+    }
+
+    #[test]
+    fn start_after_matches_on_the_character_stream_inside_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "aaa MARK\nbbb\nccc\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :start-after: MARK\n",
+        );
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec!["bbb\nccc".to_string()],
+            "the match text is a mid-line substring, not a whole line"
+        );
+    }
+
+    #[test]
+    fn clip_order_is_line_slice_then_start_after_then_end_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        // "L1" only exists OUTSIDE the line slice, so start-after misses.
+        write(tmp.path(), "inc.rst", "L1\nL2\nL3\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :start-line: 1\n   :start-after: L1\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, 4);
+        assert_eq!(
+            msgs[0].3,
+            "Problem with \"start-after\" option of \"include\" directive:\nText not found."
+        );
+    }
+
+    #[test]
+    fn end_before_not_found_is_a_severe() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "aaa\nbbb\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :end-before: ZZZ\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0].3,
+            "Problem with \"end-before\" option of \"include\" directive:\nText not found."
+        );
+    }
+
+    // ---- row 6: splice mechanics -------------------------------------
+
+    /// The [INC PROBE 1] item layout: padding blank (synthetic source,
+    /// lineno 0 for docutils' offset −1), the included lines, the
+    /// appended `''` + marker pair carrying the INCLUDED source with
+    /// continuing linenos, and the padding blank after (offset len).
+    #[test]
+    fn the_splice_layout_matches_probe_1() {
+        let mut p = BlockParser::new(
+            "before para\n\n.. include:: inc.rst\n\nafter para\n",
+            "main.rst",
+        );
+        let request = SpliceRequest {
+            segments: vec![
+                SpliceSegment {
+                    lines: vec![String::new()],
+                    source_path: "internal padding before inc.rst".to_string(),
+                    first_lineno: 0,
+                },
+                SpliceSegment {
+                    lines: vec![
+                        "included para line1".to_string(),
+                        "included para line2".to_string(),
+                        String::new(),
+                        "Bad Title".to_string(),
+                        "===".to_string(),
+                        String::new(),
+                        ".. end of inclusion from \"inc.rst\"".to_string(),
+                    ],
+                    source_path: "inc.rst".to_string(),
+                    first_lineno: 1,
+                },
+                SpliceSegment {
+                    lines: vec![String::new()],
+                    source_path: "internal padding after inc.rst".to_string(),
+                    first_lineno: 8,
+                },
+            ],
+        };
+        let mut stream = std::mem::take(&mut p.top);
+        p.apply_splice(&mut stream, 4, request);
+        let items: Vec<(String, u32)> = stream
+            .iter()
+            .map(|l| (p.sources.path(l.source).to_string(), l.lineno))
+            .collect();
+        assert_eq!(
+            items,
+            vec![
+                ("main.rst".to_string(), 1),
+                ("main.rst".to_string(), 2),
+                ("main.rst".to_string(), 3),
+                ("main.rst".to_string(), 4),
+                ("internal padding before inc.rst".to_string(), 0),
+                ("inc.rst".to_string(), 1),
+                ("inc.rst".to_string(), 2),
+                ("inc.rst".to_string(), 3),
+                ("inc.rst".to_string(), 4),
+                ("inc.rst".to_string(), 5),
+                ("inc.rst".to_string(), 6),
+                ("inc.rst".to_string(), 7),
+                ("internal padding after inc.rst".to_string(), 8),
+                ("main.rst".to_string(), 5),
+            ]
+        );
+    }
+
+    /// End-to-end over the real directive: the trailing blank prevents an
+    /// included file ending in paragraph text from absorbing the marker,
+    /// and the marker itself pops silently (no comment node).
+    #[test]
+    fn the_marker_never_reaches_the_tree_and_never_joins_a_paragraph() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "ends in a paragraph");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            "before\n\n.. include:: inc.rst\n\nafter\n",
+        );
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec![
+                "before".to_string(),
+                "ends in a paragraph".to_string(),
+                "after".to_string()
+            ]
+        );
+        assert!(
+            !tree.root.pformat().contains("comment"),
+            "{}",
+            tree.root.pformat()
+        );
+        assert_eq!(
+            tree.sources,
+            vec![
+                tmp.path().join("main.rst").display().to_string(),
+                "internal padding before inc.rst".to_string(),
+                "inc.rst".to_string(),
+                "internal padding after inc.rst".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn included_content_carries_its_own_source_and_line_numbers() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Lines 3-4 carry a "Title underline too short." WARNING.
+        write(
+            tmp.path(),
+            "part.rst",
+            "part first para\n\nBad Title\n======\n",
+        );
+        let tree = parse_sphinx(tmp.path(), "main", "intro\n\n.. include:: part.rst\n");
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1, "{}", tree.root.pformat());
+        assert_eq!(
+            (msgs[0].0, msgs[0].1, msgs[0].2.as_str()),
+            (2, 4, "part.rst"),
+            "attributed to the line WITHIN the included file"
+        );
+        assert_eq!(msgs[0].3, "Title underline too short.");
+    }
+
+    /// The `misc.py:267` TODO reproduced deliberately: a `start-line`
+    /// clip restarts line numbers at the clip, so a problem on original
+    /// line 4 reports the clipped line 2 (row 10's faithful bug).
+    #[test]
+    fn a_start_line_clip_keeps_docutils_restart_at_zero_numbering() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "part.rst", "L1\nL2\nBad Title\n======\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: part.rst\n   :start-line: 2\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            (msgs[0].1, msgs[0].2.as_str()),
+            (2, "part.rst"),
+            "clip-relative, not the original line 4"
+        );
+    }
+
+    #[test]
+    fn the_same_file_twice_sequentially_is_legal() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "same para\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n\n.. include:: inc.rst\n",
+        );
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec!["same para".to_string(), "same para".to_string()]
+        );
+        assert!(messages_of(&tree).is_empty());
+    }
+
+    #[test]
+    fn circular_inclusion_warns_with_the_chain_and_in_file_attribution() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.rst", "in a\n\n.. include:: b.rst\n");
+        write(tmp.path(), "b.rst", "in b\n\n.. include:: a.rst\n");
+        let tree = parse_sphinx(tmp.path(), "main", "top\n\n.. include:: a.rst\n");
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec!["top".to_string(), "in a".to_string(), "in b".to_string()]
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1, "{}", tree.root.pformat());
+        assert_eq!(
+            (msgs[0].0, msgs[0].1, msgs[0].2.as_str()),
+            (2, 3, "b.rst"),
+            "attributed to the including line INSIDE the included file"
+        );
+        assert_eq!(
+            msgs[0].3,
+            "circular inclusion in \"include\" directive:\na.rst\n> b.rst\n> a.rst\n> main.rst"
+        );
+    }
+
+    #[test]
+    fn self_inclusion_warns_with_the_two_entry_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.rst", "in a\n\n.. include:: a.rst\n");
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: a.rst\n");
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0].3,
+            "circular inclusion in \"include\" directive:\na.rst\n> a.rst\n> main.rst"
+        );
+    }
+
+    #[test]
+    fn different_clip_options_are_not_circular() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.rst",
+            "L1\nL2\nL3\n\n.. include:: a.rst\n   :start-line: 0\n   :end-line: 3\n",
+        );
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: a.rst\n");
+        assert!(messages_of(&tree).is_empty(), "{}", tree.root.pformat());
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec!["L1\nL2\nL3".to_string(), "L1\nL2\nL3".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_over_long_line_aborts_with_the_length_limit_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "inc.rst",
+            &format!("ok\n{}\n", "x".repeat(10_001)),
+        );
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: inc.rst\n");
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, 2);
+        assert_eq!(
+            msgs[0].3,
+            "\"inc.rst\": line 2 exceeds the line-length-limit."
+        );
+        assert!(paragraphs_of(&tree).is_empty(), "the include aborts");
+    }
+
+    #[test]
+    fn the_length_limit_line_number_carries_the_start_line_bias() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "inc.rst",
+            &format!("ok\n{}\n", "x".repeat(10_001)),
+        );
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :start-line: 1\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0].3, "\"inc.rst\": line 2 exceeds the line-length-limit.",
+            "clipped line 1, biased by start-line 1"
+        );
+    }
+
+    #[test]
+    fn insert_mode_expands_tabs_at_the_given_tab_width() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "a\tb\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :tab-width: 4\n",
+        );
+        assert_eq!(paragraphs_of(&tree), vec!["a   b".to_string()]);
+    }
+
+    #[test]
+    fn insert_mode_negative_tab_width_removes_tabs_like_python() {
+        // Probe-pinned: expandtabs with a non-positive width removes the
+        // tab outright ("a\tb" -> "ab").
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "a\tb\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :tab-width: -3\n",
+        );
+        assert_eq!(paragraphs_of(&tree), vec!["ab".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_included_file_inserts_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            "before\n\n.. include:: inc.rst\n\nafter\n",
+        );
+        assert_eq!(
+            paragraphs_of(&tree),
+            vec!["before".to_string(), "after".to_string()]
+        );
+        assert!(messages_of(&tree).is_empty());
+    }
+
+    /// Included lines join the enclosing document's section hierarchy —
+    /// the reason include is a splice, not a detached parse (§Scope-2).
+    #[test]
+    fn included_sections_join_the_enclosing_hierarchy() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "part.rst",
+            "Sub Section\n-----------\n\nsub body\n",
+        );
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            "Top\n===\n\ntop body\n\n.. include:: part.rst\n",
+        );
+        let pf = tree.root.pformat();
+        let top = tree
+            .root
+            .children
+            .iter()
+            .find(|n| n.kind == kinds::SECTION)
+            .expect("top section");
+        assert!(
+            top.children.iter().any(|n| n.kind == kinds::SECTION),
+            "the included section nests under the enclosing one: {pf}"
+        );
+    }
+
+    // ---- row 7: literal / code / parser modes ------------------------
+
+    #[test]
+    fn literal_mode_matches_the_probe_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "some *raw* text\n\tafter tab\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :literal:\n   :class: foo\n   :name: lit1\n",
+        );
+        assert_eq!(
+            tree.root.pformat(),
+            "<document source=\"{}\">\n    <literal_block classes=\"foo\" ids=\"lit1\" \
+             names=\"lit1\" source=\"inc.rst\" xml:space=\"preserve\">\n        some *raw* \
+             text\n                after tab\n"
+                .replace("{}", &tmp.path().join("main.rst").display().to_string())
+        );
+    }
+
+    #[test]
+    fn literal_number_lines_pads_to_the_last_line_width() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "L1\nL2\nL3\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :literal:\n   :number-lines: 8\n",
+        );
+        let pf = tree.root.pformat();
+        for expected in [" 8 ", " 9 ", "10 "] {
+            assert!(
+                pf.contains(&format!(
+                    "<inline classes=\"ln\">\n            {expected}\n"
+                )),
+                "{pf}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_number_lines_flag_numbers_the_clip_from_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "L1\nL2\nL3\nL4\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :literal:\n   :start-line: 2\n   :number-lines:\n",
+        );
+        let pf = tree.root.pformat();
+        assert!(
+            pf.contains("<literal_block source=\"inc.rst\" xml:space=\"preserve\">"),
+            "{pf}"
+        );
+        assert!(pf.contains("1 \n        L3"), "{pf}");
+        assert!(pf.contains("2 \n        L4"), "{pf}");
+    }
+
+    /// Pins OUR `:code:` shape: this crate's `code` machinery is the
+    /// Pygments-less docutils (wave 3), so a language argument fails with
+    /// the pygments WARNING where the sphinx oracle (pygments installed)
+    /// would tokenize — a documented divergence for T14 to exclude.
+    #[test]
+    fn code_mode_with_a_language_pins_our_pygments_less_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "x = 1\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :code: python\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, 2);
+        assert_eq!(
+            msgs[0].3,
+            "Cannot analyze code. Pygments package not found."
+        );
+    }
+
+    #[test]
+    fn code_mode_without_a_language_is_a_code_classed_literal_with_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "x = 1\ny = 2\n");
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: inc.rst\n   :code:\n");
+        let pf = tree.root.pformat();
+        assert!(
+            pf.contains(
+                "<literal_block classes=\"code\" source=\"inc.rst\" xml:space=\"preserve\">\n        x = 1\n        y = 2\n"
+            ),
+            "{pf}"
+        );
+    }
+
+    #[test]
+    fn code_mode_number_lines_uses_the_flag_or_int_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "x = 1\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :code:\n   :number-lines: 5\n",
+        );
+        let pf = tree.root.pformat();
+        assert!(
+            pf.contains("<inline classes=\"ln\">\n            5 \n"),
+            "{pf}"
+        );
+    }
+
+    #[test]
+    fn parser_mode_is_the_documented_unsupported_severe() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "content\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :parser: myst\n",
+        );
+        let msgs = messages_of(&tree);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].0, 4);
+        assert_eq!(
+            msgs[0].3,
+            "Problem with \"include\" directive:\nparser mode is not supported by sphinx-ultra \
+             (planned with MyST, M2 wave 6)"
+        );
+    }
+
+    #[test]
+    fn literal_wins_over_code_wins_over_parser() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "text\n");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :literal:\n   :code: python\n   :parser: myst\n",
+        );
+        let pf = tree.root.pformat();
+        assert!(messages_of(&tree).is_empty(), "{pf}");
+        assert!(pf.contains("<literal_block source=\"inc.rst\""), "{pf}");
     }
 }
