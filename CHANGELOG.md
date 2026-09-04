@@ -59,7 +59,7 @@ everything forward is [ROADMAP.md](ROADMAP.md).
     not be separated by empty lines`, `glossary seems to be misformatted,
     check indentation`) now appear.
   Evidence: the environment oracle grew to 25 projects / 78 documents and
-  the read-phase doctree oracle to 426 cases, both at zero divergence
+  the read-phase doctree oracle to 428 cases, both at zero divergence
   against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
   against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
   mismatches).
@@ -281,14 +281,19 @@ surface. The binary's CLI is unaffected.
 - **Directive validation invented `Unknown option '…'` warnings for options
   Sphinx accepts (M2 wave 4.5).** `literalinclude` warned about `:lines:`,
   `:emphasize-lines:` and `:lineno-match:`; `code-block` about `:force:` and
-  `:class:`; `figure` about its own `:figwidth:`/`:figclass:` (naming the
-  *image* directive in the message); `image` and `figure` about
-  `:loading:`; `include` about `:parser:`/`:class:`/`:name:`. Each of these
-  failed `-W` on a project `sphinx-build` builds clean. Every validator's
-  option list is now checked against the parser's own option spec, in both
-  directions, by a test that covers all ten of them — which also removed
-  `literalinclude`'s advertised `:start-line:`/`:end-line:`, options
-  Sphinx's `literalinclude` does not have.
+  `:class:`; `figure` about its own `:figwidth:`/`:figclass:` and about
+  `:figname:` (all three naming the *image* directive in the message);
+  `image` and `figure` about `:loading:`. Each of those failed `-W` on a
+  project `sphinx-build` builds clean. `include`'s missing
+  `:parser:`/`:class:`/`:name:` were fixed in the same sweep but never
+  warned: that validator checks the argument and the file extension only,
+  and nothing on the build path consults its option list — a latent trap
+  rather than a live bug. Every validator's option list is now checked
+  against the parser's own option spec, in both directions, by a test that
+  covers all ten of them — which also removed `literalinclude`'s advertised
+  `:start-line:`/`:end-line:`, options Sphinx's `literalinclude` does not
+  have, and added `:figname:` to the parser's own `figure` table, where it
+  was missing (docutils `images.py:125`).
 - **A `glossary` comment split a multi-term entry (M2 wave 4.5).** A `.. `
   comment line between two terms produced two definition list items, the
   first with an empty `<definition>` — a shape docutils never emits. The
