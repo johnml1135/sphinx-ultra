@@ -642,6 +642,13 @@ CASES = [
     ('sx_roles', 'option_role', 'Use :option:`--verbose` now.\n'),
     ('sx_roles', 'option_role_in_program_scope', '.. program:: myprog\n\nUse :option:`--verbose` now.\n'),
     ('sx_roles', 'confval_role', 'See :confval:`my_setting` here.\n'),
+    # panel fix round A: the BASE `XRefRole.process_link` collapses every
+    # whitespace run in the target (`roles.py:165`, `ws_re.sub(' ', target)`),
+    # so every role that does not override it without calling super does too.
+    ('sx_roles', 'xref_target_whitespace_collapsed', 'See :term:`foo  bar` and :doc:`some  page` and :envvar:`FOO  BAR`.\n'),
+    ('sx_roles', 'xref_target_wrapped_across_lines', 'See :term:`foo\nbar` here.\n'),
+    # ... and the two std roles whose overrides skip super keep the run.
+    ('sx_roles', 'xref_target_no_collapse_token_option', 'See :token:`a  b` and :option:`-x  y`.\n'),
     # ----- wave-4.5 task 8: std-desc doc fields (T7 fix round 1) -----
     # DocFieldTransformer runs for EVERY object description; std kinds use
     # the empty typemap, so every field takes the unknown branch (renamed,
@@ -718,6 +725,15 @@ CASES = [
     ('py', 'role_lstrip_edges', 'See :py:func:`..target` and :py:func:`~~pkg.f` and :py:class:`custom <.Cls>`.\n'),
     ('py', 'role_in_currentmodule_scope', '.. py:currentmodule:: rmod\n\nSee :py:func:`local` here.\n'),
     ('py', 'role_in_class_scope', '.. py:class:: C\n\n   See :py:meth:`m` here.\n'),
+    # An unqualified role name resolves against `primary_domain` (py) first,
+    # and `type` is a py role with no std counterpart.
+    ('py', 'role_type_unqualified', '.. py:type:: MyAlias\n\nA :type:`MyAlias` here.\n'),
+    # `after_content` ASSIGNS `modules.pop()`, so a `:module:` option with no
+    # enclosing module scope leaves `py:module` present holding None — which
+    # `AnyXRefRole`'s ref_context copy renders as the "True" sentinel.
+    ('py', 'any_after_module_option', '.. py:function:: f()\n   :module: mymod\n\n   Body.\n\nAfter :any:`x`.\n'),
+    # `.. py:currentmodule:: None` pops the key instead, so nothing is stamped.
+    ('py', 'any_after_currentmodule_none', '.. py:currentmodule:: m\n\n.. py:currentmodule:: None\n\nAfter :any:`x`.\n'),
     # ----- wave-4.5 task 8: signature/annotation parsing shapes ([PY §2]) -----
     # Default configuration; the annotation grammar, arglist channels and
     # PEP-695 type parameter lists.
@@ -994,9 +1010,9 @@ def main() -> int:
         "sx_body": 30,
         "sx_image": 8,
         "sx_directives": 44,
-        "sx_roles": 16,
+        "sx_roles": 19,
         "sx_std": 25,
-        "py": 46,
+        "py": 49,
         "pysig": 30,
         "pyconf": 27,
     }

@@ -91,6 +91,36 @@ fn collapse_whitespace(text: &str) -> String {
     out
 }
 
+/// Whether an xref role's `process_link` reaches the base
+/// `XRefRole.process_link` — the one that runs
+/// `ws_re.sub(' ', target)` (`roles.py:165`).
+///
+/// Collapsing is the default, because it is what the base class does; a
+/// role only escapes it by overriding `process_link` WITHOUT calling
+/// `super()`. In sphinx 9.1.0 that is exactly:
+///
+/// * every `py:` role — `PyXRefRole` (`domains/python/__init__.py:559-585`)
+///   and its `_PyDecoXRefRole` subclass, which chains to `PyXRefRole`, not
+///   to the base (`:588-600`);
+/// * `js:`, `c:` and `cpp:` roles, which all copy `PyXRefRole`'s shape
+///   (`domains/javascript.py:387`, `domains/c/__init__.py:705`,
+///   `domains/cpp/__init__.py:853`);
+/// * `std:option` (`OptionXRefRole`, `domains/std/__init__.py:351-361`)
+///   and `std:token` (`TokenXRefRole`, `:703-718`).
+///
+/// `AnyXRefRole` (`roles.py:182-193`) and `MathReferenceRole`
+/// (`domains/math.py:32`) DO reach the base, as do every remaining `std:`
+/// role (`term`, `doc`, `keyword`, `confval`, `envvar`, …) and the `rst:`
+/// domain's roles. `std:ref`/`std:numref` also reach it, but the caller
+/// handles them separately: `lowercase=True` makes their munging
+/// `fully_normalize_name`.
+fn target_collapses_whitespace(domain: &str, reftype: &str) -> bool {
+    !matches!(
+        (domain, reftype),
+        ("py" | "js" | "c" | "cpp", _) | ("std", "option" | "token")
+    )
+}
+
 fn is_start_prefix_ok(prev: Option<char>) -> bool {
     match prev {
         None => true,
@@ -238,17 +268,16 @@ pub struct RefContext<'a> {
     /// module/class scope `PyXRefRole.process_link` stamps on every py
     /// pending_xref (`domains/python/__init__.py:568-569`).
     ///
-    /// NOT-A-BUG, do not "fix": unlike [`Self::py_class`], which has a
-    /// companion [`Self::py_class_key`], this `None` conflates "the key is
-    /// absent" with "the key exists and is None". Sphinx distinguishes
-    /// them, and the `:any:` role's `ref_context` copy is the one place the
-    /// difference could show — a `py:module` key present with a `None`
-    /// value would be copied as the `True` sentinel. Task 11 probed it and
-    /// found the shape unreachable: nothing in the py directives leaves
-    /// `py:module` set to `None` (`after_content` pops the key rather than
-    /// assigning None, `_object.py:477-480`), so the `if let Some(module)`
-    /// at the `:any:` stamping site below is faithful. Adding a
-    /// `py_module_key` flag would be dead weight.
+    /// Like [`Self::py_class`], this `None` cannot by itself distinguish
+    /// "the key is absent" from "the key exists holding `None`" — which is
+    /// why [`Self::py_module_key`] exists. The distinction is reachable:
+    /// `before_content` pushes `ref_context.get('py:module')`, which is
+    /// `None` when a `:module:`-carrying directive has no enclosing module
+    /// scope, and `after_content` then ASSIGNS that `None` back
+    /// (`if modules:` is true for a one-element list holding `None`,
+    /// `_object.py:498-503`) instead of popping the key. Research spec §8
+    /// trap 14 says the same. The `:any:` role's blanket `ref_context`
+    /// copy is where it shows, as the `"True"` sentinel.
     pub py_module: Option<&'a str>,
     pub py_class: Option<&'a str>,
     /// `'py:class' in env.ref_context`: true once any py object directive
@@ -256,6 +285,11 @@ pub struct RefContext<'a> {
     /// always assigns the key, `_object.py:482-503`) — the value may be
     /// `None` (`py_class` absent), which the `:any:` role still stamps.
     pub py_class_key: bool,
+    /// `'py:module' in env.ref_context`: true while a module scope is set
+    /// AND after a `:module:`-carrying directive has closed, where the key
+    /// survives holding `None`. Cleared by `.. py:currentmodule:: None`
+    /// (`ref_context.pop`).
+    pub py_module_key: bool,
     /// `'py:classes' in env.ref_context`: created by `before_content` for
     /// nesting kinds and unconditionally by `after_content`'s `setdefault`.
     /// The *list* is what `AnyXRefRole` copies onto the node, and balanced
@@ -952,8 +986,14 @@ impl<'a> Inliner<'a> {
                 let d = match lower {
                     "doc" | "ref" | "term" | "option" | "envvar" | "numref" | "keyword"
                     | "token" | "program" | "confval" => "std",
+                    // The eleven `PythonDomain.roles` keys
+                    // (`domains/python/__init__.py:755-767`). An
+                    // unqualified role name resolves against
+                    // `primary_domain` (default `py`) BEFORE the std
+                    // fallback (`util/docutils.py`, `sphinx_domains.role`),
+                    // and `type` is a py role with no std counterpart.
                     "func" | "class" | "meth" | "mod" | "attr" | "data" | "exc" | "obj"
-                    | "const" | "deco" => "py",
+                    | "const" | "deco" | "type" => "py",
                     // `AnyXRefRole` is registered domainless (`roles.py`
                     // `specific_docroles`), so `XRefRole.run`'s name split
                     // leaves `refdomain=''` — which is what routes the node
@@ -1097,15 +1137,19 @@ impl<'a> Inliner<'a> {
         // backtick is "start-string without end-string", verified against
         // docutils 0.22.4). py targets drop a leading `~` from the target
         // while the title keeps only the last dotted segment.
-        // `:any:` (the one domainless role here) takes the BASE
-        // `XRefRole.process_link`, whose only munging is the whitespace
-        // collapse — no lowercasing, no paren fixing.
+        //
+        // Every OTHER role runs the base `process_link` and so collapses —
+        // `:any:` (via `AnyXRefRole`'s `super()` call, `roles.py:183-193`)
+        // as much as `:term:`, `:doc:`, `:keyword:`, `:confval:`,
+        // `:envvar:`, `:eq:` and the `rst:` domain's roles. The collapse is
+        // therefore the DEFAULT here, with [`target_collapses_whitespace`]
+        // naming the opt-outs.
         let any = domain.is_empty() && reftype == "any";
         let (target, display) = match (domain.as_str(), reftype.as_str()) {
             ("std", "ref" | "numref") => {
                 (crate::doctree::ids::fully_normalize_name(&target), display)
             }
-            ("", "any") => (collapse_whitespace(&target), display),
+            (d, t) if target_collapses_whitespace(d, t) => (collapse_whitespace(&target), display),
             _ => (target, display),
         };
         // `PyXRefRole.process_link` (`domains/python/__init__.py:559-585`),
@@ -1185,12 +1229,15 @@ impl<'a> Inliner<'a> {
             if self.ctx.py_classes_key {
                 node.set("py:classes", AttrValue::Str(String::new()));
             }
-            // No `py_module_key` companion on purpose — see the
-            // NOT-A-BUG note on [`InlineContext::py_module`]: a
-            // key-exists-with-None `py:module` is unreachable, so
-            // "absent" and "None" may be conflated here.
-            if let Some(module) = self.ctx.py_module {
-                node.set("py:module", AttrValue::Str(module.to_string()));
+            // `py_module_key` carries the key-exists-with-`None` shape a
+            // bare `Option` cannot (see [`RefContext::py_module`]); an
+            // absent value under a present key renders as the same `"True"`
+            // sentinel `py:class` uses.
+            if self.ctx.py_module_key {
+                node.set(
+                    "py:module",
+                    AttrValue::Str(self.ctx.py_module.unwrap_or("True").to_string()),
+                );
             }
             if self.ctx.py_modules_key {
                 node.set("py:modules", AttrValue::Str(String::new()));
@@ -2500,6 +2547,7 @@ mod tests {
                 py_module: Some("m"),
                 py_class: None,
                 py_class_key: true,
+                py_module_key: true,
                 py_classes_key: true,
                 py_modules_key: false,
             },
@@ -2514,6 +2562,58 @@ mod tests {
             attr(xref, "std:program"),
             Some(&AttrValue::Str("prog".into()))
         );
+    }
+
+    /// The key-exists-holding-`None` shape `after_content` leaves behind
+    /// after a `:module:`-carrying directive with no enclosing module
+    /// scope: sphinx copies the key and docutils renders the `None` value
+    /// as `"True"`, exactly like `py:class`.
+    ///
+    // oracle: sphinx 9.1.0 full build of `.. py:function:: f()` +
+    // `:module: mymod` + body + ``After :any:`x`.`` -> the pending_xref
+    // carries py:module="True" (scratchpad A/p8.py).
+    #[test]
+    fn an_any_role_stamps_a_present_but_none_py_module() {
+        let py = crate::py::PySigConfig::default();
+        let nodes = sphinx_nodes_in(
+            ":any:`target`",
+            RefContext {
+                program: None,
+                py_module: None,
+                py_class: None,
+                py_class_key: true,
+                py_module_key: true,
+                py_classes_key: true,
+                py_modules_key: true,
+            },
+            &py,
+        );
+        let xref = &nodes[0];
+        assert_eq!(
+            attr(xref, "py:module"),
+            Some(&AttrValue::Str("True".into()))
+        );
+        assert_eq!(attr(xref, "py:modules"), Some(&AttrValue::Str("".into())));
+    }
+
+    /// ... and an absent key still stamps nothing.
+    #[test]
+    fn an_any_role_omits_an_absent_py_module() {
+        let py = crate::py::PySigConfig::default();
+        let nodes = sphinx_nodes_in(
+            ":any:`target`",
+            RefContext {
+                program: None,
+                py_module: None,
+                py_class: None,
+                py_class_key: false,
+                py_module_key: false,
+                py_classes_key: false,
+                py_modules_key: false,
+            },
+            &py,
+        );
+        assert_eq!(attr(&nodes[0], "py:module"), None);
     }
 
     /// The base `XRefRole.process_link` munging is the ONLY one `:any:`

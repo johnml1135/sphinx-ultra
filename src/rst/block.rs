@@ -266,6 +266,13 @@ pub(crate) struct BlockParser {
     /// (see [`super::inline::RefContext`]).
     py_class_key: bool,
     py_classes_key: bool,
+    /// `'py:module' in env.ref_context`. Tracked separately from
+    /// [`Self::py_module`] because the key can exist holding Python `None`
+    /// — `after_content` ASSIGNS `modules.pop()`, and `before_content`
+    /// pushed `ref_context.get('py:module')`, which is `None` when the
+    /// `:module:`-carrying directive had no enclosing module scope
+    /// (`_object.py:477-480` / `:498-503`; research spec §8 trap 14).
+    py_module_key: bool,
     py_modules_key: bool,
     /// Sphinx-mode class/rst-class pending classes (the ClassAttribute
     /// transform effect applied inline).
@@ -359,6 +366,7 @@ impl BlockParser {
             py_classes: Vec::new(),
             py_class_key: false,
             py_classes_key: false,
+            py_module_key: false,
             py_modules_key: false,
             pending_classes: None,
             equation_serial: 0,
@@ -497,6 +505,7 @@ impl BlockParser {
                 py_class: self.py_class.as_deref(),
                 py_class_key: self.py_class_key,
                 py_classes_key: self.py_classes_key,
+                py_module_key: self.py_module_key,
                 py_modules_key: self.py_modules_key,
             },
             &self.py,
@@ -558,6 +567,7 @@ impl BlockParser {
         sub.py_classes = self.py_classes.clone();
         sub.py_class_key = self.py_class_key;
         sub.py_classes_key = self.py_classes_key;
+        sub.py_module_key = self.py_module_key;
         sub.py_modules_key = self.py_modules_key;
         // The include log is document-level state shared with every nested
         // state machine in docutils (`misc.py:251-262` reads it through
@@ -5295,6 +5305,7 @@ impl BlockParser {
         if let Some(OptVal::Str(module)) = opt_get(&input.options, "module") {
             self.py_modules.push(self.py_module.take());
             self.py_module = Some(module.clone());
+            self.py_module_key = true;
             self.py_modules_key = true;
         }
     }
@@ -5312,9 +5323,22 @@ impl BlockParser {
         self.py_class_key = true;
         self.py_classes_key = true;
         if opt_get(&input.options, "module").is_some() {
-            // `modules.pop()` when the stack has entries, else the
-            // ref_context key is removed — both read back as None here.
-            self.py_module = self.py_modules.pop().flatten();
+            match self.py_modules.pop() {
+                // `ref_context['py:module'] = modules.pop()`: the key
+                // SURVIVES holding whatever `before_content` pushed —
+                // `None` when nothing enclosed this directive. That is the
+                // reachable branch under balanced nesting, and the one
+                // `:any:` renders as the `"True"` sentinel.
+                Some(previous) => {
+                    self.py_module = previous;
+                    self.py_module_key = true;
+                }
+                // `ref_context.pop('py:module')`: the key is removed.
+                None => {
+                    self.py_module = None;
+                    self.py_module_key = false;
+                }
+            }
             self.py_modules_key = true;
         }
     }
@@ -5352,6 +5376,7 @@ impl BlockParser {
         let no_index = has("no-index") || has("noindex");
         // ALWAYS sets the module scope, even under `:no-index:` (trap 6).
         self.py_module = Some(modname.clone());
+        self.py_module_key = true;
         // Content parses BEFORE the module's own id is allocated
         // (`__init__.py:505-510`), so ids taken by content come first.
         // sphinx parses it with allow_section_headings=True; sections
@@ -5419,9 +5444,12 @@ impl BlockParser {
         };
         let modname = argument.trim();
         if modname == "None" {
+            // `ref_context.pop('py:module', None)` — the key goes away.
             self.py_module = None;
+            self.py_module_key = false;
         } else {
             self.py_module = Some(modname.to_string());
+            self.py_module_key = true;
         }
     }
 

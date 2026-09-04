@@ -1951,6 +1951,24 @@
       "rst": "See :confval:`my_setting` here.\n"
     },
     {
+      "family": "sx_roles",
+      "name": "sx_roles.xref_target_whitespace_collapsed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"foo bar\" reftype=\"term\" refwarn=\"1\">\n            <inline classes=\"xref std std-term\">\n                foo  bar\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"some page\" reftype=\"doc\" refwarn=\"1\">\n            <inline classes=\"xref std std-doc\">\n                some  page\n         and \n        <index entries=\"('single',\\ 'FOO\\ BAR',\\ 'index-0',\\ '',\\ None) ('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'index-0',\\ '',\\ None)\">\n        <target ids=\"index-0\">\n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"FOO BAR\" reftype=\"envvar\" refwarn=\"0\">\n            <literal classes=\"xref std std-envvar\">\n                FOO  BAR\n        .\n",
+      "rst": "See :term:`foo  bar` and :doc:`some  page` and :envvar:`FOO  BAR`.\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.xref_target_wrapped_across_lines",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"foo bar\" reftype=\"term\" refwarn=\"1\">\n            <inline classes=\"xref std std-term\">\n                foo\n                bar\n         here.\n",
+      "rst": "See :term:`foo\nbar` here.\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.xref_target_no_collapse_token_option",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"a  b\" reftype=\"token\" refwarn=\"0\">\n            <literal classes=\"xref std std-token\">\n                a  b\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"-x  y\" reftype=\"option\" refwarn=\"1\" std:program=\"True\">\n            <literal classes=\"xref std std-option\">\n                -x  y\n        .\n",
+      "rst": "See :token:`a  b` and :option:`-x  y`.\n"
+    },
+    {
       "family": "sx_std",
       "name": "sx_std.envvar_param_field",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'environment\\ variable;\\ SIMPLE',\\ 'envvar-SIMPLE',\\ '',\\ None)\">\n    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-SIMPLE\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                SIMPLE\n        <desc_content>\n            <field_list>\n                <field>\n                    <field_name>\n                        Param x\n                    <field_body>\n                        <paragraph>\n                            thing\n",
@@ -2279,6 +2297,24 @@
       "name": "py.role_in_class_scope",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'C\\ (built-in\\ class)',\\ 'C',\\ '',\\ None)\">\n    <desc classes=\"py class\" desctype=\"class\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"class\">\n        <desc_signature _toc_name=\"C\" _toc_parts=\"('C',)\" class=\"\" classes=\"sig sig-object\" fullname=\"C\" ids=\"C\" module=\"True\">\n            <desc_annotation xml:space=\"preserve\">\n                <desc_sig_keyword classes=\"k\">\n                    class\n                <desc_sig_space classes=\"w\">\n                     \n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                C\n        <desc_content>\n            <paragraph>\n                See \n                <pending_xref py:class=\"C\" py:module=\"True\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"0\" reftarget=\"m\" reftype=\"meth\" refwarn=\"0\">\n                    <literal classes=\"xref py py-meth\">\n                        m()\n                 here.\n",
       "rst": ".. py:class:: C\n\n   See :py:meth:`m` here.\n"
+    },
+    {
+      "family": "py",
+      "name": "py.role_type_unqualified",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'MyAlias',\\ 'MyAlias',\\ '',\\ None)\">\n    <desc classes=\"py type\" desctype=\"type\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"type\">\n        <desc_signature _toc_name=\"MyAlias\" _toc_parts=\"('MyAlias',)\" class=\"\" classes=\"sig sig-object\" fullname=\"MyAlias\" ids=\"MyAlias\" module=\"True\">\n            <desc_annotation xml:space=\"preserve\">\n                <desc_sig_keyword classes=\"k\">\n                    type\n                <desc_sig_space classes=\"w\">\n                     \n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                MyAlias\n        <desc_content>\n    <paragraph>\n        A \n        <pending_xref py:class=\"True\" py:module=\"True\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"0\" reftarget=\"MyAlias\" reftype=\"type\" refwarn=\"0\">\n            <literal classes=\"xref py py-type\">\n                MyAlias\n         here.\n",
+      "rst": ".. py:type:: MyAlias\n\nA :type:`MyAlias` here.\n"
+    },
+    {
+      "family": "py",
+      "name": "py.any_after_module_option",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'f()\\ (in\\ module\\ mymod)',\\ 'mymod.f',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"f()\" _toc_parts=\"('mymod', 'f')\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"mymod.f\" module=\"mymod\">\n            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                mymod.\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                f\n            <desc_parameterlist xml:space=\"preserve\">\n        <desc_content>\n            <paragraph>\n                Body.\n    <paragraph>\n        After \n        <pending_xref py:class=\"True\" py:classes=\"\" py:module=\"True\" py:modules=\"\" refdoc=\"index\" refdomain=\"\" refexplicit=\"0\" reftarget=\"x\" reftype=\"any\" refwarn=\"1\">\n            <literal classes=\"xref any\">\n                x\n        .\n",
+      "rst": ".. py:function:: f()\n   :module: mymod\n\n   Body.\n\nAfter :any:`x`.\n"
+    },
+    {
+      "family": "py",
+      "name": "py.any_after_currentmodule_none",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        After \n        <pending_xref refdoc=\"index\" refdomain=\"\" refexplicit=\"0\" reftarget=\"x\" reftype=\"any\" refwarn=\"1\">\n            <literal classes=\"xref any\">\n                x\n        .\n",
+      "rst": ".. py:currentmodule:: m\n\n.. py:currentmodule:: None\n\nAfter :any:`x`.\n"
     },
     {
       "family": "pysig",
