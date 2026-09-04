@@ -608,7 +608,7 @@ impl DirectiveValidator for LiteralIncludeValidator {
                 | "name" | "class" | "encoding" | "pyobject" | "diff" => {
                     // Valid text options
                 }
-                "linenos" | "force" => {
+                "linenos" | "force" | "lineno-match" => {
                     // Flag options
                     if !value.is_empty() {
                         return DirectiveValidationResult::Warning(format!(
@@ -617,6 +617,15 @@ impl DirectiveValidator for LiteralIncludeValidator {
                         ));
                     }
                 }
+                // Every other name the spec admits (`lines`,
+                // `emphasize-lines`, `start-at`, `end-at`, …) carries a free
+                // string this validator has no extra constraint for.
+                // Consulting `valid_options` rather than a second literal
+                // list is what keeps the two from drifting: they did, and a
+                // plain `.. literalinclude:: f.py` + `:lines:` warned
+                // "Unknown option 'lines'" against an option the very same
+                // validator advertises as valid.
+                _ if self.valid_options().iter().any(|valid| valid == option) => {}
                 _ => {
                     return DirectiveValidationResult::Warning(format!(
                         "Unknown option '{}' for literalinclude directive",
@@ -638,12 +647,15 @@ impl DirectiveValidator for LiteralIncludeValidator {
             "language".to_string(),
             "linenos".to_string(),
             "lineno-start".to_string(),
+            "lineno-match".to_string(),
             "emphasize-lines".to_string(),
             "lines".to_string(),
             "start-line".to_string(),
             "end-line".to_string(),
             "start-after".to_string(),
             "end-before".to_string(),
+            "start-at".to_string(),
+            "end-at".to_string(),
             "prepend".to_string(),
             "append".to_string(),
             "dedent".to_string(),
@@ -893,5 +905,52 @@ mod tests {
             validator.validate(&directive),
             DirectiveValidationResult::Error(_)
         ));
+    }
+
+    /// Every name `LiteralIncludeValidator::valid_options` advertises must
+    /// actually validate. The two lists had drifted: `:lines:`,
+    /// `:emphasize-lines:` and `:lineno-match:` — three of the directive's
+    /// most common options, all present in the real option spec
+    /// (`LITERALINCLUDE_OPTS`, src/rst/block.rs) — fell through to the
+    /// catch-all and warned "Unknown option", a warning stream Sphinx has
+    /// no counterpart for (found by the env-fixture inc_* projects).
+    #[test]
+    fn literalinclude_accepts_every_option_it_advertises() {
+        let validator = LiteralIncludeValidator::new();
+
+        for option in validator.valid_options() {
+            // A value every constrained option accepts: the integer ones
+            // parse it, the flags reject a non-empty value, the rest are
+            // free strings.
+            let value = if matches!(
+                option.as_str(),
+                "linenos" | "force" | "lineno-match" | "dedent"
+            ) {
+                String::new()
+            } else {
+                "1".to_string()
+            };
+            let mut options = HashMap::new();
+            options.insert(option.clone(), value);
+            let directive =
+                create_test_directive("literalinclude", vec!["f.py".to_string()], options, "");
+            assert_eq!(
+                validator.validate(&directive),
+                DirectiveValidationResult::Valid,
+                "option {option:?} is advertised by valid_options but does not validate"
+            );
+        }
+
+        // The catch-all still catches a name that really is not in the spec.
+        let mut options = HashMap::new();
+        options.insert("no-such-option".to_string(), String::new());
+        let directive =
+            create_test_directive("literalinclude", vec!["f.py".to_string()], options, "");
+        assert_eq!(
+            validator.validate(&directive),
+            DirectiveValidationResult::Warning(
+                "Unknown option 'no-such-option' for literalinclude directive".to_string()
+            )
+        );
     }
 }
