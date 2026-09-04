@@ -1,14 +1,30 @@
 //! Python expression parsing with `ast.unparse`-normalized output.
 //!
 //! Sphinx renders parameter defaults and (pieces of) annotations by running
-//! them through `ast.parse(mode='eval')` + `ast.unparse` (`sphinx/util/
-//! inspect.py` routes them through `ast_unparse`). `parse_py_expr` +
-//! [`unparse`] reproduce that round trip byte-for-byte for the expression
-//! subset the py domain needs; anything outside the subset — `lambda`,
-//! comprehensions, f-strings, walrus, `await`, `yield`, conditional
-//! expressions, comparisons, `and`/`or`, slices, `**kwargs` in calls,
-//! complex literals — is a [`PyExprError`], which routes callers into the
-//! same fallback paths Sphinx takes when `ast.parse` raises `SyntaxError`.
+//! them through `ast.parse` + `ast.unparse` (`sphinx/util/inspect.py` routes
+//! them through `ast_unparse`). `parse_py_expr` + [`unparse`] reproduce that
+//! round trip byte-for-byte for the expression subset the py domain needs;
+//! anything outside the subset — `lambda`, comprehensions, f-strings,
+//! walrus, `await`, `yield`, conditional expressions, comparisons, slices,
+//! `**kwargs` in calls, complex literals — is a [`PyExprError`], which
+//! routes callers into the same fallback paths Sphinx takes when
+//! `ast.parse` raises `SyntaxError`.
+//!
+//! Sphinx does not use one parse mode everywhere, so neither do we:
+//!
+//! * [`parse_py_expr`] is `ast.parse(s, mode='eval')` — the mode reached
+//!   through `signature_from_str`'s `def func(...)` wrapper, where a
+//!   default value sits in an expression slot. A top-level `*a` is a
+//!   `SyntaxError` there.
+//! * [`parse_py_expr_stmt`] is plain `ast.parse(s)` (exec), the mode
+//!   `_parse_annotation` uses (`_annotations.py:232`, `type_comments=True`).
+//!   A top-level `Starred` is a legal `Expr` statement there, so PEP 646
+//!   `*Ts` / `*tuple[int, ...]` annotations parse, and an empty (or
+//!   blank) source is `Module(body=[])` rather than an error.
+//! * [`parse_py_star_annotation`] is CPython's `star_annotation`
+//!   production (`'*' bitwise_or | expression`), the only grammar slot
+//!   where `*args: *Ts` is legal — i.e. the annotation of a var-positional
+//!   parameter, which `signature_from_str` hands to Sphinx as `'*Ts'`.
 //!
 //! Every normalization rule implemented here is pinned by the unit-test
 //! oracle battery below, generated with the REAL pinned toolchain
@@ -36,6 +52,11 @@
 //!   the only remaining under-escape class is the unassigned (Cn) code
 //!   points, which render unescaped where CPython would escape them — a
 //!   sanctioned, documented divergence.
+//! * Exec mode only ever yields ONE statement here: a source holding
+//!   several (`int;`, `int\nstr` — `Module(body=[Expr, Expr])`, which
+//!   Sphinx's `functools.reduce` over `node.body` renders as the
+//!   concatenation of both) is `Err`, so the caller falls back to a single
+//!   whole-text xref where Sphinx renders each statement.
 //! * [`MAX_DEPTH`] is a whole-expression complexity budget, not a nesting
 //!   depth: trailers (`a.b.c`, `f(x)(y)`, `m[i][j]`) and binop folds each
 //!   charge it too, so a FLAT chain of roughly 200 operations is `Err`
@@ -88,13 +109,26 @@ pub enum PyExpr {
         args: Vec<PyExpr>,
         kwargs: Vec<(String, PyExpr)>,
     },
-    /// `ast.Starred` — inside calls, displays and subscript tuples only.
+    /// `ast.Starred` — inside calls, displays and subscript tuples, plus
+    /// the two top-level slots exec mode and `star_annotation` open up
+    /// (see the module docs).
     Starred(Box<PyExpr>),
+    /// `ast.BoolOp`: `a and b`, `a or b or c`. Chains of the *same*
+    /// operator flatten into one node, exactly as CPython's parser builds
+    /// them.
+    BoolOp { op: PyBoolOp, values: Vec<PyExpr> },
+}
+
+/// `ast.boolop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PyBoolOp {
+    And,
+    Or,
 }
 
 /// `ast.BinOp` operators, i.e. every Python binary operator that is an
-/// `ast.operator` (comparisons and `and`/`or` are different node kinds and
-/// stay out of scope).
+/// `ast.operator` (comparisons are a different node kind and stay out of
+/// scope; `and`/`or` are [`PyBoolOp`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PyOp {
     Add,
@@ -173,16 +207,64 @@ impl std::error::Error for PyExprError {}
 /// mode='eval')` for the supported subset). Trailing garbage is an error;
 /// so is anything outside the subset. Never panics.
 pub fn parse_py_expr(s: &str) -> Result<PyExpr, PyExprError> {
-    let toks = tokenize(s)?;
-    let mut parser = Parser {
-        toks,
-        pos: 0,
-        depth: 0,
-    };
+    let mut parser = Parser::new(tokenize(s)?, TopLevel::Eval);
     if parser.peek().is_none() {
         return Err(PyExprError::new("empty expression"));
     }
     parser.parse_top()
+}
+
+/// Parse a whole string the way `_parse_annotation` does — plain
+/// `ast.parse(s)`, i.e. exec mode (`_annotations.py:232`).
+///
+/// `Ok(None)` is `Module(body=[])`: an empty or blank source holds no
+/// statement at all, and Sphinx's `functools.reduce` over `node.body`
+/// then yields the empty node list (`_annotations.py:150-151`).
+/// `Ok(Some(e))` is the single `Expr` statement case, which is what every
+/// annotation in the subset is. A top-level `Starred` — bare (`*Ts`) or
+/// inside a bare tuple (`*a, b`) — is legal here and is *not* legal in
+/// [`parse_py_expr`].
+pub fn parse_py_expr_stmt(s: &str) -> Result<Option<PyExpr>, PyExprError> {
+    if has_leading_indent(s) {
+        // `ast.parse('  int')` raises IndentationError — a SyntaxError
+        // subclass, so `_parse_annotation` takes its `except SyntaxError`
+        // arm and xrefs the *unstripped* text.
+        return Err(PyExprError::new("unexpected indent"));
+    }
+    let mut parser = Parser::new(tokenize(s)?, TopLevel::Exec);
+    if parser.peek().is_none() {
+        return Ok(None);
+    }
+    parser.parse_top().map(Some)
+}
+
+/// Parse the annotation of a var-positional parameter — CPython's
+/// `star_annotation` production (`'*' bitwise_or | expression`), the only
+/// place a PEP 646 unpack may appear in a signature.
+pub fn parse_py_star_annotation(s: &str) -> Result<PyExpr, PyExprError> {
+    let mut parser = Parser::new(tokenize(s)?, TopLevel::StarAnnotation);
+    if parser.peek().is_none() {
+        return Err(PyExprError::new("empty expression"));
+    }
+    parser.parse_top()
+}
+
+/// `ast.parse`'s IndentationError test, narrowed to the shapes an
+/// annotation string can take: the first line that carries a token must
+/// not start with a space or a tab. A form feed is not indentation
+/// (`'\x0cint'` parses; `' \x0c int'` does not, because of the space), and
+/// wholly blank lines are skipped.
+fn has_leading_indent(s: &str) -> bool {
+    for line in s.split('\n') {
+        if line
+            .chars()
+            .all(|c| matches!(c, ' ' | '\t' | '\x0c' | '\r' | '\x0b'))
+        {
+            continue;
+        }
+        return line.starts_with([' ', '\t']);
+    }
+    false
 }
 
 /// Render an expression exactly as CPython 3.12 `ast.unparse` would render
@@ -828,11 +910,13 @@ fn raw_bytes(body: &str) -> Result<Vec<u8>, PyExprError> {
 // ---------------------------------------------------------------------------
 //
 // Grammar subset, loosest to tightest (the real Python levels for the ops
-// we support; excluded levels — `or`/`and`, comparisons, conditional
-// expressions, lambda — are `Err`):
+// we support; excluded levels — comparisons, conditional expressions,
+// lambda — are `Err`):
 //
 //   top      := star_or_expr (',' star_or_expr)* [',']       (bare tuple)
-//   expr     := 'not' expr | bitor
+//   expr     := bool_and ('or' bool_and)*
+//   bool_and := not_expr ('and' not_expr)*
+//   not_expr := 'not' not_expr | bitor
 //   bitor    := bitxor ('|' bitxor)*
 //   bitxor   := bitand ('^' bitand)*
 //   bitand   := shift ('&' shift)*
@@ -844,10 +928,26 @@ fn raw_bytes(body: &str) -> Result<Vec<u8>, PyExprError> {
 //   postfix  := atom ('.' NAME | '(' args ')' | '[' items ']')*
 //   star_or_expr := '*' bitor | expr                         (PEP 448/646)
 
+/// Which of `ast.parse`'s grammar entry points the *top level* of this
+/// parse follows. Nothing below the top level differs between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopLevel {
+    /// `mode='eval'`: no starred expression at the top level, not even
+    /// inside a bare tuple (`*a`, `*a, b`, `*a,` are all SyntaxError).
+    Eval,
+    /// Plain `ast.parse` (exec): the top level is an `Expr` statement, so
+    /// `*a` and `*a, b` are legal.
+    Exec,
+    /// `star_annotation` (`'*' bitwise_or | expression`): one optional
+    /// leading `*`, never a starred tuple element.
+    StarAnnotation,
+}
+
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
     depth: u32,
+    top: TopLevel,
 }
 
 /// The binary operator accepted at each precedence level of `parse_binop`.
@@ -870,8 +970,32 @@ fn level_op(level: usize, tok: &Tok) -> Option<PyOp> {
 }
 
 impl Parser {
+    fn new(toks: Vec<Tok>, top: TopLevel) -> Self {
+        Self {
+            toks,
+            pos: 0,
+            depth: 0,
+            top,
+        }
+    }
+
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos)
+    }
+
+    /// `and` / `or` / `not` lex as `Tok::Name`; this is the keyword test
+    /// the boolean levels branch on.
+    fn peek_keyword(&self, kw: &str) -> bool {
+        matches!(self.peek(), Some(Tok::Name(n)) if n == kw)
+    }
+
+    fn eat_keyword(&mut self, kw: &str) -> bool {
+        if self.peek_keyword(kw) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
     }
 
     fn eat(&mut self, t: &Tok) -> bool {
@@ -924,8 +1048,15 @@ impl Parser {
         // `ast.parse(mode='eval')` rejects starred expressions at the top
         // level even inside a bare tuple (`*a, b`, `b, *a`, `*a,` are all
         // SyntaxError, oracle-verified) — only displays, calls and
-        // subscripts take them.
-        if elts.iter().any(|e| matches!(e, PyExpr::Starred(_))) {
+        // subscripts take them. Exec mode (what `_parse_annotation` uses)
+        // and `star_annotation` do accept them; see the module docs.
+        let starred = elts.iter().any(|e| matches!(e, PyExpr::Starred(_)));
+        let star_ok = match self.top {
+            TopLevel::Eval => false,
+            TopLevel::Exec => true,
+            TopLevel::StarAnnotation => !tuple,
+        };
+        if starred && !star_ok {
             return Err(PyExprError::new("cannot use starred expression here"));
         }
         if tuple {
@@ -959,15 +1090,54 @@ impl Parser {
     }
 
     fn parse_expr_inner(&mut self) -> Result<PyExpr, PyExprError> {
-        if matches!(self.peek(), Some(Tok::Name(n)) if n == "not") {
-            self.pos += 1;
-            let operand = self.parse_expr()?;
-            return Ok(PyExpr::UnaryOp {
-                op: PyUnaryOp::Not,
-                operand: Box::new(operand),
-            });
+        self.parse_bool_op(PyBoolOp::Or)
+    }
+
+    /// `or` and `and` share one shape; `Or` recurses into `And`, `And` into
+    /// `not_expr`. A chain of the same operator flattens into one
+    /// `ast.BoolOp` with N values, as CPython's parser builds it.
+    fn parse_bool_op(&mut self, op: PyBoolOp) -> Result<PyExpr, PyExprError> {
+        let kw = match op {
+            PyBoolOp::Or => "or",
+            PyBoolOp::And => "and",
+        };
+        let first = self.parse_bool_operand(op)?;
+        if !self.peek_keyword(kw) {
+            return Ok(first);
         }
-        self.parse_binop(0)
+        let mut values = vec![first];
+        while self.eat_keyword(kw) {
+            self.charge_node()?;
+            values.push(self.parse_bool_operand(op)?);
+        }
+        Ok(PyExpr::BoolOp { op, values })
+    }
+
+    fn parse_bool_operand(&mut self, op: PyBoolOp) -> Result<PyExpr, PyExprError> {
+        match op {
+            PyBoolOp::Or => self.parse_bool_op(PyBoolOp::And),
+            PyBoolOp::And => self.parse_not(),
+        }
+    }
+
+    /// `not_expr := 'not' not_expr | bitor`. `not` binds tighter than
+    /// `and`/`or`, so `not a or b` is `(not a) or b`.
+    fn parse_not(&mut self) -> Result<PyExpr, PyExprError> {
+        if !self.peek_keyword("not") {
+            return self.parse_binop(0);
+        }
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.depth -= 1;
+            return Err(PyExprError::new("expression is too deeply nested"));
+        }
+        self.pos += 1;
+        let operand = self.parse_not();
+        self.depth -= 1;
+        Ok(PyExpr::UnaryOp {
+            op: PyUnaryOp::Not,
+            operand: Box::new(operand?),
+        })
     }
 
     fn parse_binop(&mut self, level: usize) -> Result<PyExpr, PyExprError> {
@@ -1560,6 +1730,33 @@ fn write_expr(out: &mut String, e: &PyExpr, ctx: Prec) {
             out.push('*');
             write_expr(out, value, Prec::Expr);
         }
+        PyExpr::BoolOp { op, values } => {
+            // `_Unparser.visit_BoolOp`: `operator_precedence` is bumped
+            // once per value and the bump is CUMULATIVE (`nonlocal`), so
+            // value 0 is rendered at `own.next()`, value 1 at
+            // `own.next().next()`, and so on — which is why
+            // `a or (b and c)` keeps its parentheses while
+            // `a and b or c` does not.
+            let (own, sep) = match op {
+                PyBoolOp::Or => (Prec::Or, " or "),
+                PyBoolOp::And => (Prec::And, " and "),
+            };
+            let parens = ctx > own;
+            if parens {
+                out.push('(');
+            }
+            let mut child = own;
+            for (i, value) in values.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(sep);
+                }
+                child = child.next();
+                write_expr(out, value, child);
+            }
+            if parens {
+                out.push(')');
+            }
+        }
         PyExpr::BinOp { left, op, right } => {
             let op_prec = op.prec();
             let parens = ctx > op_prec;
@@ -1721,7 +1918,7 @@ fn write_bytes_repr(out: &mut String, bytes: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_py_expr, unparse};
+    use super::{parse_py_expr, parse_py_expr_stmt, parse_py_star_annotation, unparse};
 
     /// The oracle battery. Every `(source, expected)` pair below is
     /// probe-verified:
@@ -1924,6 +2121,44 @@ mod tests {
         ("(a | b)[c]", "(a | b)[c]"),
         ("-x[0]", "-x[0]"),
         ("(-x)[0]", "(-x)[0]"),
+        // `ast.BoolOp`. `_Unparser.visit_BoolOp` bumps its precedence
+        // CUMULATIVELY across the values, so the parenthesization is
+        // asymmetric: `a and b or c` needs none, `a or b and c` does.
+        ("a or b", "a or b"),
+        ("a and b or c", "a and b or c"),
+        ("a or b and c", "a or (b and c)"),
+        ("(a or b) and c", "(a or b) and c"),
+        ("not a or b", "not a or b"),
+        ("a or not b", "a or not b"),
+        ("a | b or c", "a | b or c"),
+        ("a or b or c", "a or b or c"),
+        ("a and b and c", "a and b and c"),
+        ("(a or b) or c", "(a or b) or c"),
+        ("a or (b or c)", "a or (b or c)"),
+        ("-a or b", "-a or b"),
+        ("f(a or b)", "f(a or b)"),
+        ("[a or b]", "[a or b]"),
+        ("a or b, c", "(a or b, c)"),
+        ("x[a or b]", "x[a or b]"),
+        ("(a or b).c", "(a or b).c"),
+        ("(a and b)(c)", "(a and b)(c)"),
+        ("not (a or b)", "not (a or b)"),
+        ("a or b ** c", "a or b ** c"),
+        ("(a or b)[0]", "(a or b)[0]"),
+        ("{a or b}", "{a or b}"),
+        ("{(a or b): 1}", "{a or b: 1}"),
+        ("{'k': a or b}", "{'k': a or b}"),
+        ("a or b | c", "a or b | c"),
+        ("(a and b) or (c and d)", "a and b or (c and d)"),
+        ("a and (b or c)", "a and (b or c)"),
+        ("a or b or c or d", "a or b or c or d"),
+        ("a and b or c and d", "a and b or (c and d)"),
+        ("f(*(a or b))", "f(*(a or b))"),
+        ("x[a or b, c]", "x[a or b, c]"),
+        ("a  or   b", "a or b"),
+        ("not not a or b", "not not a or b"),
+        ("True or False", "True or False"),
+        ("a or 1 or 'x'", "a or 1 or 'x'"),
     ];
 
     /// Inputs that must be `Err` — never a panic. Some are invalid Python;
@@ -1947,8 +2182,6 @@ mod tests {
         // outside the enum's subset (valid Python, deliberate Err)
         "x < y",
         "x == y",
-        "a and b",
-        "a or b",
         "x[1:2]",
         "x[:]",
         "f(**kw)",
@@ -2012,6 +2245,87 @@ mod tests {
             let reparsed = parse_py_expr(&first)
                 .unwrap_or_else(|e| panic!("unparse output {first:?} must reparse: {e}"));
             assert_eq!(unparse(&reparsed), first, "not idempotent for {src:?}");
+        }
+    }
+
+    /// Exec mode is what `_parse_annotation` uses, so a top-level starred
+    /// expression is a legal `Expr` statement there and a blank source is
+    /// `Module(body=[])`.
+    ///
+    // oracle (pinned toolchain, scratchpad A/p1.py + A/p3.py):
+    //   ast.parse('*Ts')       -> Module(body=[Expr(Starred(Name('Ts')))])
+    //   ast.parse('*a, b')     -> Module(body=[Expr(Tuple([Starred(a), b]))])
+    //   ast.parse('')/' '/'\n' -> Module(body=[])
+    //   ast.parse('  int')     -> IndentationError: unexpected indent
+    //   ast.parse('\x0cint')   -> Module(body=[Expr(Name('int'))])
+    #[test]
+    fn exec_mode_accepts_top_level_starred_and_empty_sources() {
+        for (src, want) in [
+            ("*Ts", "*Ts"),
+            ("* Ts", "*Ts"),
+            ("*tuple[int, ...]", "*tuple[int, ...]"),
+            ("*a.b", "*a.b"),
+            ("*a | b", "*a | b"),
+            ("*-a", "*-a"),
+            ("*a, b", "(*a, b)"),
+            ("a, *b", "(a, *b)"),
+            ("*a,", "(*a,)"),
+            ("int", "int"),
+            ("\nint", "int"),
+            ("  \nint", "int"),
+            ("\u{c}int", "int"),
+            ("int ", "int"),
+        ] {
+            let parsed = parse_py_expr_stmt(src)
+                .unwrap_or_else(|e| panic!("parse_py_expr_stmt({src:?}) failed: {e}"))
+                .unwrap_or_else(|| panic!("parse_py_expr_stmt({src:?}) yielded no statement"));
+            assert_eq!(unparse(&parsed), want, "exec-mode unparse for {src:?}");
+        }
+        for src in ["", " ", "  ", "\n", "\u{c}", "\t\n \n"] {
+            assert_eq!(
+                parse_py_expr_stmt(src),
+                Ok(None),
+                "{src:?} must be Module(body=[])"
+            );
+        }
+        // IndentationError is a SyntaxError subclass, so the caller keeps
+        // the unstripped text — never a silently stripped parse.
+        for src in ["  int", " int", "\tint", " \u{c} int", "int\n  str"] {
+            assert!(
+                parse_py_expr_stmt(src).is_err(),
+                "{src:?} must raise IndentationError"
+            );
+        }
+        // Eval mode still rejects every top-level star (ledger ruling).
+        for src in ["*Ts", "*a, b", "*a,", "a, *b"] {
+            assert!(parse_py_expr(src).is_err(), "eval mode must reject {src:?}");
+        }
+    }
+
+    /// CPython's `star_annotation` production: one leading `*`, never a
+    /// starred tuple element.
+    ///
+    // oracle: ast.parse('def f(*args: *Ts): pass') is legal;
+    // 'def f(x: *Ts)' and 'def f(**k: *Ts)' are SyntaxErrors, and
+    // signature_from_str('(*args: *tuple[int, ...])') gives the annotation
+    // string '*tuple[int, ...]' (scratchpad A/p2.py).
+    #[test]
+    fn star_annotation_mode_takes_one_leading_star_only() {
+        for (src, want) in [
+            ("*Ts", "*Ts"),
+            ("*tuple[int, ...]", "*tuple[int, ...]"),
+            ("int", "int"),
+            ("int | None", "int | None"),
+        ] {
+            let parsed = parse_py_star_annotation(src)
+                .unwrap_or_else(|e| panic!("parse_py_star_annotation({src:?}) failed: {e}"));
+            assert_eq!(unparse(&parsed), want);
+        }
+        for src in ["*a, b", "a, *b", "*a,", ""] {
+            assert!(
+                parse_py_star_annotation(src).is_err(),
+                "star_annotation must reject {src:?}"
+            );
         }
     }
 

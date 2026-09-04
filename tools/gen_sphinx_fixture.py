@@ -3,8 +3,13 @@
 
 Regenerate with:
 
-    uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' \
-        python tools/gen_sphinx_fixture.py
+    PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' \
+        --with 'docutils==0.22.4' python tools/gen_sphinx_fixture.py
+
+PYTHONNOUSERSITE=1 is NOT optional: `uv run` keeps the user's site-packages
+on sys.path, and a user-site Pygments there silently re-records every
+`code:: python` case as tokenized output. Regenerating without the flag
+produces spurious fixture churn.
 
 THE SPHINX ORACLE. This fixture records what a REAL `sphinx-build` read phase
 produces for each snippet: the probe-validated minimal deterministic harness
@@ -734,6 +739,34 @@ CASES = [
     ('pysig', 'negative_none_defaults', '.. py:function:: f(x=-1, y=None)\n'),
     ('pysig', 'annotated_default_spacing', '.. py:function:: f(x: int = 2, y=3)\n'),
     ('pysig', 'backslash_in_arglist_default', '.. py:function:: f(a\\, b)\n'),
+    # ----- panel fix round A: exec-mode annotations, numeric source -----
+    # ----- recovery order, and BoolOp defaults -----
+    # PEP 646. `_parse_annotation` parses in EXEC mode, so `*Ts` is a legal
+    # `Expr(Starred(...))` statement; CPython's `star_annotation` production
+    # makes `*args` the only parameter slot that can carry one.
+    ('pysig', 'star_annotation_pep646', '.. py:function:: f(*args: *Ts)\n'),
+    ('pysig', 'star_annotation_bracketed_unpack', '.. py:function:: f(*args: *tuple[int, ...])\n'),
+    ('pysig', 'star_annotation_neighbours', '.. py:function:: f(a, *args: *Ts, b)\n'),
+    ('pysig', 'star_annotation_retann', '.. py:function:: f() -> *Ts\n'),
+    # `visit_Constant` recovers numeric source text by AST position, so a
+    # call's callee keeps its own spellings even when the arguments carry
+    # numbers too.
+    ('pysig', 'chained_call_numeric_default', '.. py:function:: f(x=a(0x10).b(16))\n'),
+    ('pysig', 'called_call_numeric_default', '.. py:function:: f(x=g(0xFF)(255))\n'),
+    ('pysig', 'octal_chain_numeric_default', '.. py:function:: f(x=P(0o755).mask(0o022))\n'),
+    # `sphinx.pycode.ast` has a first-class `visit_BoolOp`, so `and`/`or`
+    # defaults take the AST path (separators keep their `abbreviation`).
+    # `_parse_annotation`'s walk has no BoolOp branch, so the same operator
+    # in an ANNOTATION still falls back to one whole-text xref.
+    ('pysig', 'boolop_default_keyword_only', '.. py:function:: f(a, *, x=A or B)\n'),
+    ('pysig', 'boolop_default_positional_only', '.. py:function:: f(a=A and B, /)\n'),
+    ('pysig', 'boolop_default_mixed_chain', '.. py:function:: f(x=a and b or c)\n'),
+    ('pysig', 'boolop_annotation_falls_back', '.. py:function:: f(x: a or b)\n'),
+    # PEP 695 empty bound: `_parse_annotation('')` is the empty node list,
+    # so `if not annotation: continue` drops the whole type parameter.
+    ('pysig', 'empty_type_param_bound', '.. py:function:: f[T:](x)\n'),
+    ('pysig', 'empty_type_param_bound_default', '.. py:function:: f[T: = int](x)\n'),
+    ('pysig', 'empty_type_param_bound_sibling', '.. py:function:: f[T:, U](x)\n'),
     # ----- wave-4.5 task 8: signature-config family ([SIG] A/B/C/D/E + -----
     # ----- U/L/F-U/P matrices as per-case confoverrides) -----
     ('pyconf', 'wrap_equal_no_flip', '.. py:function:: foo(aaaa)\n', {'maximum_signature_line_length': 9}),
@@ -964,7 +997,7 @@ def main() -> int:
         "sx_roles": 16,
         "sx_std": 25,
         "py": 46,
-        "pysig": 16,
+        "pysig": 30,
         "pyconf": 27,
     }
     counts: dict = {}

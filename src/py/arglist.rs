@@ -53,6 +53,17 @@
 //!   order and verifies each token re-parses to the same value; when the
 //!   mapping is ambiguous the whole fragment falls back to `repr` form
 //!   (normalized digits) where sphinx would keep source text.
+//!   `visit_Constant` recovers its text by AST POSITION
+//!   (`ast.get_source_segment`), so render order only has to agree with
+//!   source order — which it now does everywhere except one shape:
+//!   `ast.Call` splits `args` from `keywords`, losing their interleaving,
+//!   so a positional (necessarily a `*` unpack) written AFTER a keyword
+//!   argument is rendered before it and consumes the earlier token. The
+//!   text order still matches sphinx (`visit_Call` reorders identically),
+//!   but a non-decimal spelling in such a fragment lands in the `repr`
+//!   fallback: `f(k=0x1, *a(0x2))` prints `f(*a(2), k=1)` where sphinx
+//!   keeps `f(*a(0x2), k=0x1)`. Fixing it needs source spans on
+//!   [`PyConst`], not a render-order tweak.
 //! - Type-parameter tokenization errors surface as
 //!   [`SigParseError::Syntax`] with an approximate message where sphinx's
 //!   warning embeds the exact `tokenize.TokenError` text.
@@ -74,7 +85,9 @@ use crate::doctree::{kinds, AttrValue, Node, Span};
 use super::annotations::{
     desc_sig_operator, desc_sig_punctuation, desc_sig_space, parse_annotation, PyRefContext,
 };
-use super::expr::{self, parse_py_expr, PyConst, PyExpr, PyOp, PyUnaryOp};
+use super::expr::{
+    self, parse_py_expr, parse_py_star_annotation, PyBoolOp, PyConst, PyExpr, PyOp, PyUnaryOp,
+};
 use super::PySigConfig;
 
 /// `inspect._ParameterKind`, as classified by `signature_from_ast`
@@ -268,7 +281,7 @@ pub fn signature_from_str(arglist: &str) -> Result<Vec<PyParam>, SigParseError> 
                     ));
                 }
                 seen_star = true;
-                let raw = parse_param_tokens(rest, arglist)?;
+                let raw = parse_param_tokens(rest, arglist, true)?;
                 if raw.default.is_some() {
                     return Err(SigParseError::Syntax(
                         "var-positional argument cannot have default value".to_string(),
@@ -282,7 +295,7 @@ pub fn signature_from_str(arglist: &str) -> Result<Vec<PyParam>, SigParseError> 
                 });
             }
             ItemShape::KwArgs(rest) => {
-                let raw = parse_param_tokens(rest, arglist)?;
+                let raw = parse_param_tokens(rest, arglist, false)?;
                 if raw.default.is_some() {
                     return Err(SigParseError::Syntax(
                         "var-keyword argument cannot have default value".to_string(),
@@ -297,7 +310,7 @@ pub fn signature_from_str(arglist: &str) -> Result<Vec<PyParam>, SigParseError> 
                 });
             }
             ItemShape::Plain(toks) => {
-                let raw = parse_param_tokens(toks, arglist)?;
+                let raw = parse_param_tokens(toks, arglist, false)?;
                 let kind = if seen_star {
                     kwonly_count += 1;
                     ParamKind::KeywordOnly
@@ -1036,7 +1049,17 @@ struct RawParam {
 /// `name[: annotation][= default]` over one item's tokens. The name must
 /// be a single Name token that task 3 parses as `PyExpr::Name` (rejecting
 /// keywords, applying CPython's NFKC identifier normalization).
-fn parse_param_tokens(toks: &[Tok], src: &str) -> Result<RawParam, SigParseError> {
+///
+/// `star_annotation` selects CPython's `star_annotation` production for
+/// the annotation slot: `def f(*args: *Ts)` is legal (PEP 646) and
+/// `signature_from_str` hands sphinx the annotation string `*Ts`, while
+/// `def f(x: *Ts)` and `def f(**k: *Ts)` are SyntaxErrors — so only the
+/// var-positional caller passes `true`.
+fn parse_param_tokens(
+    toks: &[Tok],
+    src: &str,
+    star_annotation: bool,
+) -> Result<RawParam, SigParseError> {
     if toks.is_empty() {
         return Err(invalid_syntax());
     }
@@ -1065,11 +1088,15 @@ fn parse_param_tokens(toks: &[Tok], src: &str) -> Result<RawParam, SigParseError
     };
     let ann_end = eq.unwrap_or(toks.len());
     let annotation = match colon {
-        Some(ci) => Some(render_fragment(&toks[ci + 1..ann_end], src)?),
+        Some(ci) => Some(render_fragment(
+            &toks[ci + 1..ann_end],
+            src,
+            star_annotation,
+        )?),
         None => None,
     };
     let default = match eq {
-        Some(ei) => Some(render_fragment(&toks[ei + 1..], src)?),
+        Some(ei) => Some(render_fragment(&toks[ei + 1..], src, false)?),
         None => None,
     };
     Ok(RawParam {
@@ -1079,12 +1106,16 @@ fn parse_param_tokens(toks: &[Tok], src: &str) -> Result<RawParam, SigParseError
     })
 }
 
-fn render_fragment(toks: &[Tok], src: &str) -> Result<String, SigParseError> {
+fn render_fragment(
+    toks: &[Tok],
+    src: &str,
+    star_annotation: bool,
+) -> Result<String, SigParseError> {
     if toks.is_empty() {
         return Err(invalid_syntax());
     }
     let fragment = &src[toks[0].start..toks[toks.len() - 1].end];
-    pycode_unparse(fragment)
+    pycode_unparse(fragment, star_annotation)
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,8 +1142,13 @@ struct NumPool {
 /// constants (each verified by re-parsing; any mismatch falls back to
 /// `repr` form for the whole fragment, mirroring `get_source_segment`'s
 /// `or repr(...)` arm).
-fn pycode_unparse(fragment: &str) -> Result<String, SigParseError> {
-    let parsed = parse_py_expr(fragment).map_err(|_| invalid_syntax())?;
+fn pycode_unparse(fragment: &str, star_annotation: bool) -> Result<String, SigParseError> {
+    let parsed = if star_annotation {
+        parse_py_star_annotation(fragment)
+    } else {
+        parse_py_expr(fragment)
+    }
+    .map_err(|_| invalid_syntax())?;
     let texts: Vec<String> = lex(fragment)
         .map(|toks| {
             toks.into_iter()
@@ -1207,6 +1243,13 @@ fn render_pycode(e: &PyExpr, pool: &mut Option<NumPool>) -> Result<String, Rende
             format!("{{{}}}", parts.join(", "))
         }
         PyExpr::Call { func, args, kwargs } => {
+            // The callee is rendered FIRST: it precedes the arguments in
+            // the source, and `NumPool` hands out the fragment's number
+            // tokens in render order. Rendering it after the arguments
+            // (as `visit_Call`'s f-string reads, but sphinx recovers
+            // numeric text by AST position instead) mis-pairs every
+            // literal in `a(0x10).b(16)`.
+            let f = render_pycode(func, pool)?;
             let mut parts: Vec<String> = Vec::with_capacity(args.len() + kwargs.len());
             for a in args {
                 parts.push(render_pycode(a, pool)?);
@@ -1214,7 +1257,21 @@ fn render_pycode(e: &PyExpr, pool: &mut Option<NumPool>) -> Result<String, Rende
             for (k, v) in kwargs {
                 parts.push(format!("{k}={}", render_pycode(v, pool)?));
             }
-            format!("{}({})", render_pycode(func, pool)?, parts.join(", "))
+            format!("{f}({})", parts.join(", "))
+        }
+        // `visit_BoolOp`: `' and '` / `' or '` joined, never parenthesized
+        // (sphinx's unparser has no precedence table, so `(a or b) and c`
+        // renders as `a or b and c`).
+        PyExpr::BoolOp { op, values } => {
+            let sep = match op {
+                PyBoolOp::And => " and ",
+                PyBoolOp::Or => " or ",
+            };
+            let mut parts = Vec::with_capacity(values.len());
+            for v in values {
+                parts.push(render_pycode(v, pool)?);
+            }
+            parts.join(sep)
         }
         PyExpr::Starred(value) => format!("*{}", render_pycode(value, pool)?),
         PyExpr::Subscript { value, slice } => {
@@ -2886,5 +2943,308 @@ mod tests {
             let _ = pseudo_parse_arglist(arglist, true, &dctx(), &dcfg());
             let _ = parse_type_list(arglist, false, &dctx(), &dcfg());
         }
+    }
+
+    /// PEP 646 `def f(*args: *Ts)`: CPython's `star_annotation`
+    /// production makes `*args` the only slot a starred annotation may
+    /// occupy, `signature_from_str` hands sphinx the annotation string
+    /// `*Ts`, and `_parse_annotation` splits the `*` off into a
+    /// `desc_sig_operator`.
+    ///
+    // oracle: `_parse_arglist('*args: *Ts', env)` under sphinx 9.1.0 /
+    // docutils 0.22.4 (scratchpad A/p7.py).
+    #[test]
+    fn pep_646_star_annotation_on_var_positional() {
+        assert_eq!(
+            parsed("*args: *Ts"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            *\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            args\n",
+                "        <desc_sig_punctuation classes=\"p\">\n",
+                "            :\n",
+                "        <desc_sig_space classes=\"w\">\n",
+                "             \n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            <desc_sig_operator classes=\"o\">\n",
+                "                *\n",
+                "            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"Ts\" reftype=\"class\">\n",
+                "                Ts\n",
+            )
+        );
+    }
+
+    /// The bracketed spelling autodoc emits. Before the
+    /// `star_annotation` slot existed this fell all the way through to
+    /// `pseudo_parse_arglist`, whose naive comma split then broke on the
+    /// inner comma and produced an attribute-less parameter list.
+    ///
+    // oracle: `_parse_arglist('*args: *tuple[int, ...]', env)`
+    // (scratchpad A/p7.py).
+    #[test]
+    fn pep_646_star_annotation_over_a_bracketed_unpack() {
+        assert_eq!(
+            parsed("*args: *tuple[int, ...]"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            *\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            args\n",
+                "        <desc_sig_punctuation classes=\"p\">\n",
+                "            :\n",
+                "        <desc_sig_space classes=\"w\">\n",
+                "             \n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            <desc_sig_operator classes=\"o\">\n",
+                "                *\n",
+                "            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"tuple\" reftype=\"class\">\n",
+                "                tuple\n",
+                "            <desc_sig_punctuation classes=\"p\">\n",
+                "                [\n",
+                "            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"int\" reftype=\"class\">\n",
+                "                int\n",
+                "            <desc_sig_punctuation classes=\"p\">\n",
+                "                ,\n",
+                "            <desc_sig_space classes=\"w\">\n",
+                "                 \n",
+                "            <desc_sig_punctuation classes=\"p\">\n",
+                "                ...\n",
+                "            <desc_sig_punctuation classes=\"p\">\n",
+                "                ]\n",
+            )
+        );
+    }
+
+    /// The rest of the list is unaffected by the starred annotation.
+    ///
+    // oracle: `_parse_arglist('a, *args: *Ts, b', env)` (scratchpad
+    // A/p7.py).
+    #[test]
+    fn star_annotation_leaves_its_neighbours_alone() {
+        assert_eq!(
+            parsed("a, *args: *Ts, b"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            a\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            *\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            args\n",
+                "        <desc_sig_punctuation classes=\"p\">\n",
+                "            :\n",
+                "        <desc_sig_space classes=\"w\">\n",
+                "             \n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            <desc_sig_operator classes=\"o\">\n",
+                "                *\n",
+                "            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"Ts\" reftype=\"class\">\n",
+                "                Ts\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            b\n",
+            )
+        );
+    }
+
+    /// `visit_Constant` recovers numeric source text by AST position, so
+    /// the callee's literals keep their own spellings. `NumPool` hands
+    /// tokens out in render order instead, so the `Call` arm must render
+    /// the callee BEFORE the arguments — otherwise `a(0x10).b(16)` comes
+    /// back as `a(16).b(0x10)` (both re-parse to 16, so the pool's
+    /// value check cannot catch the swap).
+    ///
+    // oracle: `_parse_arglist('x=a(0x10).b(16)', env)` (scratchpad
+    // A/p7.py); `signature_from_str` gives the default 'a(0x10).b(16)'.
+    #[test]
+    fn numeric_source_recovery_follows_a_chained_call() {
+        assert_eq!(
+            parsed("x=a(0x10).b(16)"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            x\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            =\n",
+                "        <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "            a(0x10).b(16)\n",
+            )
+        );
+    }
+
+    /// The same inversion with the callee itself a call.
+    ///
+    // oracle: `_parse_arglist('x=g(0xFF)(255)', env)` (scratchpad
+    // A/p7.py).
+    #[test]
+    fn numeric_source_recovery_follows_a_called_call() {
+        assert_eq!(
+            parsed("x=g(0xFF)(255)"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            x\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            =\n",
+                "        <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "            g(0xFF)(255)\n",
+            )
+        );
+    }
+
+    /// The other failure mode: mismatching values used to abandon the
+    /// whole fragment to `repr` form, printing `P(493).mask(18)`.
+    ///
+    // oracle: `_parse_arglist('x=P(0o755).mask(0o022)', env)`
+    // (scratchpad A/p7.py).
+    #[test]
+    fn numeric_source_recovery_keeps_octal_spellings_in_a_chain() {
+        assert_eq!(
+            parsed("x=P(0o755).mask(0o022)"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            x\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            =\n",
+                "        <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "            P(0o755).mask(0o022)\n",
+            )
+        );
+    }
+
+    /// `sphinx.pycode.ast` has a first-class `visit_BoolOp`, so an
+    /// `and`/`or` default renders through the AST path — it must not drop
+    /// the whole list into `pseudo_parse_arglist`, which would replace the
+    /// PEP 3102 separator's `abbreviation` with a bare `desc_sig_name`.
+    ///
+    // oracle: `_parse_arglist('a, *, x=A or B', env)` (scratchpad
+    // A/p7.py).
+    #[test]
+    fn boolop_default_keeps_the_keyword_only_separator() {
+        assert_eq!(
+            parsed("a, *, x=A or B"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            a\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_operator classes=\"keyword-only-separator o\">\n",
+                "            <abbreviation explanation=\"Keyword-only parameters separator (PEP 3102)\">\n",
+                "                *\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            x\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            =\n",
+                "        <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "            A or B\n",
+            )
+        );
+    }
+
+    /// The PEP 570 half of the same shape.
+    ///
+    // oracle: `_parse_arglist('a=A and B, /', env)` (scratchpad
+    // A/p7.py).
+    #[test]
+    fn boolop_default_keeps_the_positional_only_separator() {
+        assert_eq!(
+            parsed("a=A and B, /"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            a\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            =\n",
+                "        <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "            A and B\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_operator classes=\"positional-only-separator o\">\n",
+                "            <abbreviation explanation=\"Positional-only parameter separator (PEP 570)\">\n",
+                "                /\n",
+            )
+        );
+    }
+
+    /// `visit_BoolOp` is a plain `' and '`/`' or '` join with no
+    /// precedence table, so a mixed chain keeps its flat source spelling
+    /// (which `ast.unparse` would parenthesize as `a and b or c`).
+    ///
+    // oracle: `_parse_arglist('x=a and b or c', env)` (scratchpad
+    // A/p7.py).
+    #[test]
+    fn boolop_default_renders_without_parentheses() {
+        assert_eq!(
+            parsed("x=a and b or c"),
+            concat!(
+                "<desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            x\n",
+                "        <desc_sig_operator classes=\"o\">\n",
+                "            =\n",
+                "        <inline classes=\"default_value\" support_smartquotes=\"0\">\n",
+                "            a and b or c\n",
+            )
+        );
+    }
+
+    /// PEP 695 `f[T:]`: `_parse_annotation('')` is the empty node list, so
+    /// `if not annotation: continue` (`_annotations.py:428-430`) drops the
+    /// whole type parameter — default included. We used to render an
+    /// empty-target `pending_xref` there, which also reached the resolver.
+    ///
+    // oracle: `_parse_type_list(tp, env)` for each spelling under sphinx
+    // 9.1.0 / docutils 0.22.4 (scratchpad A/p7.py).
+    #[test]
+    fn an_empty_type_parameter_bound_drops_the_parameter() {
+        assert_eq!(
+            tp("T:"),
+            "<desc_type_parameter_list multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+            "empty bound in T:"
+        );
+        assert_eq!(
+            tp("T: "),
+            "<desc_type_parameter_list multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+            "empty bound in T: "
+        );
+        assert_eq!(
+            tp("T:, U"),
+            concat!(
+                "<desc_type_parameter_list multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_type_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            U\n",
+            ),
+            "empty bound in T:, U"
+        );
+        assert_eq!(
+            tp("T, U:"),
+            concat!(
+                "<desc_type_parameter_list multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+                "    <desc_type_parameter xml:space=\"preserve\">\n",
+                "        <desc_sig_name classes=\"n\">\n",
+                "            T\n",
+            ),
+            "empty bound in T, U:"
+        );
+        assert_eq!(
+            tp("T: = int"),
+            "<desc_type_parameter_list multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n",
+            "empty bound in T: = int"
+        );
     }
 }

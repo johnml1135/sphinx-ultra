@@ -3,8 +3,13 @@
 
 Regenerate with:
 
-    uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' \
-        python tools/gen_env_fixture.py
+    PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' \
+        --with 'docutils==0.22.4' python tools/gen_env_fixture.py
+
+PYTHONNOUSERSITE=1 is NOT optional: `uv run` keeps the user's site-packages
+on sys.path, and a user-site Pygments there silently re-records every
+`code:: python` case as tokenized output. Regenerating without the flag
+produces spurious fixture churn.
 
 THE ENVIRONMENT-LAYER ORACLE. Where tools/gen_sphinx_fixture.py records
 per-SNIPPET read-phase pseudo-XML, this generator records per-PROJECT

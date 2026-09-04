@@ -3,7 +3,13 @@
 
 Regenerate with:
 
-    uv run --python 3.12 --with docutils==0.22.4 python tools/gen_doctree_fixture.py
+    PYTHONNOUSERSITE=1 uv run --python 3.12 --with docutils==0.22.4 \
+        python tools/gen_doctree_fixture.py
+
+PYTHONNOUSERSITE=1 is NOT optional: `uv run` keeps the user's site-packages
+on sys.path, and a user-site Pygments there silently re-records every
+`code:: python` case as tokenized output. Regenerating without the flag
+produces spurious fixture churn.
 
 The fixture records docutils 0.22.4 PARSE-LAYER pseudo-XML (no transforms:
 no doctitle promotion, no target propagation, no transition hoisting, no

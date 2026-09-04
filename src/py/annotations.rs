@@ -6,11 +6,18 @@
 //! `desc_returns` (return annotations) or a `desc_annotation` (`:type:`
 //! options): `pending_xref` for every name, `desc_sig_*` leaves for the
 //! punctuation/constants between them. The walk runs over the wave-4.5
-//! [`super::expr::PyExpr`] AST; anything `parse_py_expr` rejects — and any
-//! node shape Sphinx's own `unparse` has no branch for (`ast.Add`,
-//! `ast.Not`, sets, dicts, …, which raise `SyntaxError` there) — falls back
-//! to a single [`type_to_xref`] of the whole annotation text, exactly like
-//! Sphinx's `except SyntaxError` arm (`_annotations.py:250-251`).
+//! [`super::expr::PyExpr`] AST, parsed the way `_parse_annotation` parses
+//! it: `ast.parse(annotation, type_comments=True)` — **exec** mode, not
+//! eval ([`parse_py_expr_stmt`], `_annotations.py:232`). That is what
+//! makes a PEP 646 `*Ts` annotation a legal `Expr(Starred(…))` statement,
+//! what makes an empty annotation an empty node list rather than an
+//! empty-target xref, and what makes a leading indent an
+//! `IndentationError` whose xref keeps the unstripped text. Anything
+//! [`parse_py_expr_stmt`] rejects — and any node shape Sphinx's own
+//! `unparse` has no branch for (`ast.Add`, `ast.Not`, `ast.BoolOp`, sets,
+//! dicts, …, which raise `SyntaxError` there) — falls back to a single
+//! [`type_to_xref`] of the whole annotation text, exactly like Sphinx's
+//! `except SyntaxError` arm (`_annotations.py:250-251`).
 //!
 //! Ground truth, cited throughout as [PY §n] / [SIG §n]:
 //! - [PY] docs/superpowers/plans/2026-09-01-m2-wave4.5-research-spec-py-domain.md
@@ -26,9 +33,9 @@
 //! Documented divergences (all conservative — we fall back to the same
 //! single-xref shape Sphinx uses for `SyntaxError`, never print something
 //! different):
-//! - constructs [`super::expr::parse_py_expr`] rejects but `ast.parse`
-//!   accepts and Sphinx *would* render (complex literals, multi-statement
-//!   strings) fall back to one xref;
+//! - constructs [`parse_py_expr_stmt`] rejects but `ast.parse` accepts and
+//!   Sphinx *would* render (complex literals, multi-statement strings such
+//!   as `int;` or `int\nstr`) fall back to one xref;
 //! - an `ast.Attribute` whose value's first fragment is not a text node
 //!   (`(1).x`, `'s'.x`) falls back instead of reproducing Python's
 //!   `str(Element)` garbage (`f'{unparse(node.value)[0]}.{node.attr}'`,
@@ -38,7 +45,7 @@
 
 use crate::doctree::{kinds, AttrValue, Node, Span};
 
-use super::expr::{self, parse_py_expr, PyConst, PyExpr, PyOp, PyUnaryOp};
+use super::expr::{self, parse_py_expr_stmt, PyConst, PyExpr, PyOp, PyUnaryOp};
 use super::PySigConfig;
 
 /// The slice of `env.ref_context` that `type_to_xref` copies onto every
@@ -156,8 +163,13 @@ fn type_to_xref_impl(
 pub fn parse_annotation(text: &str, ctx: &PyRefContext, cfg: &PySigConfig) -> Vec<Node> {
     let fallback = || vec![type_to_xref_impl(text, ctx, cfg, false)];
 
-    let Ok(parsed) = parse_py_expr(text) else {
-        return fallback();
+    let parsed = match parse_py_expr_stmt(text) {
+        Ok(Some(parsed)) => parsed,
+        // `ast.parse('')` is `Module(body=[])`, and the `ast.Module` arm
+        // reduces an empty body to `[]` (`_annotations.py:150-151`) — no
+        // node at all, not an empty-target xref.
+        Ok(None) => return Vec::new(),
+        Err(_) => return fallback(),
     };
     let Ok(frags) = unparse_frags(&parsed, cfg.python_display_short_literal_types) else {
         return fallback();
@@ -262,6 +274,10 @@ fn unparse_frags(e: &PyExpr, short_literals: bool) -> Result<Vec<Node>, Unsuppor
             let base = first.text.as_deref().ok_or(Unsupported)?;
             Ok(vec![text_frag(format!("{base}.{attr}"))])
         }
+        // `unparse` has no `ast.BoolOp` branch, so `a or b` reaches the
+        // `raise SyntaxError` fallthrough (`_annotations.py:209-210`) and
+        // the whole annotation becomes one xref.
+        PyExpr::BoolOp { .. } => Err(Unsupported),
         // Only `BitOr` has an unparse branch; any other operator raises
         // SyntaxError in Sphinx (`_annotations.py:102-112`, `209-210`).
         PyExpr::BinOp { left, op, right } => {
@@ -1346,6 +1362,134 @@ mod tests {
                 "        'b'\n",
                 "    <desc_sig_punctuation classes=\"p\">\n",
                 "        ]\n",
+            )
+        );
+    }
+    // -- exec-mode parse (`_parse_annotation` uses `ast.parse`, not eval) ----
+
+    /// PEP 646: `*Ts` is a legal `Expr(Starred(Name))` statement in exec
+    /// mode, so Sphinx renders `desc_sig_operator('*')` + the xref rather
+    /// than falling back to one `reftarget="*Ts"` xref
+    /// (`_annotations.py:128-131` + `:232`).
+    ///
+    // oracle: scratchpad A/p5.py, `_parse_annotation('*Ts', env)` under
+    // sphinx 9.1.0 / docutils 0.22.4.
+    #[test]
+    fn pep_646_star_annotation_splits_the_operator() {
+        assert_eq!(
+            returns("*Ts"),
+            concat!(
+                "<desc_returns xml:space=\"preserve\">\n",
+                "    <desc_sig_operator classes=\"o\">\n",
+                "        *\n",
+                "    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"Ts\" reftype=\"class\">\n",
+                "        Ts\n",
+            )
+        );
+    }
+
+    /// The bracketed unpack — the spelling autodoc emits — walks into the
+    /// subscript as usual after the `*`.
+    ///
+    // oracle: scratchpad A/p5.py, `_parse_annotation('*tuple[int, ...]')`.
+    #[test]
+    fn pep_646_star_annotation_over_a_subscript() {
+        assert_eq!(
+            returns("*tuple[int, ...]"),
+            concat!(
+                "<desc_returns xml:space=\"preserve\">\n",
+                "    <desc_sig_operator classes=\"o\">\n",
+                "        *\n",
+                "    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"tuple\" reftype=\"class\">\n",
+                "        tuple\n",
+                "    <desc_sig_punctuation classes=\"p\">\n",
+                "        [\n",
+                "    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"int\" reftype=\"class\">\n",
+                "        int\n",
+                "    <desc_sig_punctuation classes=\"p\">\n",
+                "        ,\n",
+                "    <desc_sig_space classes=\"w\">\n",
+                "         \n",
+                "    <desc_sig_punctuation classes=\"p\">\n",
+                "        ...\n",
+                "    <desc_sig_punctuation classes=\"p\">\n",
+                "        ]\n",
+            )
+        );
+    }
+
+    /// A bare starred tuple is an `Expr(Tuple([Starred, ...]))` statement.
+    ///
+    // oracle: scratchpad A/p5.py, `_parse_annotation('*a, b')`.
+    #[test]
+    fn exec_mode_renders_a_bare_starred_tuple() {
+        assert_eq!(
+            returns("*a, b"),
+            concat!(
+                "<desc_returns xml:space=\"preserve\">\n",
+                "    <desc_sig_operator classes=\"o\">\n",
+                "        *\n",
+                "    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"a\" reftype=\"class\">\n",
+                "        a\n",
+                "    <desc_sig_punctuation classes=\"p\">\n",
+                "        ,\n",
+                "    <desc_sig_space classes=\"w\">\n",
+                "         \n",
+                "    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"b\" reftype=\"class\">\n",
+                "        b\n",
+            )
+        );
+    }
+
+    /// A leading indent is an `IndentationError` — a `SyntaxError`
+    /// subclass — so the `except SyntaxError` arm xrefs the text
+    /// UNSTRIPPED, spaces and all.
+    ///
+    // oracle: scratchpad A/p5.py, `_parse_annotation('  int')` → one
+    // pending_xref with reftarget="  int".
+    #[test]
+    fn leading_indent_keeps_the_unstripped_text() {
+        assert_eq!(
+            returns("  int"),
+            concat!(
+                "<desc_returns xml:space=\"preserve\">\n",
+                "    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"  int\" reftype=\"class\">\n",
+                "          int\n",
+            )
+        );
+    }
+
+    /// `ast.parse('')` is `Module(body=[])` and the `ast.Module` arm
+    /// reduces an empty body to `[]` — no node at all, so no empty-target
+    /// xref ever reaches the resolver.
+    ///
+    // oracle: scratchpad A/p5.py — `len(_parse_annotation(''))` and
+    // `len(_parse_annotation(' '))` are both 0.
+    #[test]
+    fn an_empty_annotation_renders_no_nodes() {
+        for text in ["", " ", "  ", "\n", "\t"] {
+            assert!(
+                parse_annotation(text, &PyRefContext::default(), &PySigConfig::default())
+                    .is_empty(),
+                "{text:?} must render no nodes"
+            );
+        }
+    }
+
+    /// `unparse` has no `ast.BoolOp` branch, so `a or b` reaches the
+    /// `raise SyntaxError` fallthrough and becomes one whole-text xref
+    /// (even though [`super::expr::parse_py_expr_stmt`] now parses it).
+    ///
+    // oracle: `_parse_annotation('a or b', env)` → a single pending_xref
+    // with reftarget="a or b" (sphinx 9.1.0, scratchpad A/p6.py).
+    #[test]
+    fn a_boolop_annotation_falls_back_to_one_xref() {
+        assert_eq!(
+            returns("a or b"),
+            concat!(
+                "<desc_returns xml:space=\"preserve\">\n",
+                "    <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refspecific=\"0\" reftarget=\"a or b\" reftype=\"class\">\n",
+                "        a or b\n",
             )
         );
     }

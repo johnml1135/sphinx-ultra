@@ -9373,16 +9373,20 @@ fn doc_field_step1(
     // better than sphinx and unpinnable by the oracle (a crash has no
     // pformat to compare), so it stays a divergence by design.
     //
-    // Wave-4.5 task 7 recorded a reachable trigger for the assert
-    // (`.. confval:: t` + `:type: *bad`). Task 16 re-probed 9.1.0 with
-    // that input and seven neighbours (bad inline markup in a field body
-    // and in a field NAME, an over-indented body, a malformed field
-    // marker, docinfo-looking names, a nested list error): every one
-    // builds clean, and no `field_list` in any of them has a child that
-    // is not a two-child `field`. Docutils' `Body.field` always emits
-    // `[field_name, field_body]` and routes its messages BESIDE the list,
-    // so the guard is defensive with no known reachable trigger — the
-    // task-7 repro does not reproduce.
+    // The trigger is REACHABLE, and task 7's repro is the one to use:
+    // `.. confval:: t` + `:type: *bad` (likewise `:default: *bad`, and
+    // `:type: *a b`). The unterminated emphasis makes docutils drop a
+    // one-child `system_message` into the field_list the confval
+    // directive generates, `len(field) == 1`, and the assert fires. A
+    // task-16 re-probe that reported "builds clean" was reading the
+    // harness3 read-phase venue, which never runs `DocFieldTransformer`;
+    // re-probed here through a full `SphinxTestApp(buildername='dummy')`
+    // + `app.build()`, all three inputs abort with
+    // `AssertionError` at `sphinx/util/docfields.py:381`, while
+    // `:type: int`, `:type: *bad*` and the same field written in the
+    // directive BODY build clean. Hence the EXCLUDED entry
+    // `sx_std.confval_bad_type_markup` in tools/gen_sphinx_fixture.py:
+    // a crash has no pformat, so the case is unpinnable by the oracle.
     if field.children.len() != 2 {
         entries.push(DocFieldEntry::Pass(field));
         return;
