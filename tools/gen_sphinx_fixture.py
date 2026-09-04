@@ -575,6 +575,18 @@ CASES = [
     ('sx_directives', 'glossary_sorted_classifier', '.. glossary::\n   :sorted:\n\n   zeta : key\n      Z def.\n'),
     ('sx_directives', 'glossary_comment_lines', '.. glossary::\n\n   .. a comment line\n   alpha\n      The first letter.\n\n   .. a comment line\n   beta\n      The second letter.\n'),
     ('sx_directives', 'glossary_comment_swallows_its_continuation', '.. glossary::\n\n   .. a comment line\n      continued under the comment\n\n   alpha\n      The first letter.\n'),
+    # Wave-4.5 task 16: the three `Glossary.run` misformat warnings
+    # (`domains/std/__init__.py:461-503`). They are reporter warnings, so
+    # they land in the tree as system_message nodes BEFORE the glossary
+    # node, and they are reported ONE LINE LOW (0-based `content.items`
+    # offset rendered as a 1-based line) -- both of which these cases pin.
+    ('sx_directives', 'glossary_term_without_preceding_blank_line', '.. glossary::\n\n   term A\n      def A\n   term B\n      def B\n'),
+    ('sx_directives', 'glossary_terms_separated_by_empty_line', '.. glossary::\n\n   term A\n\n   term B\n      def AB\n'),
+    ('sx_directives', 'glossary_terms_separated_by_empty_lines_twice', '.. glossary::\n\n   term A\n\n   term B\n\n   term C\n      def\n'),
+    ('sx_directives', 'glossary_misformatted_indentation', '.. glossary::\n\n      stray indented line\n\n   term A\n      def A\n'),
+    ('sx_directives', 'glossary_comment_does_not_split_multi_term', '.. glossary::\n\n   term A\n   .. a comment\n   term B\n      shared def\n'),
+    ('sx_directives', 'glossary_comment_after_definition_warns', '.. glossary::\n\n   term A\n      def A\n   .. comment\n   term B\n      def B\n'),
+    ('sx_directives', 'glossary_definition_dedents_by_its_first_line', '.. glossary::\n\n   term A\n         deep def\n      shallow\n'),
     ('sx_roles', 'pep_role', 'See :pep:`8` for style.\n'),
     ('sx_roles', 'pep_role_anchor', 'See :pep:`8#imports` here.\n'),
     ('sx_roles', 'pep_role_explicit', 'See :pep:`the style guide <8>` here.\n'),
@@ -923,7 +935,15 @@ def case_parts(case):
 def main() -> int:
     names = [f"{c[0]}.{c[1]}" for c in CASES]
     assert len(names) == len(set(names)), "family-qualified case names must be unique"
-    assert len(CASES) >= 40, f"corpus degenerated: {len(CASES)} cases"
+    # Anti-truncation floors. Both the global floor and the per-family ones
+    # below were set in wave 3 against a corpus a fraction of this size and
+    # had gone dead (the wave-4 final panel filed the global >= 40 against
+    # 314 cases; the family floors summed to 119). Wave-4.5 task 16 raises
+    # them to ~85-90% of the committed corpus, the same bar task 14 applied
+    # to the env fixture: enough headroom to reorganize a family, not enough
+    # to delete one silently. Corpus policy is EXTEND-only, so a regen that
+    # trips a floor means cases were lost, not that the floor is stale.
+    assert len(CASES) >= 400, f"corpus degenerated: {len(CASES)} cases"
 
     for reason in EXCLUDED.values():
         assert reason.strip(), "every exclusion entry needs its reason"
@@ -931,16 +951,16 @@ def main() -> int:
     assert not hit, f"excluded cases must not join the corpus: {sorted(hit)}"
 
     floors = {
-        "sx_plain": 15,
-        "sx_admonitions": 10,
+        "sx_plain": 140,
+        "sx_admonitions": 34,
         "sx_body": 30,
-        "sx_image": 6,
-        "sx_directives": 18,
-        "sx_roles": 6,
-        "sx_std": 12,
-        "py": 30,
-        "pysig": 12,
-        "pyconf": 10,
+        "sx_image": 8,
+        "sx_directives": 44,
+        "sx_roles": 16,
+        "sx_std": 25,
+        "py": 46,
+        "pysig": 16,
+        "pyconf": 27,
     }
     counts: dict = {}
     for case in CASES:

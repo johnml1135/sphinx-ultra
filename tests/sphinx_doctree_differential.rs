@@ -161,8 +161,12 @@ fn matches_sphinx_oracle_pformat() {
     let fixture: Fixture = serde_json::from_str(raw).expect("fixture parses");
     assert_eq!(fixture.docutils_version, "0.22.4");
     assert_eq!(fixture.sphinx_version, "9.1.0");
+    // Consumer-side anti-truncation floor, raised with the generator's in
+    // wave-4.5 task 16 (both were set against a much smaller corpus and had
+    // gone slack: 300 here against 426 committed cases). The generator
+    // carries the matching global floor plus per-family ones.
     assert!(
-        fixture.cases.len() >= 300,
+        fixture.cases.len() >= 400,
         "fixture truncated? only {} cases",
         fixture.cases.len()
     );

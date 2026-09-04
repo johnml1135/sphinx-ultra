@@ -4283,14 +4283,47 @@ impl BlockParser {
     /// sphinx glossary (std domain): term lines + indented definitions;
     /// each term gets a term-<id> target and an embedded index entry.
     ///
-    /// Comments are honoured: `Glossary.run` treats an unindented `.. `
-    /// line as a comment rather than a term
-    /// (`domains/std/__init__.py:452-455`) and swallows its indented
-    /// continuation lines with it (`:493-494`, `elif in_comment: pass`).
-    /// Sphinx's explicit `in_comment` flag has no counterpart here because
-    /// this loop already skips every indented line it meets outside a
-    /// definition block, whether or not a comment preceded it.
+    /// The entry split is a line-by-line port of `Glossary.run`'s state
+    /// machine (`domains/std/__init__.py:440-509`) — `in_definition`,
+    /// `in_comment`, `was_empty`, `indent_len` — rather than a chunker,
+    /// because three of its four states are observable:
+    ///
+    /// * a term line that follows a definition body without a blank line
+    ///   still joins a NEW entry, and warns;
+    /// * terms separated BY a blank line still join the SAME entry (one
+    ///   `definition_list_item` with several `term` children), and warn;
+    /// * an unindented `.. ` comment (`:452-455`, the trailing space is
+    ///   part of the test so a bare `..` is a term) neither ends an entry
+    ///   nor touches `was_empty` — it `continue`s before the flag is
+    ///   cleared — so terms on both sides of a comment share one entry, and
+    ///   the comment's indented continuation lines are swallowed
+    ///   (`:493-494`, `elif in_comment: pass`).
+    ///
+    /// The three misformat warnings are `self.state.reporter.warning`
+    /// calls, i.e. docutils reporter messages: they land in the tree as
+    /// `system_message` nodes BEFORE the glossary node (`return [*messages,
+    /// node]`, `:509`) and, in Sphinx, additionally on stderr through the
+    /// docutils→logging bridge with a `[docutils]` type suffix. Only the
+    /// in-tree half is produced here; CLI-surfacing in-tree system_messages
+    /// is a pre-existing project-wide gap (wave-4.5 task 12 ruling), not a
+    /// glossary-specific one.
+    ///
+    /// LINE NUMBER: the warnings are reported at `lineno` taken from
+    /// `self.content.items`, whose offsets are 0-based, while the reporter
+    /// renders them as 1-based line numbers — so Sphinx reports each of
+    /// these three warnings ONE LINE LOW. Probe-pinned against 9.1.0 (a
+    /// term on document line 5 reports `line="4"`), and reproduced here
+    /// with `lineno - 1`, because the doctree oracle compares the bytes.
     fn run_glossary(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
+        /// `_('glossary term must be preceded by empty line')` (`:461-465`).
+        const NEEDS_EMPTY_LINE: &str = "glossary term must be preceded by empty line";
+        /// `_('glossary terms must not be separated by empty lines')`
+        /// (`:470-476`).
+        const NOT_SEPARATED: &str = "glossary terms must not be separated by empty lines";
+        /// `_('glossary seems to be misformatted, check indentation')`
+        /// (`:481-486` and `:497-503`).
+        const MISFORMATTED: &str = "glossary seems to be misformatted, check indentation";
+
         let mut glossary = Node::elem("glossary", input.span);
         glossary.set(
             "sorted",
@@ -4298,55 +4331,82 @@ impl BlockParser {
         );
         let mut dl = Node::elem(kinds::DEFINITION_LIST, input.span);
         dl.attrs.classes.push("glossary".to_string());
-        // Entry split: unindented term line(s) followed by an indented
-        // definition block (misformat warnings go to the log, not the
-        // tree; the corpus pins well-formed input).
-        let mut i = 0usize;
-        let content = &input.content;
-        while i < content.len() {
-            if content[i].is_blank() {
-                i += 1;
-                continue;
-            }
-            if content[i].indent() > 0 {
-                // A comment's continuation lines, or a stray indented line
-                // without a term (log-warned in Sphinx); skipped either way.
-                i += 1;
-                continue;
-            }
-            if is_glossary_comment(&content[i], self.sources.line_text(content[i])) {
-                i += 1;
-                continue;
-            }
-            let mut term_lines: Vec<LineRec> = Vec::new();
-            while i < content.len()
-                && !content[i].is_blank()
-                && content[i].indent() == 0
-                && !is_glossary_comment(&content[i], self.sources.line_text(content[i]))
-            {
-                term_lines.push(content[i]);
-                i += 1;
-            }
-            let mut def_lines: Vec<LineRec> = Vec::new();
-            while i < content.len() && (content[i].is_blank() || content[i].indent() > 0) {
-                if content[i].is_blank()
-                    && content
-                        .get(i + 1)
-                        .map(|l| !l.is_blank() && l.indent() == 0)
-                        .unwrap_or(true)
-                {
-                    i += 1;
-                    break;
+
+        // ---- `Glossary.run`'s first loop: collect entries + warnings ----
+        let mut entries: Vec<(Vec<LineRec>, Vec<LineRec>)> = Vec::new();
+        let mut msgs: Vec<Node> = Vec::new();
+        let mut in_definition = true;
+        let mut in_comment = false;
+        let mut was_empty = true;
+        let mut indent_len = 0usize;
+        for &rec in input.content.iter() {
+            // `if not line:` — every source line is right-stripped by
+            // `string2lines`, so a whitespace-only line IS empty here.
+            if rec.is_blank() {
+                if in_definition {
+                    if let Some(last) = entries.last_mut() {
+                        last.1.push(rec);
+                    }
                 }
-                def_lines.push(content[i]);
-                i += 1;
+                was_empty = true;
+                continue;
             }
+            if rec.indent() == 0 {
+                if is_glossary_comment(&rec, self.sources.line_text(rec)) {
+                    in_comment = true;
+                    // `continue` BEFORE `was_empty = False`: a comment is
+                    // invisible to the blank-line bookkeeping.
+                    continue;
+                }
+                in_comment = false;
+                if in_definition {
+                    if !was_empty {
+                        msgs.push(self.glossary_msg(NEEDS_EMPTY_LINE, rec));
+                    }
+                    entries.push((vec![rec], Vec::new()));
+                    in_definition = false;
+                } else {
+                    if was_empty {
+                        msgs.push(self.glossary_msg(NOT_SEPARATED, rec));
+                    }
+                    match entries.last_mut() {
+                        Some(last) => last.0.push(rec),
+                        // Sphinx-unreachable (`entries` is non-empty
+                        // whenever `in_definition` is false), kept because
+                        // the port mirrors the branch structure.
+                        None => msgs.push(self.glossary_msg(MISFORMATTED, rec)),
+                    }
+                }
+            } else if !in_comment {
+                if !in_definition {
+                    // "first line of definition, determines indentation"
+                    in_definition = true;
+                    indent_len = rec.indent();
+                }
+                // `line[indent_len:]` — a raw slice, so a continuation line
+                // indented LESS than the first one loses non-whitespace
+                // characters (probe: `   shallow` under a 6-column first
+                // line renders `llow`). Clamped to the view length, which
+                // is Python's own behaviour for a short line.
+                let view_len = (rec.end - rec.start) as usize;
+                let line = self.rewrap_from(rec, indent_len.min(view_len));
+                match entries.last_mut() {
+                    Some(last) => last.1.push(line),
+                    None => msgs.push(self.glossary_msg(MISFORMATTED, rec)),
+                }
+            }
+            was_empty = false;
+        }
+
+        // ---- `Glossary.run`'s second loop: entries -> definition list ----
+        for (term_lines, def_lines) in &entries {
+            let mut def_lines = def_lines.clone();
             while def_lines.last().map(|l| l.is_blank()).unwrap_or(false) {
                 def_lines.pop();
             }
             let mut item = Node::elem(kinds::DEFINITION_LIST_ITEM, input.span);
             let mut term_messages: Vec<Node> = Vec::new();
-            for tl in &term_lines {
+            for tl in term_lines {
                 let raw_term = self.sources.line_text(*tl).trim().to_string();
                 let raw_term = raw_term.as_str();
                 // split_term_classifiers: ' +: +' — first classifier is
@@ -4399,14 +4459,27 @@ impl BlockParser {
                 item.children.push(term);
             }
             item.children.extend(term_messages);
-            let dedented = dedent_by_min(&def_lines);
             let mut definition = Node::elem(kinds::DEFINITION, input.span);
-            definition.children = self.parse_nested(&dedented, "definition");
+            definition.children = self.parse_nested(&def_lines, "definition");
             item.children.push(definition);
             dl.children.push(item);
         }
         glossary.children.push(dl);
+        // `return [*messages, node]` (`domains/std/__init__.py:509`).
+        out.extend(msgs);
         out.push(glossary);
+    }
+
+    /// One of `Glossary.run`'s three misformat warnings, anchored the way
+    /// Sphinx anchors them: at the content item's 0-based offset, which the
+    /// reporter then renders as a 1-based line — see [`Self::run_glossary`].
+    fn glossary_msg(&self, text: &str, rec: LineRec) -> Node {
+        self.msg(
+            messages::WARNING,
+            text,
+            rec.source,
+            rec.lineno.saturating_sub(1),
+        )
     }
 
     /// sphinx `ObjectDescription.run` (`directives/__init__.py:183-314`):
@@ -13454,6 +13527,126 @@ mod tests {
             pf("Para.\n\n    Fake\n    ====\n"),
             "<document source=\"<snippet>\">\n    <paragraph>\n        Para.\n    <block_quote>\n        <system_message level=\"3\" line=\"4\" source=\"<snippet>\" type=\"ERROR\">\n            <paragraph>\n                Unexpected section title.\n            <literal_block xml:space=\"preserve\">\n                Fake\n                ====\n"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // glossary misformat warnings (M2 wave 4.5 task 16)
+    //
+    // Every expectation below is pasted from a Sphinx 9.1.0 harness3 probe
+    // run (probe_glossary / probe_glossary2, conventions per
+    // tools/gen_sphinx_fixture.py) — never written from memory. The shapes
+    // the sphinx-doctree fixture can carry are ALSO committed there; these
+    // unit tests additionally pin the shapes the fixture cannot (the
+    // ones whose oracle output the corpus generator would have to grow new
+    // SUPPORTED_KINDS for) and document the mechanism.
+    // ------------------------------------------------------------------
+
+    /// A term line pressed straight against the previous definition body
+    /// warns AND still opens a new entry. Note `line="4"` for a term on
+    /// document line 5: Sphinx reports these three warnings one line low
+    /// (0-based `content.items` offset rendered as a 1-based line).
+    #[test]
+    fn a_glossary_term_without_a_preceding_blank_line_warns() {
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n      def A\n   term B\n      def B\n"),
+            "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"4\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary term must be preceded by empty line\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def A\n            <definition_list_item>\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def B\n"
+        );
+    }
+
+    /// Terms separated BY a blank line warn and still share ONE entry —
+    /// `was_empty` does not reset `in_definition`, so the second term joins
+    /// the first term's `definition_list_item`.
+    #[test]
+    fn glossary_terms_separated_by_a_blank_line_warn_and_share_one_entry() {
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n\n   term B\n      def AB\n"),
+            "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"4\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary terms must not be separated by empty lines\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def AB\n"
+        );
+    }
+
+    /// The warning fires once per offending term, not once per glossary.
+    #[test]
+    fn every_blank_separated_glossary_term_warns() {
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n\n   term B\n\n   term C\n      def\n"),
+            "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"4\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary terms must not be separated by empty lines\n    <system_message level=\"2\" line=\"6\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary terms must not be separated by empty lines\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <term ids=\"term-term-C\">\n                    term C\n                    <index entries=\"('single',\\ 'term\\ C',\\ 'term-term-C',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def\n"
+        );
+    }
+
+    /// An indented line before any term — reachable only when the content
+    /// is MIXED-indent, because the directive machinery strips the common
+    /// indent first (a uniformly over-indented glossary body is simply a
+    /// list of terms, probe `indented_start_no_entries`).
+    #[test]
+    fn an_indented_glossary_line_with_no_term_yet_warns_about_indentation() {
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n      stray indented line\n\n   term A\n      def A\n"),
+            "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary seems to be misformatted, check indentation\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def A\n"
+        );
+    }
+
+    /// A comment between two terms keeps them in ONE entry and warns about
+    /// nothing: `Glossary.run` `continue`s on a comment line before
+    /// clearing `was_empty`. This is the wave-4 backlog minor ("glossary
+    /// comment splits a multi-term entry, producing an empty <definition>
+    /// shape docutils never emits") — the state-machine port closes it.
+    #[test]
+    fn a_comment_between_glossary_terms_does_not_split_the_entry() {
+        let expected = "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        shared def\n";
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n   .. a comment\n   term B\n      shared def\n"),
+            expected
+        );
+        // ... and the comment's indented continuation lines go with it.
+        assert_eq!(
+            pf_sphinx(
+                ".. glossary::\n\n   term A\n   .. comment\n      swallowed\n   term B\n      shared def\n"
+            ),
+            expected
+        );
+    }
+
+    /// A comment AFTER a definition body does not suppress the
+    /// missing-blank-line warning, because it never clears `was_empty`.
+    #[test]
+    fn a_comment_after_a_glossary_definition_still_warns_on_the_next_term() {
+        assert_eq!(
+            pf_sphinx(
+                ".. glossary::\n\n   term A\n      def A\n   .. comment\n   term B\n      def B\n"
+            ),
+            "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"5\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary term must be preceded by empty line\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def A\n            <definition_list_item>\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def B\n"
+        );
+    }
+
+    /// `line[indent_len:]` is a RAW slice: the entry's indentation is fixed
+    /// by its first definition line, and a later line indented less loses
+    /// characters rather than being re-dedented to the minimum. Probe
+    /// `under_indented_continuation`: `      shallow` under a nine-column
+    /// first line renders `llow`.
+    #[test]
+    fn a_glossary_definition_dedents_by_its_first_line_not_the_minimum() {
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n         deep def\n      shallow\n"),
+            "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep def\n                        llow\n"
+        );
+    }
+
+    /// The well-formed shapes stay warning-free — the guard against a state
+    /// machine that warns on everything.
+    #[test]
+    fn well_formed_glossaries_do_not_warn() {
+        for src in [
+            ".. glossary::\n\n   term A\n      def A\n\n   term B\n      def B\n",
+            ".. glossary::\n\n   term A\n   term B\n      shared def\n",
+            ".. glossary::\n\n   .. lead comment\n   term A\n      def A\n",
+            ".. glossary::\n\n   term A\n      def A\n   \n      more A\n",
+            ".. glossary::\n\n   ..\n      def\n",
+        ] {
+            assert!(
+                !pf_sphinx(src).contains("system_message"),
+                "well-formed glossary warned: {src:?}"
+            );
+        }
     }
 }
 

@@ -1657,6 +1657,48 @@
       "rst": ".. glossary::\n\n   .. a comment line\n      continued under the comment\n\n   alpha\n      The first letter.\n"
     },
     {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_term_without_preceding_blank_line",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"4\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary term must be preceded by empty line\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def A\n            <definition_list_item>\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def B\n",
+      "rst": ".. glossary::\n\n   term A\n      def A\n   term B\n      def B\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_terms_separated_by_empty_line",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"4\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary terms must not be separated by empty lines\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def AB\n",
+      "rst": ".. glossary::\n\n   term A\n\n   term B\n      def AB\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_terms_separated_by_empty_lines_twice",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"4\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary terms must not be separated by empty lines\n    <system_message level=\"2\" line=\"6\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary terms must not be separated by empty lines\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <term ids=\"term-term-C\">\n                    term C\n                    <index entries=\"('single',\\ 'term\\ C',\\ 'term-term-C',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def\n",
+      "rst": ".. glossary::\n\n   term A\n\n   term B\n\n   term C\n      def\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_misformatted_indentation",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary seems to be misformatted, check indentation\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def A\n",
+      "rst": ".. glossary::\n\n      stray indented line\n\n   term A\n      def A\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_comment_does_not_split_multi_term",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        shared def\n",
+      "rst": ".. glossary::\n\n   term A\n   .. a comment\n   term B\n      shared def\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_comment_after_definition_warns",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <system_message level=\"2\" line=\"5\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            glossary term must be preceded by empty line\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def A\n            <definition_list_item>\n                <term ids=\"term-term-B\">\n                    term B\n                    <index entries=\"('single',\\ 'term\\ B',\\ 'term-term-B',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        def B\n",
+      "rst": ".. glossary::\n\n   term A\n      def A\n   .. comment\n   term B\n      def B\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_definition_dedents_by_its_first_line",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep def\n                        llow\n",
+      "rst": ".. glossary::\n\n   term A\n         deep def\n      shallow\n"
+    },
+    {
       "family": "sx_roles",
       "name": "sx_roles.pep_role",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <index entries=\"('single',\\ 'Python\\ Enhancement\\ Proposals;\\ PEP\\ 8',\\ 'index-0',\\ '',\\ None)\">\n        <target ids=\"index-0\">\n        <reference classes=\"pep\" internal=\"0\" refuri=\"https://peps.python.org/pep-0008/\">\n            <strong>\n                PEP 8\n         for style.\n",
