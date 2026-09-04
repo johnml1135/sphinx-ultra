@@ -4630,6 +4630,615 @@
         "index": "Index\n=====\n\nRef :py:func:`missing_fn` and :py:class:`int` and :py:class:`Missing`.\n"
       },
       "name": "py_nitpicky"
+    },
+    {
+      "conf": {
+        "keep_warnings": true,
+        "smartquotes": false
+      },
+      "data_files": {
+        "clip_part.inc": "clip alpha\nclip beta\n",
+        "code_numbered.inc": "line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n",
+        "code_plain.inc": "plain code line\nsecond code line\n",
+        "example.py": "\"\"\"Example module.\"\"\"\n\nCONST = 1\n\n\ndef top(x):\n    \"\"\"Top function.\"\"\"\n    return x + 1\n\n\nclass Foo:\n    \"\"\"A class.\"\"\"\n\n    attr = 2\n\n    def method(self):\n        return self.attr\n\n\ndef tail():\n    pass\n",
+        "lit_part.inc": "Literal alpha.\nLiteral beta.\n",
+        "numbered.inc": "num one\nnum two\nnum three\nnum four\nnum five\nnum six\nnum seven\nnum eight\nnum nine\nnum ten\n"
+      },
+      "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/abs_part.rst",
+            "<project>/chain1.rst",
+            "<project>/chain2.rst",
+            "<project>/circ_a.rst",
+            "<project>/circ_b.rst",
+            "<project>/clip_part.inc",
+            "<project>/example.py"
+          ],
+          "b": [
+            "<project>/code_numbered.inc",
+            "<project>/code_plain.inc",
+            "<project>/example.py",
+            "<project>/lit_part.inc",
+            "<project>/numbered.inc"
+          ],
+          "chain1": [
+            "<project>/chain2.rst"
+          ],
+          "circ_a": [
+            "<project>/circ_a.rst",
+            "<project>/circ_b.rst"
+          ],
+          "circ_b": [
+            "<project>/circ_a.rst",
+            "<project>/circ_b.rst"
+          ],
+          "sub/nested": [
+            "<project>/shared/frag.rst",
+            "<project>/sub/frag2.rst"
+          ]
+        },
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ],
+          "b": [
+            "index"
+          ],
+          "sub/nested": [
+            "index"
+          ]
+        },
+        "genindex": [],
+        "included": {
+          "a": [
+            "abs_part",
+            "chain1",
+            "chain2",
+            "circ_a",
+            "circ_b",
+            "missing"
+          ],
+          "chain1": [
+            "chain2"
+          ],
+          "circ_a": [
+            "circ_a",
+            "circ_b"
+          ],
+          "circ_b": [
+            "circ_a",
+            "circ_b"
+          ],
+          "shared/frag": [
+            "shared/frag2"
+          ],
+          "sub/nested": [
+            "shared/frag",
+            "sub/frag2"
+          ]
+        },
+        "index_entries": {
+          "a": [],
+          "abs_part": [],
+          "b": [],
+          "chain1": [],
+          "chain2": [],
+          "circ_a": [],
+          "circ_b": [],
+          "index": [],
+          "shared/frag": [],
+          "sub/frag2": [],
+          "sub/nested": []
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            "b"
+          ],
+          "b": [
+            "index",
+            "a",
+            "sub/nested"
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ],
+          "sub/nested": [
+            "index",
+            "b",
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <paragraph>\n            Chain one.\n        <paragraph>\n            Chain two.\n        <paragraph>\n            Absolute part.\n        <system_message level=\"4\" line=\"8\" source=\"<project>/a.rst\" type=\"SEVERE\">\n            <paragraph>\n                Problems with \"include\" directive path:\n                InputError: [Errno 2] No such file or directory: '<project>/missing.rst'.\n            <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n                .. include:: missing.rst\n        <system_message level=\"4\" line=\"10\" source=\"<project>/a.rst\" type=\"SEVERE\">\n            <paragraph>\n                Problem with \"start-after\" option of \"include\" directive:\n                Text not found.\n            <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n                .. include:: clip_part.inc\n                   :start-after: nope-not-here\n        <paragraph>\n            Circ A.\n        <paragraph>\n            Circ B.\n        <system_message level=\"2\" line=\"3\" source=\"<project>/circ_b.rst\" type=\"WARNING\">\n            <paragraph>\n                circular inclusion in \"include\" directive:\n                <project>/circ_a.rst\n                > <project>/circ_b.rst\n                > <project>/circ_a.rst\n                > <project>/a.rst\n            <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n                .. include:: circ_a.rst\n        <system_message level=\"2\" line=\"15\" source=\"<project>/a.rst\" type=\"WARNING\">\n            <paragraph>\n                Object named 'not_there' not found in include file _StrPath('<project>/example.py')\n",
+          "abs_part": "<document source=\"<project>/abs_part.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Absolute part.\n",
+          "b": "<document source=\"<project>/b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"b\" names=\"b\">\n        <title>\n            B\n        <literal_block force=\"0\" ids=\"lit-block\" language=\"default\" linenos=\"0\" names=\"lit-block\" source=\"<project>/lit_part.inc\" xml:space=\"preserve\">\n            Literal alpha.\n            Literal beta.\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" source=\"<project>/numbered.inc\" xml:space=\"preserve\">\n            <inline classes=\"ln\">\n                 1 \n            num one\n            <inline classes=\"ln\">\n                 2 \n            num two\n            <inline classes=\"ln\">\n                 3 \n            num three\n            <inline classes=\"ln\">\n                 4 \n            num four\n            <inline classes=\"ln\">\n                 5 \n            num five\n            <inline classes=\"ln\">\n                 6 \n            num six\n            <inline classes=\"ln\">\n                 7 \n            num seven\n            <inline classes=\"ln\">\n                 8 \n            num eight\n            <inline classes=\"ln\">\n                 9 \n            num nine\n            <inline classes=\"ln\">\n                10 \n            num ten\n        <literal_block classes=\"code\" force=\"0\" language=\"default\" linenos=\"0\" source=\"<project>/code_plain.inc\" xml:space=\"preserve\">\n            plain code line\n            second code line\n        <literal_block classes=\"code\" force=\"0\" language=\"default\" linenos=\"0\" source=\"<project>/code_numbered.inc\" xml:space=\"preserve\">\n            <inline classes=\"ln\">\n                1 \n            line one\n            <inline classes=\"ln\">\n                2 \n            line two\n            <inline classes=\"ln\">\n                3 \n            line three\n            <inline classes=\"ln\">\n                4 \n            line four\n            <inline classes=\"ln\">\n                5 \n            line five\n            <inline classes=\"ln\">\n                6 \n            line six\n            <inline classes=\"ln\">\n                7 \n            line seven\n            <inline classes=\"ln\">\n                8 \n            line eight\n            <inline classes=\"ln\">\n                9 \n            line nine\n            <inline classes=\"ln\">\n                10 \n            line ten\n        <literal_block force=\"0\" highlight_args=\"{'linenostart': 16}\" language=\"default\" linenos=\"1\" source=\"<project>/example.py\" xml:space=\"preserve\">\n                def method(self):\n                    return self.attr\n        <container classes=\"literal-block-wrapper\" ids=\"id1\" literal_block=\"1\">\n            <caption>\n                Example tail\n            <literal_block force=\"0\" highlight_args=\"{'hl_lines': [2], 'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/example.py\" xml:space=\"preserve\">\n                def top(x):\n                    \"\"\"Top function.\"\"\"\n                    return x + 1\n",
+          "chain1": "<document source=\"<project>/chain1.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Chain one.\n    <paragraph>\n        Chain two.\n",
+          "chain2": "<document source=\"<project>/chain2.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Chain two.\n",
+          "circ_a": "<document source=\"<project>/circ_a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Circ A.\n    <paragraph>\n        Circ B.\n    <system_message level=\"2\" line=\"3\" source=\"<project>/circ_b.rst\" type=\"WARNING\">\n        <paragraph>\n            circular inclusion in \"include\" directive:\n            <project>/circ_a.rst\n            > <project>/circ_b.rst\n            > <project>/circ_a.rst\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n            .. include:: circ_a.rst\n",
+          "circ_b": "<document source=\"<project>/circ_b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Circ B.\n    <paragraph>\n        Circ A.\n    <system_message level=\"2\" line=\"3\" source=\"<project>/circ_a.rst\" type=\"WARNING\">\n        <paragraph>\n            circular inclusion in \"include\" directive:\n            <project>/circ_b.rst\n            > <project>/circ_a.rst\n            > <project>/circ_b.rst\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n            .. include:: circ_b.rst\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                Nested\n",
+          "shared/frag": "<document source=\"<project>/shared/frag.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Frag paragraph one.\n    <system_message level=\"4\" line=\"3\" source=\"<project>/shared/frag.rst\" type=\"SEVERE\">\n        <paragraph>\n            Problems with \"include\" directive path:\n            InputError: [Errno 2] No such file or directory: '<project>/shared/frag2.rst'.\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n            .. include:: frag2.rst\n",
+          "sub/frag2": "<document source=\"<project>/sub/frag2.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Frag2 paragraph.\n",
+          "sub/nested": "<document source=\"<project>/sub/nested.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"nested\" names=\"nested\">\n        <title>\n            Nested\n        <paragraph>\n            Frag paragraph one.\n        <paragraph>\n            Frag2 paragraph.\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "lit-block": [
+              "b",
+              "lit-block"
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 1,
+          "abs_part": 0,
+          "b": 1,
+          "chain1": 0,
+          "chain2": 0,
+          "circ_a": 0,
+          "circ_b": 0,
+          "index": 1,
+          "shared/frag": 0,
+          "sub/frag2": 0,
+          "sub/nested": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n",
+          "abs_part": "<bullet_list>\n",
+          "b": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"b\">\n                B\n",
+          "chain1": "<bullet_list>\n",
+          "chain2": "<bullet_list>\n",
+          "circ_a": "<bullet_list>\n",
+          "circ_b": "<bullet_list>\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a') (None,\\ 'b') (None,\\ 'sub/nested')\" glob=\"0\" hidden=\"0\" includefiles=\"a b sub/nested\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "shared/frag": "<bullet_list>\n",
+          "sub/frag2": "<bullet_list>\n",
+          "sub/nested": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"sub/nested\">\n                Nested\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a",
+            "b",
+            "sub/nested"
+          ]
+        },
+        "warnings": [
+          "<project>/a.rst:8: CRITICAL: Problems with \"include\" directive path:",
+          "InputError: [Errno 2] No such file or directory: '<project>/missing.rst'. [docutils]",
+          "<project>/a.rst:10: CRITICAL: Problem with \"start-after\" option of \"include\" directive:",
+          "Text not found. [docutils]",
+          "<project>/circ_b.rst:3: WARNING: circular inclusion in \"include\" directive:",
+          "<project>/circ_a.rst",
+          "> <project>/circ_b.rst",
+          "> <project>/circ_a.rst",
+          "> <project>/a.rst [docutils]",
+          "<project>/a.rst:15: WARNING: Object named 'not_there' not found in include file _StrPath('<project>/example.py') [docutils]",
+          "<project>/circ_b.rst:3: WARNING: circular inclusion in \"include\" directive:",
+          "<project>/circ_a.rst",
+          "> <project>/circ_b.rst",
+          "> <project>/circ_a.rst [docutils]",
+          "<project>/circ_a.rst:3: WARNING: circular inclusion in \"include\" directive:",
+          "<project>/circ_b.rst",
+          "> <project>/circ_a.rst",
+          "> <project>/circ_b.rst [docutils]",
+          "<project>/shared/frag.rst:3: CRITICAL: Problems with \"include\" directive path:",
+          "InputError: [Errno 2] No such file or directory: '<project>/shared/frag2.rst'. [docutils]"
+        ]
+      },
+      "files": {
+        "a": "A\n=\n\n.. include:: chain1.rst\n\n.. include:: /abs_part.rst\n\n.. include:: missing.rst\n\n.. include:: clip_part.inc\n   :start-after: nope-not-here\n\n.. include:: circ_a.rst\n\n.. literalinclude:: example.py\n   :pyobject: not_there\n",
+        "abs_part": "Absolute part.\n",
+        "b": "B\n=\n\n.. include:: lit_part.inc\n   :literal:\n   :name: lit-block\n\n.. include:: numbered.inc\n   :literal:\n   :number-lines:\n\n.. include:: code_plain.inc\n   :code:\n\n.. include:: code_numbered.inc\n   :code:\n   :number-lines:\n\n.. literalinclude:: example.py\n   :pyobject: Foo.method\n   :lineno-match:\n\n.. literalinclude:: example.py\n   :lines: 6-8\n   :emphasize-lines: 2\n   :caption: Example tail\n",
+        "chain1": "Chain one.\n\n.. include:: chain2.rst\n",
+        "chain2": "Chain two.\n",
+        "circ_a": "Circ A.\n\n.. include:: circ_b.rst\n",
+        "circ_b": "Circ B.\n\n.. include:: circ_a.rst\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n   b\n   sub/nested\n",
+        "shared/frag": "Frag paragraph one.\n\n.. include:: frag2.rst\n",
+        "sub/frag2": "Frag2 paragraph.\n",
+        "sub/nested": "Nested\n======\n\n.. include:: ../shared/frag.rst\n"
+      },
+      "name": "inc_basic"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "data_files": {
+        "snippet.inc": "alpha\nbeta\ngamma\n"
+      },
+      "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/part.rst",
+            "<project>/snippet.inc"
+          ]
+        },
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ]
+        },
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "built-in function",
+                "subitems": [
+                  {
+                    "name": "partfn()",
+                    "targets": [
+                      [
+                        "",
+                        "#partfn"
+                      ],
+                      [
+                        "",
+                        "#partfn"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "B"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "partfn()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#partfn"
+                      ],
+                      [
+                        "",
+                        "#partfn"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "P"
+          }
+        ],
+        "included": {
+          "a": [
+            "part"
+          ]
+        },
+        "index_entries": {
+          "a": [
+            [
+              "pair",
+              "built-in function; partfn()",
+              "partfn",
+              "",
+              null
+            ]
+          ],
+          "index": [],
+          "part": [
+            [
+              "pair",
+              "built-in function; partfn()",
+              "partfn",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "part",
+            "name": "partfn",
+            "node_id": "partfn",
+            "objtype": "function"
+          }
+        ],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            null
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <section ids=\"part\" names=\"part\">\n            <title>\n                Part\n            <index entries=\"('pair',\\ 'built-in\\ function;\\ partfn()',\\ 'partfn',\\ '',\\ None)\">\n            <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n                <desc_signature _toc_name=\"partfn()\" _toc_parts=\"('partfn',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"partfn\" ids=\"partfn\" module=\"True\">\n                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                        partfn\n                    <desc_parameterlist xml:space=\"preserve\">\n                <desc_content>\n            <paragraph>\n                See \n                <inline classes=\"xref std std-ref\">\n                    missing-target\n                .\n            <literal_block force=\"0\" highlight_args=\"{'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/snippet.inc\" xml:space=\"preserve\">\n                alpha\n                beta\n                gamma\n            <literal_block force=\"0\" highlight_args=\"{'hl_lines': [], 'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/snippet.inc\" xml:space=\"preserve\">\n                alpha\n                beta\n                gamma\n            <literal_block force=\"0\" highlight_args=\"{'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/snippet.inc\" xml:space=\"preserve\">\n                pha\n                ta\n                mma\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\">\n                                    <reference anchorname=\"#part\" internal=\"1\" refuri=\"#part\">\n                                        Part\n                                <bullet_list>\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#partfn\" internal=\"1\" refuri=\"#partfn\">\n                                                <literal>\n                                                    partfn()\n",
+          "part": "<document source=\"<project>/part.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"part\" names=\"part\">\n        <title>\n            Part\n        <index entries=\"('pair',\\ 'built-in\\ function;\\ partfn()',\\ 'partfn',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"partfn()\" _toc_parts=\"('partfn',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"partfn\" ids=\"partfn\" module=\"True\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    partfn\n                <desc_parameterlist xml:space=\"preserve\">\n            <desc_content>\n        <paragraph>\n            See \n            <inline classes=\"xref std std-ref\">\n                missing-target\n            .\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 3,
+          "index": 1,
+          "part": 2
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n        <bullet_list>\n            <list_item>\n                <compact_paragraph>\n                    <reference anchorname=\"#part\" internal=\"1\" refuri=\"a\">\n                        Part\n                <bullet_list>\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#partfn\" internal=\"1\" refuri=\"a\">\n                                <literal>\n                                    partfn()\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a')\" glob=\"0\" hidden=\"0\" includefiles=\"a\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "part": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"part\">\n                Part\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#partfn\" internal=\"1\" refuri=\"part\">\n                        <literal>\n                            partfn()\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a"
+          ]
+        },
+        "warnings": [
+          "<project>/a.rst.rst:6: WARNING: line number spec is out of range(1-3): '1-40'",
+          "<project>/a.rst.rst:9: WARNING: line number spec is out of range(1-3): '9'",
+          "<project>/a.rst.rst:12: WARNING: non-whitespace stripped by dedent",
+          "<project>/part.rst:4: WARNING: duplicate object description of partfn, other instance in a, use :no-index: for one of them",
+          "<project>/part.rst:6: WARNING: undefined label: 'missing-target' [ref.ref]",
+          "<project>/part.rst:6: WARNING: undefined label: 'missing-target' [ref.ref]"
+        ]
+      },
+      "files": {
+        "a": "A\n=\n\n.. include:: part.rst\n\n.. literalinclude:: snippet.inc\n   :lines: 1-40\n\n.. literalinclude:: snippet.inc\n   :emphasize-lines: 9\n\n.. literalinclude:: snippet.inc\n   :dedent: 2\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n",
+        "part": "Part\n----\n\n.. py:function:: partfn()\n\nSee :ref:`missing-target`.\n"
+      },
+      "name": "inc_warn"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "data_files": {
+        "example.py": "\"\"\"Example module.\"\"\"\n\nCONST = 1\n\n\ndef top(x):\n    \"\"\"Top function.\"\"\"\n    return x + 1\n\n\nclass Foo:\n    \"\"\"A class.\"\"\"\n\n    attr = 2\n\n    def method(self):\n        return self.attr\n\n\ndef tail():\n    pass\n",
+        "pic.png": "not really a png\n"
+      },
+      "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/example.py",
+            "<project>/part.rst",
+            "<project>/pic.png"
+          ]
+        },
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ],
+          "b": [
+            "index"
+          ]
+        },
+        "genindex": [],
+        "included": {
+          "a": [
+            "part"
+          ]
+        },
+        "index_entries": {
+          "a": [],
+          "b": [],
+          "index": [],
+          "part": []
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            "b"
+          ],
+          "b": [
+            "index",
+            "a",
+            null
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <paragraph>\n            part para\n        <literal_block force=\"0\" highlight_args=\"{'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/example.py\" xml:space=\"preserve\">\n            \"\"\"Example module.\"\"\"\n            \n        <image candidates=\"{'*': 'pic.png'}\" uri=\"pic.png\">\n",
+          "b": "<document source=\"<project>/b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"b\" names=\"b\">\n        <title>\n            B\n        <paragraph>\n            no deps here\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n",
+          "part": "<document source=\"<project>/part.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        part para\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 1,
+          "b": 1,
+          "index": 1,
+          "part": 0
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n",
+          "b": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"b\">\n                B\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a') (None,\\ 'b')\" glob=\"0\" hidden=\"0\" includefiles=\"a b\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "part": "<bullet_list>\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a",
+            "b"
+          ]
+        },
+        "warnings": []
+      },
+      "files": {
+        "a": "A\n=\n\n.. include:: part.rst\n\n.. literalinclude:: example.py\n   :lines: 1-2\n\n.. image:: pic.png\n",
+        "b": "B\n=\n\nno deps here\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n   b\n",
+        "part": "part para\n"
+      },
+      "name": "inc_deps"
     }
   ],
   "sphinx_version": "9.1.0"

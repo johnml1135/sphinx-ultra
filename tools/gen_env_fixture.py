@@ -140,6 +140,43 @@ CONF_PY = (
     "exclude_patterns = ['_build']\n"
 )
 
+# The `literalinclude` corpus's Python source, shipped through `data_files`
+# (same geometry as tests/fixtures/literalinclude/example.py, which the unit
+# tests use). Three properties are load-bearing and must survive edits:
+#
+#   * it PARSES (`ast.parse` clean). A file that tokenizes but does not parse
+#     yields `:pyobject:` tags here while Sphinx's own analyzer warns instead
+#     (wave-4.5 task 15 ruling) -- a divergence no oracle can express.
+#   * indentation is spaces only, uniformly 4. The one ledgered TAG-changing
+#     divergence is `:tab-width:` (!= 8) + `:pyobject:` + mixed indentation;
+#     keeping tabs out of the file keeps that trap unreachable.
+#   * `Foo.method` is a nested definition and `tail` follows the class, so
+#     `:pyobject: Foo.method` exercises the nested-def path and its end
+#     boundary is a real dedent rather than EOF.
+EXAMPLE_PY = '''\
+"""Example module."""
+
+CONST = 1
+
+
+def top(x):
+    """Top function."""
+    return x + 1
+
+
+class Foo:
+    """A class."""
+
+    attr = 2
+
+    def method(self):
+        return self.attr
+
+
+def tail():
+    pass
+'''
+
 # ---------------------------------------------------------------------------
 # Corpus: one project per axis. `conf` holds extra confoverrides merged over
 # BASE_CONFOVERRIDES; `files` maps docname -> rst source (nested docnames
@@ -924,6 +961,256 @@ Ref :py:func:`missing_fn` and :py:class:`int` and :py:class:`Missing`.
 """,
         },
     },
+    # -----------------------------------------------------------------------
+    # Wave 4.5: include / literalinclude projects (plan Task 14). These are
+    # the oracle venue for the file-inserting directives' node shapes — the
+    # doctree fixtures are string corpora that cannot carry aux files. Path
+    # spellings ride the Scope-8 normalization: srcdir-relative is the
+    # canonical form on both sides of the warning/resolved comparisons.
+    # -----------------------------------------------------------------------
+    {
+        # In-tree message and node shapes, under `keep_warnings=True` so the
+        # docutils reporter messages STAY in the resolved doctrees where both
+        # sides can compare them byte-for-byte: nested include chains, the
+        # srcdir-absolute form, a missing file (InputError SEVERE), a failed
+        # `:start-after:` clip (Text not found SEVERE), a circular include
+        # pair, `:literal:` with `:name:`/`:number-lines:`, the two
+        # language-less `:code:` forms (plain, and `:number-lines:` with
+        # docutils' width quirk), literalinclude `:pyobject:`/`:lineno-match:`,
+        # a `:pyobject:` miss (the T15 not-found text), and a captioned
+        # `:lines:`+`:emphasize-lines:` block. `sub/nested.rst` pins
+        # §Scope-2a docname-relative resolution: `shared/frag.rst` includes
+        # `frag2.rst`, which resolves against the CURRENT DOCUMENT's
+        # directory — `sub/frag2.rst` (exists) when included from
+        # `sub/nested`, `shared/frag2.rst` (missing -> SEVERE) when
+        # `shared/frag` is parsed standalone.
+        #
+        # The project's `warnings` are gap-tabled in the consumer: sphinx
+        # ALSO logs every reporter message to the warning stream with a
+        # `[docutils]` suffix, while this crate keeps reporter messages
+        # in-tree only (pre-existing project-wide divergence, T12 ledger).
+        "name": "inc_basic",
+        "conf": {"keep_warnings": True},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+   sub/nested
+""",
+            "a": """\
+A
+=
+
+.. include:: chain1.rst
+
+.. include:: /abs_part.rst
+
+.. include:: missing.rst
+
+.. include:: clip_part.inc
+   :start-after: nope-not-here
+
+.. include:: circ_a.rst
+
+.. literalinclude:: example.py
+   :pyobject: not_there
+""",
+            "b": """\
+B
+=
+
+.. include:: lit_part.inc
+   :literal:
+   :name: lit-block
+
+.. include:: numbered.inc
+   :literal:
+   :number-lines:
+
+.. include:: code_plain.inc
+   :code:
+
+.. include:: code_numbered.inc
+   :code:
+   :number-lines:
+
+.. literalinclude:: example.py
+   :pyobject: Foo.method
+   :lineno-match:
+
+.. literalinclude:: example.py
+   :lines: 6-8
+   :emphasize-lines: 2
+   :caption: Example tail
+""",
+            "sub/nested": """\
+Nested
+======
+
+.. include:: ../shared/frag.rst
+""",
+            "chain1": """\
+Chain one.
+
+.. include:: chain2.rst
+""",
+            "chain2": """\
+Chain two.
+""",
+            "abs_part": """\
+Absolute part.
+""",
+            "circ_a": """\
+Circ A.
+
+.. include:: circ_b.rst
+""",
+            "circ_b": """\
+Circ B.
+
+.. include:: circ_a.rst
+""",
+            "shared/frag": """\
+Frag paragraph one.
+
+.. include:: frag2.rst
+""",
+            "sub/frag2": """\
+Frag2 paragraph.
+""",
+        },
+        "data_files": {
+            "clip_part.inc": "clip alpha\nclip beta\n",
+            "lit_part.inc": "Literal alpha.\nLiteral beta.\n",
+            # Ten lines in BOTH numbered members, so the two number-column
+            # widths differ visibly: `:literal:` sizes the column from the
+            # real line count (width 2, `11`), while `:code:` goes through
+            # the `code` directive with `len(self.content) == 1` and sizes
+            # it from `startline + 1` -- docutils' single-element quirk,
+            # a ragged width-1 column running past `9`.
+            "numbered.inc": (
+                "num one\nnum two\nnum three\nnum four\nnum five\n"
+                "num six\nnum seven\nnum eight\nnum nine\nnum ten\n"
+            ),
+            "code_plain.inc": "plain code line\nsecond code line\n",
+            "code_numbered.inc": (
+                "line one\nline two\nline three\nline four\nline five\n"
+                "line six\nline seven\nline eight\nline nine\nline ten\n"
+            ),
+            "example.py": EXAMPLE_PY,
+        },
+    },
+    {
+        # The warning streams both sides CAN compare byte-for-byte: the
+        # three logger-channel literalinclude warnings (`:lines:` out of
+        # range, `:emphasize-lines:` out of range against the post-filter
+        # count, `non-whitespace stripped by dedent`) with their
+        # doc2path-doubled `.rst.rst` locations, plus the sphinx-channel
+        # warnings an INCLUDED .rst fires under both spellings: `part.rst`
+        # registers `partfn` via the include into `a` and again as its own
+        # standalone document (-> duplicate object warning naming `a`), and
+        # its dangling :ref: resolves — and warns — once per resolved
+        # document. The included file's orphan warning is suppressed
+        # (env.included consult), which this project also pins.
+        "name": "inc_warn",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+""",
+            "a": """\
+A
+=
+
+.. include:: part.rst
+
+.. literalinclude:: snippet.inc
+   :lines: 1-40
+
+.. literalinclude:: snippet.inc
+   :emphasize-lines: 9
+
+.. literalinclude:: snippet.inc
+   :dedent: 2
+""",
+            "part": """\
+Part
+----
+
+.. py:function:: partfn()
+
+See :ref:`missing-target`.
+""",
+        },
+        "data_files": {
+            "snippet.inc": "alpha\nbeta\ngamma\n",
+        },
+    },
+    {
+        # The [INC PROBE 6] project, COLD state: include + literalinclude +
+        # image dependencies land in env.dependencies (absolute, normalized
+        # to <project>/...), the included docname in env.included. The
+        # warm-rebuild/outdated matrix stays in e2e and the harness's own
+        # incremental tests — a fixture build is always cold.
+        #
+        # NOT here, deliberately: the standard-include (`<isogrk4.txt>`)
+        # no-record rule. Sphinx's Include hands the `<name>` form to the
+        # docutils base directive before reaching `note_included`, so
+        # `env.included` stays empty (probe-confirmed) — but docutils' own
+        # `record_dependencies` DOES take the file, and `note_dependency`
+        # resolves that against the srcdir, so `env.dependencies` ends up
+        # holding `<project>/../../…/site-packages/docutils/parsers/rst/
+        # include/isogrk4.txt`: an interpreter-installation path no
+        # normalization can canonicalize, which would make the committed
+        # fixture machine-specific. That rule stays with the unit tests.
+        "name": "inc_deps",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+.. include:: part.rst
+
+.. literalinclude:: example.py
+   :lines: 1-2
+
+.. image:: pic.png
+""",
+            "b": """\
+B
+=
+
+no deps here
+""",
+            "part": """\
+part para
+""",
+        },
+        "data_files": {
+            "example.py": EXAMPLE_PY,
+            "pic.png": "not really a png\n",
+        },
+    },
 ]
 
 
@@ -1262,7 +1549,7 @@ def generate_all() -> dict:
 def main() -> int:
     names = [p["name"] for p in PROJECTS]
     assert len(names) == len(set(names)), "project names must be unique"
-    assert len(PROJECTS) >= 12, f"corpus degenerated: {len(PROJECTS)} projects"
+    assert len(PROJECTS) >= 20, f"corpus degenerated: {len(PROJECTS)} projects"
 
     fixture = generate_all()
 

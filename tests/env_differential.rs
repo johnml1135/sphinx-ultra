@@ -396,6 +396,7 @@ fn config_of(project: &Project) -> BuildConfig {
     let conf = project.conf.as_object().expect("conf is an object");
     for (key, value) in conf {
         if KNOWN_INERT_CONF.contains(&key.as_str()) {
+            assert_inert_conf_is_sound(&project.name, key, value);
             continue;
         }
         // A dict-valued setting is applied key by key (`-D numfig_format.figure=...`),
@@ -536,6 +537,21 @@ const KNOWN_WARNING_GAPS: &[(&str, &str)] = &[
          project's other warning, `numfig is disabled. :numref: is ignored.`, \
          this task does produce)",
     ),
+    (
+        "inc_basic",
+        "every one of this project's oracle warnings is a docutils *reporter* \
+         message (the `[docutils]` suffix): Sphinx's `LoggingReporter` streams \
+         each `system_message` it builds to the warning log as well as into \
+         the doctree, while this crate keeps reporter messages in-tree only. \
+         That split is pre-existing and project-wide (wave-4.5 task 12 \
+         verified it is not include-specific), and it is why the project sets \
+         `keep_warnings`: the same bytes are compared at full strength as \
+         `system_message` nodes in `resolved_pformat` — the missing-file and \
+         `start-after` SEVEREs, the multi-line circular-inclusion chains, and \
+         the `:pyobject:` not-found text. The sibling `inc_warn` project \
+         carries the include/literalinclude warnings that DO go through the \
+         logger on both sides, and compares byte-for-byte",
+    ),
 ];
 
 /// Projects whose oracle `std` data this task deliberately does not
@@ -629,7 +645,105 @@ const KNOWN_RESOLVED_GAPS: &[(&str, &str, &str)] = &[
     ("py_toc_parents", "mod", PROPAGATE_MODULE_TARGETS),
     ("py_modindex", "index", PROPAGATE_MODULE_TARGETS),
     ("py_modindex_prefix", "index", PROPAGATE_MODULE_TARGETS),
+    // Wave 4.5 include/literalinclude projects. Only the toctree-bearing
+    // index documents and the one image-bearing document are skipped
+    // outright; every other document of these three projects is compared,
+    // six of them through the narrow [`KNOWN_HIGHLIGHT_STAMP_GAPS`]
+    // exemption rather than being dropped.
+    ("inc_basic", "index", TOCTREE_RESOLUTION),
+    ("inc_warn", "index", TOCTREE_RESOLUTION),
+    ("inc_deps", "index", TOCTREE_RESOLUTION),
+    (
+        "inc_deps",
+        "a",
+        "`image[candidates]` (see IMAGE_CANDIDATES) — and, on the same \
+         document's `literal_block`, the highlight stamp of \
+         KNOWN_HIGHLIGHT_STAMP_GAPS, which cannot be applied to a document \
+         that already diverges structurally",
+    ),
 ];
+
+/// The attributes Sphinx's `HighlightLanguageTransform`
+/// (`transforms/post_transforms/code.py`, priority 400) stamps onto a
+/// `literal_block` that does not already carry them: `language` (+ `force`)
+/// from the `highlight_language` setting in scope, and `linenos` from the
+/// `.. highlight::` line-number threshold.
+const HIGHLIGHT_STAMP_ATTRS: [&str; 3] = ["language", "force", "linenos"];
+
+/// Documents whose ONLY `resolved_pformat` divergence is that transform.
+///
+/// Unlike [`KNOWN_RESOLVED_GAPS`], which skips a document wholesale, an
+/// entry here still compares the entire tree — every node, every other
+/// attribute, every character of text — and exempts nothing but the
+/// *presence* of a [`HIGHLIGHT_STAMP_ATTRS`] attribute the oracle's
+/// `literal_block` carries and ours does not have at all. A value both
+/// sides do carry still has to agree. That keeps these projects doing the
+/// job they exist for (they are the oracle venue for the file-inserting
+/// directives' node shapes — see tools/gen_env_fixture.py) instead of
+/// dropping out of the comparison over three stamped attributes.
+///
+/// The transform belongs to wave 5 (docs/superpowers/plans/
+/// 2026-08-07-m2-wave-map.md lists it among the exemptions that wave is
+/// expected to delete, as "the `linenos` flag a captioned `code-block`
+/// stamps onto its `literal_block`" — the same pass, met there through
+/// `numfig_on`/`a`). Checked **strictly** in both directions: a listed
+/// document that starts matching outright fails, and one that diverges by
+/// anything beyond the stamp is reported as a real divergence.
+const KNOWN_HIGHLIGHT_STAMP_GAPS: &[(&str, &str)] = &[
+    ("inc_basic", "a"),
+    ("inc_basic", "b"),
+    ("inc_basic", "circ_a"),
+    ("inc_basic", "circ_b"),
+    ("inc_basic", "shared/frag"),
+    ("inc_warn", "a"),
+];
+
+fn known_highlight_stamp_gap(project: &str, docname: &str) -> bool {
+    KNOWN_HIGHLIGHT_STAMP_GAPS
+        .iter()
+        .any(|(p, d)| *p == project && *d == docname)
+}
+
+/// `expected` with every [`HIGHLIGHT_STAMP_ATTRS`] attribute dropped from a
+/// `literal_block` open tag whose counterpart in `actual` does not carry
+/// that attribute at all — i.e. exactly the stamping
+/// `HighlightLanguageTransform` performs, undone.
+///
+/// The two texts are walked line by line, which is sound because a
+/// `pformat` renders one node per line: if the trees differ structurally
+/// the paired lines stop being the same node and the comparison fails,
+/// which is the outcome we want. A line is only touched when BOTH sides
+/// open a `literal_block` there, so a stray `<literal_block ` inside
+/// literal *text* would have to appear at the same position on both sides
+/// AND carry a stamped attribute on the oracle side alone to be misread.
+fn drop_unstamped_highlight_attrs(expected: &str, actual: &str) -> String {
+    let mut ours = actual.lines();
+    let mut out = String::with_capacity(expected.len());
+    for oracle_line in expected.lines() {
+        let our_line = ours.next().unwrap_or_default();
+        let mut oracle_line = oracle_line.to_string();
+        if oracle_line.trim_start().starts_with("<literal_block ")
+            && our_line.trim_start().starts_with("<literal_block ")
+        {
+            for attr in HIGHLIGHT_STAMP_ATTRS {
+                let needle = format!(" {attr}=\"");
+                if our_line.contains(&needle) {
+                    continue;
+                }
+                let Some(start) = oracle_line.find(&needle) else {
+                    continue;
+                };
+                let value = start + needle.len();
+                if let Some(offset) = oracle_line[value..].find('"') {
+                    oracle_line.replace_range(start..value + offset + 1, "");
+                }
+            }
+        }
+        out.push_str(&oracle_line);
+        out.push('\n');
+    }
+    out
+}
 
 fn known_resolved_gap(project: &str, docname: &str) -> Option<&'static str> {
     KNOWN_RESOLVED_GAPS
@@ -656,10 +770,40 @@ fn known_warning_gap(project: &str) -> Option<&'static str> {
 /// implemented, which is what makes it sound to leave them off the
 /// [`config_of`] override pass.
 ///
-/// `smartquotes`: no smart-quote transform exists. A new fixture project
-/// introducing another such key must either have it added here (with the
-/// same kind of justification) or be expressible as a `-D` override.
-const KNOWN_INERT_CONF: &[&str] = &["smartquotes"];
+/// `smartquotes`: no smart-quote transform exists.
+///
+/// `keep_warnings`: no `FilterSystemMessages` transform exists — this crate
+/// never removes a reporter `system_message` from a doctree, which is
+/// precisely what `keep_warnings=True` asks Sphinx to do (its transform
+/// keeps every message of level >= 2). The *stripping* half — the `False`
+/// default, which drops every system_message below SEVERE — is the
+/// unimplemented one, so the entry is sound only while every project that
+/// sets the key sets it `True`; [`assert_inert_conf_is_sound`] pins that.
+/// Projects that leave it unset are self-defending: Sphinx strips their
+/// messages, so a system_message appearing on our side alone would fail the
+/// `resolved_pformat` comparison rather than pass silently.
+///
+/// A new fixture project introducing another such key must either have it
+/// added here (with the same kind of justification) or be expressible as a
+/// `-D` override.
+const KNOWN_INERT_CONF: &[&str] = &["smartquotes", "keep_warnings"];
+
+/// The side-condition that makes one [`KNOWN_INERT_CONF`] entry sound.
+///
+/// `keep_warnings` is inert only in its `True` sense (see the constant's
+/// docs), so a project setting it any other way must fail here rather than
+/// be compared against a differently filtered oracle.
+fn assert_inert_conf_is_sound(project: &str, key: &str, value: &serde_json::Value) {
+    if key == "keep_warnings" {
+        assert_eq!(
+            value,
+            &serde_json::Value::Bool(true),
+            "project {project:?}: keep_warnings={value}, but the harness treats the key \
+             as inert only in its `True` sense — this crate never strips reporter \
+             system_messages, and the stripping half is unimplemented"
+        );
+    }
+}
 
 fn report(divergences: &[String], keys: &str) {
     assert!(
@@ -784,13 +928,60 @@ fn conf_arrays_of_comma_free_strings_render_as_the_comma_joined_override() {
     );
 }
 
+/// [`drop_unstamped_highlight_attrs`] removes an oracle-only highlight
+/// stamp and nothing else: a value both sides carry stays (and keeps
+/// diverging if it differs), a non-`literal_block` line is untouched, and
+/// the surrounding tree text is preserved byte for byte.
+#[test]
+fn only_oracle_only_highlight_stamps_are_dropped() {
+    let oracle = concat!(
+        "<document source=\"a.rst\">\n",
+        "    <literal_block force=\"0\" language=\"default\" linenos=\"0\" ",
+        "source=\"x.inc\" xml:space=\"preserve\">\n",
+        "        text\n",
+        "    <paragraph language=\"default\">\n",
+        "        not a literal block\n",
+    );
+    // Ours carries `force`; `language`/`linenos` it has never heard of.
+    let ours = concat!(
+        "<document source=\"a.rst\">\n",
+        "    <literal_block force=\"0\" source=\"x.inc\" xml:space=\"preserve\">\n",
+        "        text\n",
+        "    <paragraph language=\"default\">\n",
+        "        not a literal block\n",
+    );
+    assert_eq!(drop_unstamped_highlight_attrs(oracle, ours), ours);
+
+    // A stamped attribute BOTH sides carry is left in place, so a wrong
+    // value still diverges.
+    let ours_wrong_force = ours.replace("force=\"0\"", "force=\"1\"");
+    assert_eq!(
+        drop_unstamped_highlight_attrs(oracle, &ours_wrong_force),
+        ours,
+        "only `language` and `linenos` come off when ours carries `force`"
+    );
+    assert_ne!(
+        drop_unstamped_highlight_attrs(oracle, &ours_wrong_force),
+        ours_wrong_force,
+        "a `force` value we disagree on still diverges"
+    );
+
+    // Any other divergence survives: the text of the block still has to
+    // match.
+    let ours_wrong_text = ours.replace("        text\n", "        other\n");
+    assert_ne!(
+        drop_unstamped_highlight_attrs(oracle, &ours_wrong_text),
+        ours_wrong_text
+    );
+}
+
 #[test]
 fn fixture_loads_and_meets_floor() {
     let fixture = load_fixture();
     assert_eq!(fixture.sphinx_version, "9.1.0");
     assert_eq!(fixture.docutils_version, "0.22.4");
     assert!(
-        fixture.projects.len() >= 12,
+        fixture.projects.len() >= 20,
         "fixture truncated? only {} projects",
         fixture.projects.len()
     );
@@ -1292,6 +1483,7 @@ fn resolved_doctrees_match_oracle() {
     let fixture = load_fixture();
     let mut divergences = Vec::new();
     let mut visited_gaps: Vec<(&str, &str)> = Vec::new();
+    let mut visited_stamps: Vec<(&str, &str)> = Vec::new();
 
     for project in &fixture.projects {
         let env = env_of(project);
@@ -1310,9 +1502,17 @@ fn resolved_doctrees_match_oracle() {
             let expected = canon_scope8(&expected.replace(TRANSLATION_PROGRESS_ATTR, ""));
             let actual = canon_scope8(&resolved[docname]);
             let matches = actual == expected;
+            let stamp_exempt = known_highlight_stamp_gap(&project.name, docname);
 
             match known_resolved_gap(&project.name, docname) {
                 Some(why) => {
+                    assert!(
+                        !stamp_exempt,
+                        "[{}] {docname} is in both KNOWN_RESOLVED_GAPS ({why}) and \
+                         KNOWN_HIGHLIGHT_STAMP_GAPS — a skipped document cannot also \
+                         be compared modulo the highlight stamp; keep one",
+                        project.name
+                    );
                     visited_gaps.push((project.name.as_str(), docname.as_str()));
                     assert!(
                         !matches,
@@ -1321,6 +1521,25 @@ fn resolved_doctrees_match_oracle() {
                          exemption",
                         project.name
                     );
+                }
+                None if stamp_exempt => {
+                    visited_stamps.push((project.name.as_str(), docname.as_str()));
+                    assert!(
+                        !matches,
+                        "[{}] {docname}: listed in KNOWN_HIGHLIGHT_STAMP_GAPS but the \
+                         resolved doctree now matches the oracle outright — delete the \
+                         exemption",
+                        project.name
+                    );
+                    let unstamped = drop_unstamped_highlight_attrs(&expected, &actual);
+                    if actual != unstamped {
+                        divergences.push(format!(
+                            "[{}] {docname} (beyond the HighlightLanguageTransform \
+                             stamp)\n--- oracle, unstamped ---\n{unstamped}\
+                             --- ours ---\n{actual}",
+                            project.name
+                        ));
+                    }
                 }
                 None if !matches => divergences.push(format!(
                     "[{}] {docname}\n--- oracle ---\n{expected}--- ours ---\n{actual}",
@@ -1336,6 +1555,13 @@ fn resolved_doctrees_match_oracle() {
             visited_gaps.contains(&(*project, *docname)),
             "KNOWN_RESOLVED_GAPS entry ({project}, {docname}) — {why} — was \
              never visited: no such project/document in the fixture. Delete it."
+        );
+    }
+    for (project, docname) in KNOWN_HIGHLIGHT_STAMP_GAPS {
+        assert!(
+            visited_stamps.contains(&(*project, *docname)),
+            "KNOWN_HIGHLIGHT_STAMP_GAPS entry ({project}, {docname}) was never \
+             visited: no such project/document in the fixture. Delete it."
         );
     }
 
