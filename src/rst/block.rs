@@ -4295,7 +4295,7 @@ impl BlockParser {
     /// each term gets a term-<id> target and an embedded index entry.
     ///
     /// The entry split is a line-by-line port of `Glossary.run`'s state
-    /// machine (`domains/std/__init__.py:440-509`) — `in_definition`,
+    /// machine (`domains/std/__init__.py:434-510`) — `in_definition`,
     /// `in_comment`, `was_empty`, `indent_len` — rather than a chunker,
     /// because three of its four states are observable:
     ///
@@ -4313,7 +4313,7 @@ impl BlockParser {
     /// The three misformat warnings are `self.state.reporter.warning`
     /// calls, i.e. docutils reporter messages: they land in the tree as
     /// `system_message` nodes BEFORE the glossary node (`return [*messages,
-    /// node]`, `:509`) and, in Sphinx, additionally on stderr through the
+    /// node]`, `:555`) and, in Sphinx, additionally on stderr through the
     /// docutils→logging bridge with a `[docutils]` type suffix. Only the
     /// in-tree half is produced here; CLI-surfacing in-tree system_messages
     /// is a pre-existing project-wide gap (wave-4.5 task 12 ruling), not a
@@ -4394,13 +4394,16 @@ impl BlockParser {
                     in_definition = true;
                     indent_len = rec.indent();
                 }
-                // `line[indent_len:]` — a raw slice, so a continuation line
-                // indented LESS than the first one loses non-whitespace
-                // characters (probe: `   shallow` under a 6-column first
-                // line renders `llow`). Clamped to the view length, which
-                // is Python's own behaviour for a short line.
-                let view_len = (rec.end - rec.start) as usize;
-                let line = self.rewrap_from(rec, indent_len.min(view_len));
+                // `line[indent_len:]` (`:501`) — a raw slice, so a
+                // continuation line indented LESS than the first one loses
+                // non-whitespace characters (probe: `   shallow` under a
+                // 6-column first line renders `llow`). Python slices by
+                // CHARACTER and clamps past the end, so the offset goes
+                // through `rest_after_offset`: a byte-count `min` would
+                // both split a multi-byte char (panic) and cut the wrong
+                // number of characters off a non-ASCII line.
+                let off = rest_after_offset(self.sources.line_text(rec), indent_len);
+                let line = self.rewrap_from(rec, off);
                 match entries.last_mut() {
                     Some(last) => last.1.push(line),
                     None => msgs.push(self.glossary_msg(MISFORMATTED, rec)),
@@ -4476,7 +4479,7 @@ impl BlockParser {
             dl.children.push(item);
         }
         glossary.children.push(dl);
-        // `return [*messages, node]` (`domains/std/__init__.py:509`).
+        // `return [*messages, node]` (`domains/std/__init__.py:555`).
         out.extend(msgs);
         out.push(glossary);
     }
@@ -6698,14 +6701,29 @@ impl BlockParser {
         out: &mut Vec<Node>,
     ) {
         if let Some(OptVal::Str(n)) = opt_get(options, "name") {
-            node.attrs.names.push(ids::fully_normalize_name(n));
-            let source_path = self.sources.arc_path(source);
-            let msg = self
-                .registry
-                .set_id_explicit(node, lineno, &source_path, true, None);
-            if let Some(m) = msg {
-                out.push(m);
-            }
+            self.note_explicit_name(node, n, source, lineno, out);
+        }
+    }
+
+    /// `node['names'].append(fully_normalize_name(name))` followed by
+    /// `document.note_explicit_target(node, node)` — the tail shared by
+    /// `Directive.add_name` and `Figure`'s `figname` branch
+    /// (`images.py:156-157`).
+    fn note_explicit_name(
+        &mut self,
+        node: &mut Node,
+        name: &str,
+        source: u16,
+        lineno: u32,
+        out: &mut Vec<Node>,
+    ) {
+        node.attrs.names.push(ids::fully_normalize_name(name));
+        let source_path = self.sources.arc_path(source);
+        let msg = self
+            .registry
+            .set_id_explicit(node, lineno, &source_path, true, None);
+        if let Some(m) = msg {
+            out.push(m);
         }
     }
 
@@ -6896,7 +6914,7 @@ impl BlockParser {
                 .options
                 .iter()
                 .filter(|(n, _)| {
-                    !matches!(n.as_str(), "figwidth" | "figclass" | "align")
+                    !matches!(n.as_str(), "figwidth" | "figclass" | "figname" | "align")
                         && !(name_on_figure && n == "name")
                 })
                 .cloned()
@@ -6924,6 +6942,17 @@ impl BlockParser {
         }
         if let Some(OptVal::StrList(cls)) = opt_get(&input.options, "figclass") {
             figure.attrs.classes.extend(cls.iter().cloned());
+        }
+        // `if figname:` (`images.py:155-157`) — the figure's OWN explicit
+        // target, registered BEFORE the caption/legend parse (unlike
+        // sphinx's `:name:`, which lands after it). The truthiness test is
+        // Python's, so a valueless `:figname:` is a no-op where a valueless
+        // `:name:` would still push an empty name through `add_name`.
+        if let Some(OptVal::Str(n)) = opt_get(&input.options, "figname") {
+            if !n.is_empty() {
+                let n = n.clone();
+                self.note_explicit_name(&mut figure, &n, input.span.source, input.lineno, out);
+            }
         }
         if let Some(OptVal::Str(a)) = opt_get(&input.options, "align") {
             figure.set("align", AttrValue::Str(a.clone()));
@@ -10058,6 +10087,7 @@ const FIGURE_OPTS: &[(&str, Conv)] = &[
     ("name", Conv::Unchanged),
     ("figwidth", Conv::Figwidth),
     ("figclass", Conv::ClassOption),
+    ("figname", Conv::Unchanged),
 ];
 
 const CODE_OPTS: &[(&str, Conv)] = &[
@@ -13075,6 +13105,43 @@ mod tests {
         assert!(sphinx.contains(r#"<image uri="pic.png">"#), "{sphinx}");
     }
 
+    /// docutils' `figname` (`images.py:125`, `:155-157`) is the figure's
+    /// OWN explicit target, applied BEFORE the caption/legend parse — which
+    /// is why sphinx's `Figure.run` (`patches.py:33`) can keep re-applying
+    /// the popped `:name:` afterwards without either knowing about the
+    /// other. It is `directives.unchanged`, so `if figname:` makes a
+    /// valueless `:figname:` a no-op. Expectations pasted from
+    /// `probe_figname.py` / `probe_figname_sx.py` (fix round 1); the
+    /// docutils-mode shapes are also pinned in the docutils fixture corpus,
+    /// which the sphinx corpus cannot carry (`candidates=` on every image).
+    #[test]
+    fn figname_targets_the_figure_itself_in_both_modes() {
+        let src = ".. figure:: pic.png\n   :figname: my fig\n\n   Caption.\n";
+        for got in [pf(src), pf_sphinx(src)] {
+            assert!(
+                got.contains(r#"<figure ids="my-fig" names="my\ fig">"#),
+                "{got}"
+            );
+            assert!(got.contains("<image uri=\"pic.png\">"), "{got}");
+        }
+        // ... and it does NOT reach the inner image, where `:name:` lands
+        // in docutils mode: the two can be set independently.
+        let both = pf(".. figure:: pic.png\n   :figname: my fig\n   :name: other\n\n   Caption.\n");
+        assert_eq!(
+            both,
+            "<document source=\"<snippet>\">\n    <figure ids=\"my-fig\" names=\"my\\ fig\">\n        <image ids=\"other\" names=\"other\" uri=\"pic.png\">\n        <caption>\n            Caption.\n"
+        );
+        // `if figname:` — an empty value is falsy, so nothing is stamped
+        // (`Directive.add_name` has no such guard for `:name:`).
+        assert_eq!(
+            pf(".. figure:: pic.png\n   :figname:\n\n   Caption.\n"),
+            "<document source=\"<snippet>\">\n    <figure>\n        <image uri=\"pic.png\">\n        <caption>\n            Caption.\n"
+        );
+        // The whole point of the fix: `figname` is a KNOWN option, so it
+        // no longer trips the unknown-option error.
+        assert!(!pf(src).contains("system_message"), "{}", pf(src));
+    }
+
     /// sphinx returns early — without re-applying the popped `:name:` —
     /// when the figure came back with an error node, so neither node ends
     /// up named.
@@ -13713,6 +13780,38 @@ mod tests {
         assert_eq!(
             pf_sphinx(".. glossary::\n\n   term A\n         deep def\n      shallow\n"),
             "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep def\n                        llow\n"
+        );
+    }
+
+    /// `line[indent_len:]` is a Python CHARACTER slice, so the offset may
+    /// not be applied as a byte count: a non-ASCII continuation line either
+    /// panics on a split multi-byte char or silently keeps one character
+    /// too many. Every expectation pasted from `probe_gloss_utf8.py`
+    /// (harness3, Sphinx 9.1.0).
+    #[test]
+    fn a_glossary_definition_dedent_counts_characters_not_bytes() {
+        // indent_len 3 lands INSIDE the two-byte 'é' of `  éx` — a byte
+        // slice panics here ("byte index 3 is not a char boundary").
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n      deep\n     éx\n"),
+            "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep\n                        x\n"
+        );
+        // No panic, but the wrong text: `  ébcdef` under indent_len 4 is
+        // `cdef` by characters and `bcdef` by bytes.
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n       deep\n     ébcdef\n"),
+            "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep\n                        cdef\n"
+        );
+        // The clamp is on the CHARACTER length: `  é` is three characters
+        // under an indent_len of 7, so the whole line goes.
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n          deep\n     é\n"),
+            "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep\n"
+        );
+        // The multi-byte char sits exactly ON the boundary and survives.
+        assert_eq!(
+            pf_sphinx(".. glossary::\n\n   term A\n      deep\n      éx\n"),
+            "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep\n                        éx\n"
         );
     }
 

@@ -314,6 +314,16 @@ proptest! {
     /// The wave-4 std-domain description surface, which the totality sweep
     /// never covered either (final-panel backlog item). Same shape as the
     /// py sweep: arbitrary signature, arbitrary options, arbitrary fields.
+    ///
+    /// GENERATOR RULE, second edition (fix round 1): the fixed body lines
+    /// below are all ASCII at three fixed indents, so the one branch that
+    /// actually broke totality — `glossary`'s `line[indent_len:]` slicing a
+    /// continuation line indented LESS than the entry's first definition
+    /// line, with a multi-byte character straddling the offset — was
+    /// unreachable by construction. The last arm draws an arbitrary indent
+    /// (1..10, so the block's common indent varies and post-dedent lines
+    /// land at every relative depth) over text that can carry 2-, 3- and
+    /// 4-byte characters.
     #[test]
     fn std_directives_never_panic_on_arbitrary_signatures(
         kind in prop_oneof![
@@ -332,6 +342,8 @@ proptest! {
                 Just("   .. a comment\n".to_string()),
                 Just("   body\n".to_string()),
                 Just("\n".to_string()),
+                (1usize..10, "[a-zé漢🐍 .:]{0,10}")
+                    .prop_map(|(n, t)| format!("{}{t}\n", " ".repeat(n))),
             ], 0..8),
     ) {
         let mut src = format!(".. {kind}:: {sig}\n\n");

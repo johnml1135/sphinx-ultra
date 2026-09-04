@@ -654,6 +654,21 @@ CASES = [
     ("dir_media", "figure_bad_scale", ".. figure:: pic.png\n   :scale: abc\n\n   Caption.\n"),
     ("dir_media", "figure_bad_first_child", ".. figure:: pic.png\n\n   - bullet\n   - list\n"),
     ("dir_media", "figure_name_option", ".. figure:: pic.png\n   :name: fig one\n\n   Caption.\n"),
+    # `figname` (images.py:125 option_spec, :155-157 run) puts the explicit
+    # target on the FIGURE, unlike `name`, which Image.run puts on the inner
+    # image. Empty is falsy in Python, so a valueless `:figname:` is inert.
+    # NOT in the corpus: `figname` COLLIDING with an earlier explicit target.
+    # docutils appends the "Duplicate explicit target name" message to the
+    # msgnode and then DETACHES it when the msgnode's content model rejects
+    # it (nodes.py:1983-1990), so the warning disappears at the parse layer;
+    # we emit it beside the node. Pre-existing and not figname-specific --
+    # plain `:name:` on `image` and on `note` diverge identically (probed
+    # in fix round 1) -- so it is ledgered for wave 5, not pinned here.
+    ("dir_media", "figure_figname_option", ".. figure:: pic.png\n   :figname: my fig\n\n   Caption.\n"),
+    ("dir_media", "figure_figname_no_content", ".. figure:: pic.png\n   :figname: solo\n"),
+    ("dir_media", "figure_figname_and_name", ".. figure:: pic.png\n   :figname: my fig\n   :name: other\n\n   Caption.\n"),
+    ("dir_media", "figure_figname_with_figclass_align", ".. figure:: pic.png\n   :figclass: fc\n   :figname: fn\n   :align: right\n\n   Caption.\n"),
+    ("dir_media", "figure_figname_empty", ".. figure:: pic.png\n   :figname:\n\n   Caption.\n"),
     ("dir_media", "figure_align_vertical_rejected", ".. figure:: pic.png\n   :align: top\n\n   Caption.\n"),
     ("dir_media", "code_plain", ".. code::\n\n   x = 1\n   y = 2\n"),
     ("dir_media", "code_class_name", ".. code::\n   :class: extra\n   :name: snippet one\n\n   pass\n"),

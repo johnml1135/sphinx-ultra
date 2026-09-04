@@ -2984,6 +2984,36 @@
     },
     {
       "family": "dir_media",
+      "name": "dir_media.figure_figname_option",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure ids=\"my-fig\" names=\"my\\ fig\">\n        <image uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figname: my fig\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_no_content",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure ids=\"solo\" names=\"solo\">\n        <image uri=\"pic.png\">\n",
+      "rst": ".. figure:: pic.png\n   :figname: solo\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_and_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure ids=\"my-fig\" names=\"my\\ fig\">\n        <image ids=\"other\" names=\"other\" uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figname: my fig\n   :name: other\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_with_figclass_align",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure align=\"right\" classes=\"fc\" ids=\"fn\" names=\"fn\">\n        <image uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figclass: fc\n   :figname: fn\n   :align: right\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_empty",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure>\n        <image uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figname:\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
       "name": "dir_media.figure_align_vertical_rejected",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <system_message level=\"3\" line=\"1\" source=\"<snippet>\" type=\"ERROR\">\n        <paragraph>\n            Error in \"figure\" directive:\n            invalid option value: (option: \"align\"; value: 'top')\n            \"top\" unknown; choose from \"left\", \"center\", or \"right\".\n        <literal_block xml:space=\"preserve\">\n            .. figure:: pic.png\n               :align: top\n            \n               Caption.\n",
       "rst": ".. figure:: pic.png\n   :align: top\n\n   Caption.\n"

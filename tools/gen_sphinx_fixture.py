@@ -587,6 +587,11 @@ CASES = [
     ('sx_directives', 'glossary_comment_does_not_split_multi_term', '.. glossary::\n\n   term A\n   .. a comment\n   term B\n      shared def\n'),
     ('sx_directives', 'glossary_comment_after_definition_warns', '.. glossary::\n\n   term A\n      def A\n   .. comment\n   term B\n      def B\n'),
     ('sx_directives', 'glossary_definition_dedents_by_its_first_line', '.. glossary::\n\n   term A\n         deep def\n      shallow\n'),
+    # ... and `line[indent_len:]` (`:501`) slices CHARACTERS, not bytes:
+    # the first case's offset falls inside a two-byte 'e-acute' and the
+    # second keeps one character too many under a byte-count slice.
+    ('sx_directives', 'glossary_definition_dedent_splits_no_multibyte_char', '.. glossary::\n\n   term A\n      deep\n     éx\n'),
+    ('sx_directives', 'glossary_definition_dedent_counts_characters', '.. glossary::\n\n   term A\n       deep\n     ébcdef\n'),
     ('sx_roles', 'pep_role', 'See :pep:`8` for style.\n'),
     ('sx_roles', 'pep_role_anchor', 'See :pep:`8#imports` here.\n'),
     ('sx_roles', 'pep_role_explicit', 'See :pep:`the style guide <8>` here.\n'),

@@ -1699,6 +1699,18 @@
       "rst": ".. glossary::\n\n   term A\n         deep def\n      shallow\n"
     },
     {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_definition_dedent_splits_no_multibyte_char",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep\n                        x\n",
+      "rst": ".. glossary::\n\n   term A\n      deep\n     éx\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_definition_dedent_counts_characters",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-A\">\n                    term A\n                    <index entries=\"('single',\\ 'term\\ A',\\ 'term-term-A',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        deep\n                        cdef\n",
+      "rst": ".. glossary::\n\n   term A\n       deep\n     ébcdef\n"
+    },
+    {
       "family": "sx_roles",
       "name": "sx_roles.pep_role",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <index entries=\"('single',\\ 'Python\\ Enhancement\\ Proposals;\\ PEP\\ 8',\\ 'index-0',\\ '',\\ None)\">\n        <target ids=\"index-0\">\n        <reference classes=\"pep\" internal=\"0\" refuri=\"https://peps.python.org/pep-0008/\">\n            <strong>\n                PEP 8\n         for style.\n",

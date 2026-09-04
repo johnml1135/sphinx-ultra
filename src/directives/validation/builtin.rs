@@ -46,15 +46,15 @@ const IMAGE_OPTIONS: &[&str] = &[
     "alt", "height", "width", "scale", "align", "target", "loading", "class", "name",
 ];
 
-/// `FIGURE_OPTS`: the image set plus the two figure-only options.
+/// `FIGURE_OPTS`: the image set plus the three figure-only options.
 const FIGURE_OPTIONS: &[&str] = &[
     "alt", "height", "width", "scale", "align", "target", "loading", "class", "name", "figwidth",
-    "figclass",
+    "figclass", "figname",
 ];
 
 /// The options `FigureValidator` handles itself instead of delegating to
 /// [`ImageValidator`], which does not know them.
-const FIGURE_ONLY_OPTIONS: &[&str] = &["figwidth", "figclass"];
+const FIGURE_ONLY_OPTIONS: &[&str] = &["figwidth", "figclass", "figname"];
 
 /// `TOCTREE_OPTS` (`SP/directives/other.py` TocTree.option_spec).
 const TOCTREE_OPTIONS: &[&str] = &[
