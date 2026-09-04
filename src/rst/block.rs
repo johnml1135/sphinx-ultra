@@ -3759,6 +3759,16 @@ impl BlockParser {
         input: &DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
+        // `include_lines = string2lines(rawtext, tab_width,
+        // convert_whitespace=True)` (`misc.py:150`) — computed on the RAW
+        // text, and used here only to size the `:number-lines:` column
+        // (`endline = startline + len(include_lines)`, `misc.py:176`).
+        // It is NOT the same count as the rendered lines, which come from
+        // `text.split('\n')`: an EMPTY file splitlines to zero lines but
+        // splits to one, and the difference is a whole column of padding
+        // (probe: `.. include:: empty.txt` + `:literal:` + `:number-lines:`
+        // renders `1 `, width 1, where a split-based count gives ` 1 `).
+        let include_lines_len = string2lines_tw(text, tab_width).len();
         // Tabs expand unless `tab_width` is negative (`misc.py:165-167`).
         let text = if tab_width >= 0 {
             py_expandtabs(text, tab_width)
@@ -3788,20 +3798,21 @@ impl BlockParser {
                     _ => 1,
                 };
                 let text = text.strip_suffix('\n').unwrap_or(&text);
-                // Unlike :code: mode, literal mode sizes the number
-                // column from the REAL line count (`lastline = firstline
-                // + len(text.splitlines())`, `misc.py:173-176`).
-                //
-                // Nano-edge, accepted: the rendered lines come from
-                // `split('\n')` while docutils' count uses `splitlines()`
-                // — for text containing a bare `\v`/`\f`/NEL/LS/PS the
-                // two disagree (splitlines splits there, '\n'.split does
-                // not), so the width could differ by a line or two. Those
-                // characters survive into literal text only via decode
-                // (no string2lines pass here); not worth modeling.
+                // Unlike :code: mode, literal mode sizes the number column
+                // from the REAL line count — `include_lines`, computed
+                // above with docutils' own `string2lines`, not from the
+                // rendered `split('\n')` lines. The two agree on every
+                // text that ends in a newline and differ on the empty file
+                // and on the splitlines-only separators
+                // (`\x1c`-`\x1e`, NEL, LS, PS).
                 let code_lines: Vec<String> = text.split('\n').map(String::from).collect();
-                let content_len = code_lines.len();
-                push_number_lines(&mut node, &code_lines, firstline, content_len, input.span);
+                push_number_lines(
+                    &mut node,
+                    &code_lines,
+                    firstline,
+                    include_lines_len,
+                    input.span,
+                );
             }
             None => node.children.push(Node::text_node(text, input.span)),
         }
@@ -8024,8 +8035,9 @@ enum DirectiveKind {
     /// `.. default-domain::` (`directives/__init__.py:353-366`).
     DefaultDomainDir,
     /// Test-only exercise of the [`SpliceRequest`] channel: content lines
-    /// become a spliced source named by the argument. No shipping
-    /// directive produces a splice until T12's `include`.
+    /// become a spliced source named by the argument. Kept alongside the
+    /// real producer ([`Self::Include`], wave-4.5 task 12) because it
+    /// drives the channel without touching the filesystem.
     #[cfg(test)]
     TestSplice,
 }
@@ -8117,6 +8129,20 @@ enum ObjectDescKind {
 enum DescDispatch {
     Std(ObjectDescKind),
     Py(PyDirective),
+}
+
+/// The option names one directive's parse-time spec admits, in spec order.
+///
+/// Exists for the validator drift audit in
+/// `src/directives/validation/builtin.rs`: the `*_OPTS` tables here are
+/// this crate's probe-verified transcription of the real docutils/sphinx
+/// `option_spec`s, so they are the right oracle for what a validator may
+/// call an "Unknown option". Task 14 found the two lists had drifted and
+/// the build warned about `:lines:` on a `literalinclude`, a diagnostic
+/// Sphinx has no counterpart for.
+#[cfg(test)]
+pub(crate) fn directive_option_names(name: &str) -> Option<Vec<&'static str>> {
+    directive_spec_mode(name, true).map(|spec| spec.option_spec.iter().map(|(n, _)| *n).collect())
 }
 
 /// Sphinx-mode registry: overlays/extends the docutils-native table.
@@ -8804,9 +8830,17 @@ fn desc_annotation_node(span: Span) -> Node {
 
 // ====================================================================
 // Doc-field transformation (M2 wave 4.5 task 7): the
-// `sphinx.util.docfields.DocFieldTransformer` port scoped to the py
-// field set (`PyObject.doc_field_types`, `_object.py:187-232`), run as a
-// desc_content post-pass for py object kinds only [PY §1.6 "Doc fields"].
+// `sphinx.util.docfields.DocFieldTransformer` port, run as a
+// desc_content post-pass for EVERY object-description kind
+// [PY §1.6 "Doc fields"].
+//
+// The banner used to say "py object kinds only", which the task-7 review
+// adjudicated as a plan defect: `ObjectDescription.run` applies the
+// transformer unconditionally, so an `envvar`'s `:param x:` really does
+// render as "Param x" and a `:meta:` field really is NOT filtered on the
+// std side. The py/std split lives entirely in the TYPE MAP handed in
+// ([`py_field_type_map`] vs the empty [`std_field_type_map`]), not in
+// whether the pass runs.
 // ====================================================================
 
 /// One `PyObject.doc_field_types` entry. The five entries mirror
@@ -9226,9 +9260,22 @@ enum DocFieldEntry {
 }
 
 /// `DocFieldTransformer.transform` for ONE `field_list` node, with the
-/// directive's typemap. The list's children are rebuilt in place
-/// (docutils `replace_self` with a fresh `field_list`, so any attributes
-/// are dropped too).
+/// directive's typemap. Sphinx builds a fresh `nodes.field_list` and calls
+/// `node.replace_self(new_list)` (`docfields.py:510`); `replace_self`
+/// then runs `new_list.update_basic_atts(node)`
+/// (`DU/nodes.py:Element.replace_self`), which APPENDS the replaced node's
+/// four basic attributes — `ids`, `names`, `classes`, `dupnames` — onto
+/// the replacement. Everything else (a `field_list` carries nothing else
+/// in practice) is dropped with the old node.
+///
+/// The port rebuilds the children in place, so the faithful move is to
+/// KEEP those four and clear the rest. Reachable, and now for std kinds
+/// too: `.. rst-class:: myclass` before a field list inside a
+/// `py:function`/`confval` body puts `classes="myclass"` on the field
+/// list, and an explicit target before it puts `ids`/`names` there
+/// (probes `rst_class_before_field_list_in_py_desc`,
+/// `name_target_before_field_list_in_py_desc`). The task-7 review's
+/// original premise — that the attributes are dropped — was wrong.
 fn transform_doc_field_list(
     node: &mut Node,
     map: DocFieldTypeMap,
@@ -9243,7 +9290,13 @@ fn transform_doc_field_list(
         span: node.span,
     };
     let fields = std::mem::take(&mut node.children);
-    node.attrs = crate::doctree::Attrs::default();
+    node.attrs = crate::doctree::Attrs {
+        ids: std::mem::take(&mut node.attrs.ids),
+        names: std::mem::take(&mut node.attrs.names),
+        classes: std::mem::take(&mut node.attrs.classes),
+        dupnames: std::mem::take(&mut node.attrs.dupnames),
+        ..Default::default()
+    };
 
     // Step 1: collect field types and content (`docfields.py:374-482`).
     let mut entries: Vec<DocFieldEntry> = Vec::new();
@@ -9284,7 +9337,23 @@ fn doc_field_step1(
     group_indices: &mut std::collections::HashMap<usize, usize>,
     env: &DocFieldEnv<'_>,
 ) {
-    // `assert len(field) == 2` — the parser always emits [name, body].
+    // SANCTIONED DIVERGENCE. Sphinx has a bare `assert len(field) == 2`
+    // here (`docfields.py:376`), so a `field_list` child that is not a
+    // two-child `field` aborts the whole build with an AssertionError;
+    // this guard passes such a child through untouched instead. Strictly
+    // better than sphinx and unpinnable by the oracle (a crash has no
+    // pformat to compare), so it stays a divergence by design.
+    //
+    // Wave-4.5 task 7 recorded a reachable trigger for the assert
+    // (`.. confval:: t` + `:type: *bad`). Task 16 re-probed 9.1.0 with
+    // that input and seven neighbours (bad inline markup in a field body
+    // and in a field NAME, an over-indented body, a malformed field
+    // marker, docinfo-looking names, a nested list error): every one
+    // builds clean, and no `field_list` in any of them has a child that
+    // is not a two-child `field`. Docutils' `Body.field` always emits
+    // `[field_name, field_body]` and routes its messages BESIDE the list,
+    // so the guard is defensive with no known reachable trigger — the
+    // task-7 repro does not reproduce.
     if field.children.len() != 2 {
         entries.push(DocFieldEntry::Pass(field));
         return;
@@ -9293,18 +9362,25 @@ fn doc_field_step1(
     let (fieldtype_name, mut fieldarg) = split_field_name(&name_text);
     let lookup = (env.map)(&fieldtype_name);
 
+    // Sort out unknown fields (or an argument mismatching the spec):
+    // capitalize the field name and pass the field through untouched —
+    // except a lone typefield body, which still gets type-linked.
+    let known = lookup.is_some_and(|(i, _)| PY_DOC_FIELDS[i].has_arg == !fieldarg.is_empty());
+
     // Collect the content, trying not to keep unnecessary paragraphs.
+    // Only a known field, or the unknown branch's typefield sub-case,
+    // ever reads it — and under the std kinds' EMPTY type map `lookup` is
+    // always None, so cloning the body up front copied every std
+    // description's field bodies for nothing.
     let single_para = is_single_field_paragraph(&field.children[1]);
-    let content: Vec<Node> = if single_para {
+    let content: Vec<Node> = if !(known || matches!(lookup, Some((_, true)))) {
+        Vec::new()
+    } else if single_para {
         field.children[1].children[0].children.clone()
     } else {
         field.children[1].children.clone()
     };
 
-    // Sort out unknown fields (or an argument mismatching the spec):
-    // capitalize the field name and pass the field through untouched —
-    // except a lone typefield body, which still gets type-linked.
-    let known = lookup.is_some_and(|(i, _)| PY_DOC_FIELDS[i].has_arg == !fieldarg.is_empty());
     if !known {
         let mut new_fieldname = capitalize_first(&fieldtype_name);
         if !fieldarg.is_empty() {
@@ -10518,6 +10594,15 @@ fn parse_line_num_spec(spec: &str, total: i64) -> Result<LineSpec, String> {
 /// integer cuts `line[dedent:]` per line (character slice), preserving a
 /// bare `'\n'` for lines that become empty, warning once when any cut
 /// prefix held non-whitespace.
+///
+/// WHITESPACE-SET NANO-EDGE (shared with the other `is_whitespace` sites
+/// in this file): sphinx tests `if any(s[:dedent].strip() ...)`, and
+/// Python's `str.strip()` treats `\x1c`-`\x1f` (the FS/GS/RS/US
+/// separators) as whitespace, while Rust's `char::is_whitespace` — the
+/// Unicode `White_Space` property — does not. A cut prefix made only of
+/// those four characters is silent in sphinx and warns here. `\x85` and
+/// the Unicode spaces agree in both. Not modelled: reaching it needs a
+/// separator character in a source file's leading indentation.
 fn dedent_lines(
     lines: Vec<String>,
     dedent: Option<i64>,
@@ -16053,6 +16138,96 @@ mod py_docfield_tests {
             "{pf}"
         );
     }
+
+    /// `replace_self` runs `new_list.update_basic_atts(old_list)`
+    /// (`DU/nodes.py`), so the rebuilt field list KEEPS `ids`, `names`,
+    /// `classes` and `dupnames` and drops everything else. Task 7 deferred
+    /// this as "over-drops"; task 16 probed 9.1.0
+    /// (`rst_class_before_field_list_in_py_desc` /
+    /// `..._in_confval` / `name_target_before_field_list_in_py_desc`) and
+    /// confirmed the carry-over, so the reset is now selective.
+    ///
+    /// Driven at the function, not through a parse, because BOTH parse-time
+    /// routes to a decorated `field_list` are blocked upstream by
+    /// pre-existing gaps this wave did not touch (both re-probed here and
+    /// ledgered for wave 5):
+    ///
+    /// * `.. class::` / `.. rst-class::` before a field list attaches the
+    ///   class to the field BODY's paragraph here, where docutils attaches
+    ///   it to the `field_list` (`para\n\n.. class:: c\n\n:param x: v`
+    ///   → `<field_list classes="c">` in docutils 0.22.4);
+    /// * `ids`/`names` reach a field list only through `PropagateTargets`,
+    ///   which this crate does not run (an existing documented exemption).
+    ///
+    /// Pinning the mechanism directly means the fix stays correct when
+    /// either gap closes, instead of waiting on it.
+    #[test]
+    fn the_transformed_field_list_keeps_its_basic_attributes() {
+        let mut list = Node::elem(kinds::FIELD_LIST, Span::ZERO);
+        list.attrs.ids.push("fl-target".to_string());
+        list.attrs.names.push("fl-target".to_string());
+        list.attrs.classes.push("myclass".to_string());
+        list.attrs.dupnames.push("dup".to_string());
+        list.attrs.backrefs.push("gone".to_string());
+        list.set("dropped", AttrValue::Int(1));
+
+        let mut field = Node::elem("field", Span::ZERO);
+        let mut name = Node::elem("field_name", Span::ZERO);
+        name.children
+            .push(Node::text_node("param x".to_string(), Span::ZERO));
+        let mut body = Node::elem("field_body", Span::ZERO);
+        let mut para = Node::elem(kinds::PARAGRAPH, Span::ZERO);
+        para.children
+            .push(Node::text_node("v".to_string(), Span::ZERO));
+        body.children.push(para);
+        field.children.push(name);
+        field.children.push(body);
+        list.children.push(field);
+
+        let ctx = crate::py::annotations::PyRefContext {
+            module: None,
+            class_: None,
+        };
+        transform_doc_field_list(&mut list, py_field_type_map, &ctx, &PySigConfig::default());
+
+        assert_eq!(list.attrs.ids, vec!["fl-target".to_string()]);
+        assert_eq!(list.attrs.names, vec!["fl-target".to_string()]);
+        assert_eq!(list.attrs.classes, vec!["myclass".to_string()]);
+        assert_eq!(list.attrs.dupnames, vec!["dup".to_string()]);
+        // Not a basic attribute: dropped with the replaced node.
+        assert!(list.attrs.backrefs.is_empty());
+        assert_eq!(list.get("dropped"), None);
+        // ... and the transform still ran (`param x` -> the Parameters
+        // field), so this is not passing by doing nothing.
+        assert!(list.pformat().contains("Parameters"), "{}", list.pformat());
+    }
+
+    /// The empty type map the std kinds hand in makes every field take the
+    /// unknown branch, which never reads the collected content — so the
+    /// body is no longer cloned for it. Behaviour-neutral by construction;
+    /// this pins the behaviour half.
+    #[test]
+    fn std_fields_still_render_with_the_lazy_content_clone() {
+        let pf = pf(".. confval:: t\n\n   :param x: v\n   :type: int\n");
+        assert!(
+            pf.contains(concat!(
+                "            <field_list>\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Param x\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            v\n",
+                "                <field>\n",
+                "                    <field_name>\n",
+                "                        Type\n",
+                "                    <field_body>\n",
+                "                        <paragraph>\n",
+                "                            int\n",
+            )),
+            "{pf}"
+        );
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -16858,6 +17033,43 @@ mod include_tests {
         assert!(pf.contains("2 \n        L4"), "{pf}");
     }
 
+    /// The `:number-lines:` column is sized from docutils' `include_lines`
+    /// (`string2lines`), not from the rendered `split('\n')` lines. On an
+    /// EMPTY file the two disagree — `''.splitlines()` is zero lines,
+    /// `''.split('\n')` is one — and a split-based count padded the single
+    /// rendered number to width 2. docutils 0.22.4 renders exactly
+    /// `<inline classes="ln">` / `1 ` (probe: empty.txt + `:literal:` +
+    /// `:number-lines:`, and the same for `:code:` / `:code: text`).
+    #[test]
+    fn literal_number_lines_on_an_empty_file_is_width_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "empty.txt", "");
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: empty.txt\n   :literal:\n   :number-lines:\n",
+        );
+        let pf = tree.root.pformat();
+        assert!(
+            pf.contains("<inline classes=\"ln\">\n            1 \n"),
+            "{pf}"
+        );
+        assert!(!pf.contains("             1 "), "padded to width 2: {pf}");
+        // A one-line file also renders width 1 (`endline = 1 + 1 = 2`).
+        write(tmp.path(), "one.txt", "alpha\n");
+        let pf = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: one.txt\n   :literal:\n   :number-lines:\n",
+        )
+        .root
+        .pformat();
+        assert!(
+            pf.contains("<inline classes=\"ln\">\n            1 \n        alpha\n"),
+            "{pf}"
+        );
+    }
+
     /// Pins OUR `:code:` shape: this crate's `code` machinery is the
     /// Pygments-less docutils (wave 3), so a language argument fails with
     /// the pygments WARNING where the sphinx oracle (pygments installed)
@@ -16984,8 +17196,26 @@ mod include_tests {
             "the cell's sub-parser saw the outer log entry"
         );
         // ...and the log transferred back out: the outer marker still
-        // pops cleanly, so a sequential re-include stays legal.
+        // pops cleanly, so a sequential re-include stays legal. The
+        // paragraph check alone does not discriminate (it holds whether or
+        // not the log leaked), so pin the pop directly: a leaked marker
+        // leaves the "end of inclusion" comment line unconsumed.
+        let pformat = tree.root.pformat();
+        assert!(!pformat.contains("end of inclusion"), "{pformat}");
         assert_eq!(paragraphs_of(&tree), vec!["in a".to_string()]);
+        // A second, SEQUENTIAL include of the same file is legal — which
+        // it would not be if a.rst were still on the log.
+        let again = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: a.rst\n\n.. include:: a.rst\n",
+        );
+        assert_eq!(
+            messages_of(&again).len(),
+            2,
+            "one circularity message per csv cell, none from the resequence: {}",
+            again.root.pformat()
+        );
     }
 
     #[test]

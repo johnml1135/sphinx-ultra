@@ -36,6 +36,11 @@
 //!   the only remaining under-escape class is the unassigned (Cn) code
 //!   points, which render unescaped where CPython would escape them — a
 //!   sanctioned, documented divergence.
+//! * [`MAX_DEPTH`] is a whole-expression complexity budget, not a nesting
+//!   depth: trailers (`a.b.c`, `f(x)(y)`, `m[i][j]`) and binop folds each
+//!   charge it too, so a FLAT chain of roughly 200 operations is `Err`
+//!   where CPython parses it. Err-side and conservative like the rest —
+//!   the caller falls back — and no realistic signature comes near it.
 
 use std::fmt;
 

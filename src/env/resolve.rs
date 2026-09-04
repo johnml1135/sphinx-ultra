@@ -1420,6 +1420,16 @@ struct XrefChildren {
 }
 
 impl XrefChildren {
+    /// SIMPLIFICATION, deliberate: `find` takes the first NON-EMPTY node
+    /// with the wanted condition, where sphinx takes the first node with
+    /// that condition and *then* tests its truthiness — so on a
+    /// `[resolved(empty), resolved(full)]` sequence sphinx falls through
+    /// to `'*'` and this returns the second `resolved`. The two agree
+    /// wherever the nodes come from `type_to_xref`, which emits at most
+    /// one condition of each kind and never an empty one (task 10), and
+    /// nothing else in this crate builds `pending_xref_condition` nodes.
+    /// Kept as-is because the faithful form needs a two-pass search for a
+    /// shape the parser cannot produce.
     fn split(children: Vec<Node>) -> Self {
         let first_is_condition = children
             .first()

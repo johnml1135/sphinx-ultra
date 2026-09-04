@@ -289,7 +289,17 @@ fn normalize_source_paths(rendered: &str, root: &str) -> String {
 /// runs on both sides, the only divergence class it can mask is
 /// prefix-presence itself — exactly the class §Scope-8 sanctions; any
 /// difference in the path *below* the srcdir still diverges.
+/// Applied corpus-wide, not only to the include projects: every project's
+/// `warnings` and `resolved_pformat` go through it, because the spelling
+/// difference is a property of THIS crate's path handling and not of the
+/// include family. Widening it costs nothing — a project with no
+/// `<project>/` prefix in its strings is unchanged.
+///
+/// The `concat!` keeps the token spelled once as a literal that a
+/// `<project>`-substituting tool cannot rewrite by accident; it is
+/// `PROJECT` + a separator, and must stay in step with [`PROJECT`].
 fn canon_scope8(text: &str) -> String {
+    debug_assert_eq!(PROJECT, "<project>", "canon_scope8 literal is out of step");
     text.replace(concat!("<project>", "/"), "")
 }
 
@@ -689,6 +699,20 @@ const HIGHLIGHT_STAMP_ATTRS: [&str; 3] = ["language", "force", "linenos"];
 /// `numfig_on`/`a`). Checked **strictly** in both directions: a listed
 /// document that starts matching outright fails, and one that diverges by
 /// anything beyond the stamp is reported as a real divergence.
+///
+/// BOUNDARY, stated so the next reader does not have to derive it: the
+/// forgiveness is keyed on OUR side lacking the attribute entirely
+/// ([`drop_unstamped_highlight_attrs`] skips any attribute we do carry).
+/// On these six documents that also means a `language`/`force`/`linenos`
+/// value set explicitly BY A DIRECTIVE would be forgiven if we failed to
+/// emit it at all — e.g. a `.. literalinclude::` with `:language:` or
+/// `:linenos:` added to `inc_basic/a`, where the whole attribute going
+/// missing on our side would read as an unstamped attribute rather than as
+/// the bug it is. The six documents are exempt precisely because they
+/// currently have no such directive-set values; a new one belongs in a
+/// document outside this table, or the table shrinks. Everywhere else in
+/// the corpus the attributes are compared at full strength, and the
+/// stamping mechanics themselves are unit-pinned.
 const KNOWN_HIGHLIGHT_STAMP_GAPS: &[(&str, &str)] = &[
     ("inc_basic", "a"),
     ("inc_basic", "b"),
@@ -766,6 +790,42 @@ fn known_warning_gap(project: &str) -> Option<&'static str> {
         .map(|(_, why)| *why)
 }
 
+/// The side-condition that makes a [`KNOWN_WARNING_GAPS`] entry sound.
+///
+/// The table's own check is direction-blind — it asserts only that the two
+/// sides still DIFFER — so a project that started emitting a warning of its
+/// own would go on passing under an exemption written for a warning it
+/// FAILS to emit. Every entry's stated reason is of that second kind ("not
+/// ported yet", "the oracle logs reporter messages we keep in-tree"), so
+/// the sound invariant is a one-directional one: our warnings must be a
+/// subset of the oracle's. A warning on our side that the oracle lacks is
+/// a fabricated diagnostic, which is precisely what breaks `-W` on a
+/// project Sphinx builds clean.
+fn assert_warning_gap_is_sound(project: &str, actual: &[String], expected: &[String]) {
+    let extra: Vec<&String> = actual.iter().filter(|a| !expected.contains(a)).collect();
+    assert!(
+        extra.is_empty(),
+        "[{project}] is in KNOWN_WARNING_GAPS, but emits warnings the oracle \
+         does not — the exemption covers MISSING warnings, never invented \
+         ones: {extra:#?}"
+    );
+    if project == "inc_basic" {
+        // Its reason is specifically that the whole set is reporter-side,
+        // so anything at all on our side contradicts the exemption.
+        assert!(
+            actual.is_empty(),
+            "[inc_basic] the exemption says every oracle warning is a \
+             docutils reporter message we keep in-tree only, so our logger \
+             side must be empty: {actual:#?}"
+        );
+        assert!(
+            !expected.is_empty(),
+            "[inc_basic] the oracle side went empty — the exemption has \
+             nothing left to excuse; delete it"
+        );
+    }
+}
+
 /// Fixture `conf` keys that provably steer no behavior this crate has
 /// implemented, which is what makes it sound to leave them off the
 /// [`config_of`] override pass.
@@ -793,15 +853,30 @@ const KNOWN_INERT_CONF: &[&str] = &["smartquotes", "keep_warnings"];
 /// `keep_warnings` is inert only in its `True` sense (see the constant's
 /// docs), so a project setting it any other way must fail here rather than
 /// be compared against a differently filtered oracle.
+///
+/// Exhaustive on purpose. A future key added to [`KNOWN_INERT_CONF`] with
+/// no arm here fails the first project that sets it, with instructions —
+/// the mechanical forcing the table otherwise lacks, so "inert" cannot be
+/// claimed for a new key without either a side-condition or an explicit
+/// statement that every value is inert.
 fn assert_inert_conf_is_sound(project: &str, key: &str, value: &serde_json::Value) {
-    if key == "keep_warnings" {
-        assert_eq!(
+    match key {
+        // Inert in EVERY sense: no smart-quote transform exists at all, so
+        // neither `True` nor `False` steers anything.
+        "smartquotes" => {}
+        "keep_warnings" => assert_eq!(
             value,
             &serde_json::Value::Bool(true),
             "project {project:?}: keep_warnings={value}, but the harness treats the key \
              as inert only in its `True` sense — this crate never strips reporter \
              system_messages, and the stripping half is unimplemented"
-        );
+        ),
+        other => panic!(
+            "project {project:?} sets {other:?}, which is listed in KNOWN_INERT_CONF \
+             but has no soundness arm in assert_inert_conf_is_sound. Add one: either \
+             an empty arm with a comment saying why EVERY value is inert, or an \
+             assertion narrowing it to the values that are."
+        ),
     }
 }
 
@@ -1197,6 +1272,7 @@ fn warnings_match_oracle() {
                      now match the oracle — delete the exemption",
                     project.name
                 );
+                assert_warning_gap_is_sound(&project.name, &actual, &expected);
             }
             None if !matches => divergences.push(format!(
                 "[{}] warnings\n  expected: {expected:#?}\n  actual:   {actual:#?}",

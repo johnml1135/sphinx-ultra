@@ -237,6 +237,18 @@ pub struct RefContext<'a> {
     /// `env.ref_context['py:module']` / `['py:class']` — the enclosing
     /// module/class scope `PyXRefRole.process_link` stamps on every py
     /// pending_xref (`domains/python/__init__.py:568-569`).
+    ///
+    /// NOT-A-BUG, do not "fix": unlike [`Self::py_class`], which has a
+    /// companion [`Self::py_class_key`], this `None` conflates "the key is
+    /// absent" with "the key exists and is None". Sphinx distinguishes
+    /// them, and the `:any:` role's `ref_context` copy is the one place the
+    /// difference could show — a `py:module` key present with a `None`
+    /// value would be copied as the `True` sentinel. Task 11 probed it and
+    /// found the shape unreachable: nothing in the py directives leaves
+    /// `py:module` set to `None` (`after_content` pops the key rather than
+    /// assigning None, `_object.py:477-480`), so the `if let Some(module)`
+    /// at the `:any:` stamping site below is faithful. Adding a
+    /// `py_module_key` flag would be dead weight.
     pub py_module: Option<&'a str>,
     pub py_class: Option<&'a str>,
     /// `'py:class' in env.ref_context`: true once any py object directive
@@ -1173,6 +1185,10 @@ impl<'a> Inliner<'a> {
             if self.ctx.py_classes_key {
                 node.set("py:classes", AttrValue::Str(String::new()));
             }
+            // No `py_module_key` companion on purpose — see the
+            // NOT-A-BUG note on [`InlineContext::py_module`]: a
+            // key-exists-with-None `py:module` is unreachable, so
+            // "absent" and "None" may be conflated here.
             if let Some(module) = self.ctx.py_module {
                 node.set("py:module", AttrValue::Str(module.to_string()));
             }
