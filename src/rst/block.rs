@@ -18265,6 +18265,77 @@ mod literalinclude_tests {
         );
     }
 
+    /// The three `:emphasize-lines:` / negative-index edges task 13 probed
+    /// but left unpinned, re-probed against sphinx 9.1.0 alongside the
+    /// env-fixture `inc_*` projects (which pin the middle one end to end,
+    /// as `inc_warn`'s second `literal_block`).
+    ///
+    /// `parselinenos` maps a spec entry `n` to `n - 1`, so `0` becomes the
+    /// Python index `-1`. For `:emphasize-lines:` that survives the
+    /// `+1` round trip as a literal `0` with no out-of-range warning
+    /// (`hl_lines` is validated against `>= lines`, and `0` is not); for
+    /// `:lines:` it selects the LAST line, which on an EMPTY file is
+    /// Python's own `IndexError` funnelled into the reader's single
+    /// reporter warning.
+    #[test]
+    fn the_negative_index_edges_of_linenos_specs_match_the_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().display().to_string();
+
+        // `:emphasize-lines: 0` -> hl_lines [0], silently.
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\x20  :lines: 1-3\n\x20  :emphasize-lines: 0\n",
+        );
+        assert_eq!(
+            output.doctree.root.children[0].pformat(),
+            format!(
+                "<literal_block force=\"0\" highlight_args=\"{{'hl_lines': [0], \
+                 'linenostart': 1}}\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 \x20   \"\"\"Example module.\"\"\"\n\
+                 \x20   \n\
+                 \x20   CONST = 1\n"
+            )
+        );
+        assert!(output.registry.log_warnings.is_empty());
+        assert!(messages_of(&output).is_empty());
+
+        // Every emphasized line out of range -> the out-of-range warning
+        // and an EMPTY hl_lines list, still rendered.
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n\x20  :lines: 1-3\n\x20  :emphasize-lines: 9\n",
+        );
+        assert!(output.doctree.root.children[0]
+            .pformat()
+            .starts_with(&format!(
+                "<literal_block force=\"0\" highlight_args=\"{{'hl_lines': [], \
+                 'linenostart': 1}}\" source=\"{p}/example.py\""
+            )));
+        assert_eq!(output.registry.log_warnings.len(), 1);
+        assert_eq!(
+            output.registry.log_warnings[0].message,
+            "line number spec is out of range(1-3): '9'"
+        );
+
+        // `:lines: 0` against an empty file indexes `[-1]` of nothing.
+        write(tmp.path(), "empty.py", "");
+        let output = parse(
+            tmp.path(),
+            "para\n\n.. literalinclude:: empty.py\n\x20  :lines: 0\n",
+        );
+        assert!(output.registry.log_warnings.is_empty());
+        assert_eq!(
+            messages_of(&output),
+            vec![(
+                2,
+                3,
+                format!("{p}/main.rst"),
+                "list index out of range".to_string()
+            )]
+        );
+    }
+
     // ---- row 7: the error funnel ------------------------------------
 
     /// Every reader error is ONE reporter warning at the directive line
