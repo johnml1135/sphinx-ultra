@@ -16,6 +16,8 @@
 
 use crate::doctree::ids::{self, IdRegistry};
 use crate::doctree::{kinds, messages, AttrValue, Node, Span};
+use crate::utils::py_splitlines;
+use unicode_normalization::UnicodeNormalization;
 
 use std::sync::Arc;
 
@@ -4488,10 +4490,43 @@ impl BlockParser {
             item.children.push(definition);
             dl.children.push(item);
         }
+        // `GlossarySorter` (`transforms/__init__.py:426-442`), a read-phase
+        // transform at priority 500, so the STORED doctree is already
+        // sorted:
+        //
+        //     definition_list[:] = sorted(
+        //         definition_list,
+        //         key=lambda item: unicodedata.normalize(
+        //             'NFD', cast('nodes.term', item)[0].astext().lower()))
+        //
+        // Running it here rather than as a transform is equivalent: the
+        // list is complete, `sorted` is stable, and the ids/index entries
+        // were already allocated in SOURCE order by the loop above — which
+        // is what sphinx does too, since the directive runs long before the
+        // transform. (Sphinx defers it only so i18n can substitute the
+        // terms first; this crate has no i18n phase.)
+        if opt_get(&input.options, "sorted").is_some() {
+            dl.children.sort_by_key(Self::glossary_sort_key);
+        }
         glossary.children.push(dl);
         // `return [*messages, node]` (`domains/std/__init__.py:555`).
         out.extend(msgs);
         out.push(glossary);
+    }
+
+    /// `GlossarySorter`'s key: the NFD-normalized, lowercased `astext()` of
+    /// the item's FIRST `term` child. The `index` node `make_glossary_term`
+    /// appends to that term contributes nothing to `astext()` (an empty
+    /// `Element` under a `TextElement`'s empty child separator), so the key
+    /// is the rendered term text. Python compares strings by code point,
+    /// which is the same order as Rust's UTF-8 byte comparison.
+    fn glossary_sort_key(item: &Node) -> String {
+        let text = item
+            .children
+            .first()
+            .map(|term| term.astext())
+            .unwrap_or_default();
+        text.to_lowercase().nfd().collect()
     }
 
     /// One of `Glossary.run`'s three misformat warnings, anchored the way
@@ -4584,8 +4619,13 @@ impl BlockParser {
                 // Only `ConfigurationValue` overrides the two empty
                 // defaults; the py arm stamps its own inside
                 // `handle_py_signature`.
+                //
+                // The `finally` gates the real values on
+                // `if self.config.toc_object_entries:` and otherwise
+                // assigns `()` / `''` — for EVERY object description, not
+                // just the py ones, so the std arm needs the same gate.
                 let (toc_parts, toc_name) = match (std_kind, &name) {
-                    (ObjectDescKind::Confval, Some((n, _))) => {
+                    (ObjectDescKind::Confval, Some((n, _))) if self.py.toc_object_entries => {
                         (format!("({},)", py_repr(Some(n))), n.clone())
                     }
                     _ => ("()".to_string(), String::new()),
@@ -10212,44 +10252,6 @@ fn saturating_i64(canonical: &str) -> i64 {
         } else {
             i64::MAX
         })
-}
-
-/// Python `str.splitlines()`: the full boundary set (`\n`, `\r`, `\r\n`,
-/// `\v`, `\f`, `\x1c`-`\x1e`, `\u{85}`, `\u{2028}`, `\u{2029}`), no
-/// trailing empty line for a terminal boundary.
-fn py_splitlines(text: &str) -> Vec<&str> {
-    let is_boundary = |c: char| {
-        matches!(
-            c,
-            '\n' | '\r'
-                | '\x0b'
-                | '\x0c'
-                | '\x1c'
-                | '\x1d'
-                | '\x1e'
-                | '\u{85}'
-                | '\u{2028}'
-                | '\u{2029}'
-        )
-    };
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut chars = text.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if is_boundary(c) {
-            out.push(&text[start..i]);
-            if c == '\r' {
-                if let Some(&(_, '\n')) = chars.peek() {
-                    chars.next();
-                }
-            }
-            start = chars.peek().map(|&(j, _)| j).unwrap_or(text.len());
-        }
-    }
-    if start < text.len() {
-        out.push(&text[start..]);
-    }
-    out
 }
 
 /// Python `str.expandtabs(tabsize)`: the column resets at `\n`/`\r` and

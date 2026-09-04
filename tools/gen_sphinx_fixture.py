@@ -578,6 +578,13 @@ CASES = [
     ('sx_directives', 'glossary_serial_is_not_the_index_serial', '.. glossary::\n\n   !!!\n      Punctuation only.\n\n.. index:: Something\n'),
     ('sx_directives', 'glossary_term_with_markup', '.. glossary::\n\n   *emphasized* term\n      A def.\n'),
     ('sx_directives', 'glossary_sorted_classifier', '.. glossary::\n   :sorted:\n\n   zeta : key\n      Z def.\n'),
+    # panel fix round A: `GlossarySorter` (priority 500) really reorders the
+    # definition list, keyed on `unicodedata.normalize('NFD', term.lower())`.
+    # >= 3 terms, mixed case, and a non-ASCII term so the NFD/lower key is
+    # pinned rather than a plain byte sort.
+    ('sx_directives', 'glossary_sorted_reorders_terms', '.. glossary::\n   :sorted:\n\n   zeta\n      Z def.\n\n   Alpha\n      A def.\n\n   \u00e9clair\n      E def.\n\n   beta\n      B def.\n'),
+    # Without `:sorted:` the source order stands.
+    ('sx_directives', 'glossary_unsorted_keeps_source_order', '.. glossary::\n\n   zeta\n      Z def.\n\n   Alpha\n      A def.\n'),
     ('sx_directives', 'glossary_comment_lines', '.. glossary::\n\n   .. a comment line\n   alpha\n      The first letter.\n\n   .. a comment line\n   beta\n      The second letter.\n'),
     ('sx_directives', 'glossary_comment_swallows_its_continuation', '.. glossary::\n\n   .. a comment line\n      continued under the comment\n\n   alpha\n      The first letter.\n'),
     # Wave-4.5 task 16: the three `Glossary.run` misformat warnings
@@ -816,6 +823,11 @@ CASES = [
     ('pyconf', 'toc_show_parents_hide', '.. py:class:: C\n\n   .. py:method:: m(x)\n', {'toc_object_entries_show_parents': 'hide'}),
     ('pyconf', 'toc_show_parents_all', '.. py:class:: C\n\n   .. py:method:: m(x)\n', {'toc_object_entries_show_parents': 'all'}),
     ('pyconf', 'toc_object_entries_off', '.. py:function:: f(x)\n', {'toc_object_entries': False}),
+    # The `finally` in `ObjectDescription.run` gates `_toc_parts`/`_toc_name`
+    # for EVERY object description, std kinds included.
+    ('pyconf', 'toc_object_entries_off_confval', '.. confval:: myopt\n', {'toc_object_entries': False}),
+    ('pyconf', 'toc_object_entries_on_confval', '.. confval:: myopt\n'),
+    ('pyconf', 'toc_object_entries_off_envvar', '.. envvar:: MYVAR\n', {'toc_object_entries': False}),
     ('pyconf', 'add_module_names_off', '.. py:function:: f(x)\n   :module: optmod\n', {'add_module_names': False}),
     ('pyconf', 'strip_signature_backslash_on', '.. py:function:: f(a\\, b)\n', {'strip_signature_backslash': True}),
 ]
@@ -1009,12 +1021,12 @@ def main() -> int:
         "sx_admonitions": 34,
         "sx_body": 30,
         "sx_image": 8,
-        "sx_directives": 44,
+        "sx_directives": 46,
         "sx_roles": 19,
         "sx_std": 25,
         "py": 49,
         "pysig": 30,
-        "pyconf": 27,
+        "pyconf": 30,
     }
     counts: dict = {}
     for case in CASES:

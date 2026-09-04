@@ -356,6 +356,47 @@ pub async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Python `str.splitlines()`: the full boundary set (`\n`, `\r`, `\r\n`,
+/// `\v`, `\f`, `\x1c`-`\x1e`, `\u{85}`, `\u{2028}`, `\u{2029}`), no
+/// trailing empty line for a terminal boundary.
+///
+/// Shared home: the block parser's line handling and
+/// [`crate::doctree::pformat`]'s `Text.pformat` port both need it.
+pub(crate) fn py_splitlines(text: &str) -> Vec<&str> {
+    let is_boundary = |c: char| {
+        matches!(
+            c,
+            '\n' | '\r'
+                | '\x0b'
+                | '\x0c'
+                | '\x1c'
+                | '\x1d'
+                | '\x1e'
+                | '\u{85}'
+                | '\u{2028}'
+                | '\u{2029}'
+        )
+    };
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if is_boundary(c) {
+            out.push(&text[start..i]);
+            if c == '\r' {
+                if let Some(&(_, '\n')) = chars.peek() {
+                    chars.next();
+                }
+            }
+            start = chars.peek().map(|&(j, _)| j).unwrap_or(text.len());
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::*;

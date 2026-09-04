@@ -1646,6 +1646,18 @@
     },
     {
       "family": "sx_directives",
+      "name": "sx_directives.glossary_sorted_reorders_terms",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"1\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-Alpha\">\n                    Alpha\n                    <index entries=\"('single',\\ 'Alpha',\\ 'term-Alpha',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        A def.\n            <definition_list_item>\n                <term ids=\"term-beta\">\n                    beta\n                    <index entries=\"('single',\\ 'beta',\\ 'term-beta',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        B def.\n            <definition_list_item>\n                <term ids=\"term-eclair\">\n                    éclair\n                    <index entries=\"('single',\\ 'éclair',\\ 'term-eclair',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        E def.\n            <definition_list_item>\n                <term ids=\"term-zeta\">\n                    zeta\n                    <index entries=\"('single',\\ 'zeta',\\ 'term-zeta',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        Z def.\n",
+      "rst": ".. glossary::\n   :sorted:\n\n   zeta\n      Z def.\n\n   Alpha\n      A def.\n\n   éclair\n      E def.\n\n   beta\n      B def.\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_unsorted_keeps_source_order",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-zeta\">\n                    zeta\n                    <index entries=\"('single',\\ 'zeta',\\ 'term-zeta',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        Z def.\n            <definition_list_item>\n                <term ids=\"term-Alpha\">\n                    Alpha\n                    <index entries=\"('single',\\ 'Alpha',\\ 'term-Alpha',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        A def.\n",
+      "rst": ".. glossary::\n\n   zeta\n      Z def.\n\n   Alpha\n      A def.\n"
+    },
+    {
+      "family": "sx_directives",
       "name": "sx_directives.glossary_comment_lines",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-alpha\">\n                    alpha\n                    <index entries=\"('single',\\ 'alpha',\\ 'term-alpha',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        The first letter.\n            <definition_list_item>\n                <term ids=\"term-beta\">\n                    beta\n                    <index entries=\"('single',\\ 'beta',\\ 'term-beta',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        The second letter.\n",
       "rst": ".. glossary::\n\n   .. a comment line\n   alpha\n      The first letter.\n\n   .. a comment line\n   beta\n      The second letter.\n"
@@ -2757,6 +2769,30 @@
       "name": "pyconf.toc_object_entries_off",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                f\n            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                <desc_parameter xml:space=\"preserve\">\n                    <desc_sig_name classes=\"n\">\n                        x\n        <desc_content>\n",
       "rst": ".. py:function:: f(x)\n"
+    },
+    {
+      "conf": {
+        "toc_object_entries": false
+      },
+      "family": "pyconf",
+      "name": "pyconf.toc_object_entries_off_confval",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'myopt;\\ configuration\\ value',\\ 'confval-myopt',\\ '',\\ None)\">\n    <desc classes=\"std confval\" desctype=\"confval\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"confval\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" fullname=\"myopt\" ids=\"confval-myopt\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                myopt\n        <desc_content>\n",
+      "rst": ".. confval:: myopt\n"
+    },
+    {
+      "family": "pyconf",
+      "name": "pyconf.toc_object_entries_on_confval",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'myopt;\\ configuration\\ value',\\ 'confval-myopt',\\ '',\\ None)\">\n    <desc classes=\"std confval\" desctype=\"confval\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"confval\">\n        <desc_signature _toc_name=\"myopt\" _toc_parts=\"('myopt',)\" classes=\"sig sig-object\" fullname=\"myopt\" ids=\"confval-myopt\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                myopt\n        <desc_content>\n",
+      "rst": ".. confval:: myopt\n"
+    },
+    {
+      "conf": {
+        "toc_object_entries": false
+      },
+      "family": "pyconf",
+      "name": "pyconf.toc_object_entries_off_envvar",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'environment\\ variable;\\ MYVAR',\\ 'envvar-MYVAR',\\ '',\\ None)\">\n    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-MYVAR\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                MYVAR\n        <desc_content>\n",
+      "rst": ".. envvar:: MYVAR\n"
     },
     {
       "conf": {
