@@ -13,6 +13,67 @@ everything forward is [ROADMAP.md](ROADMAP.md).
 
 ### Added
 
+- **M2 wave 4.5: the Python domain, and files can include files.**
+  `.. py:function::` and its thirteen siblings are no longer unknown
+  directives, and `include`/`literalinclude` work — which also means a
+  document is rebuilt when a file it *includes* changes.
+  - **py directives**: `py:module`, `py:currentmodule`, `py:function`,
+    `py:class`, `py:exception`, `py:method`, `py:classmethod`,
+    `py:staticmethod`, `py:attribute`, `py:property`, `py:data`,
+    `py:decorator`, `py:decoratormethod`, `py:type` — with real signature
+    parsing. Defaults and annotations go through a port of CPython's
+    `ast.unparse`, so `def f(x: int = 0x10)` renders the way Sphinx renders
+    it, down to the preserved `0x10`; PEP 695 type-parameter lists,
+    multi-line signatures, `:async:`/`:abstractmethod:`/`:final:` and the
+    whole `:no-index:` option family are supported.
+  - **doc fields**: `:param:`, `:type:`, `:raises:`, `:returns:`, `:rtype:`,
+    `:var:` and their aliases render as Sphinx renders them — grouped
+    Parameters/Raises lists, `:param int x:` type syntax, `:meta private:`
+    filtering, and type cross-references. This pass runs for the *std*
+    kinds too, so an `envvar`'s `:param x:` now renders as `Param x`.
+  - **py cross-references**: `:py:func:`, `:py:class:`, `:py:meth:`,
+    `:py:mod:`, `:py:attr:`, `:py:data:`, `:py:exc:`, `:py:obj:`,
+    `:py:const:`, `:py:deco:` resolve against the registered objects, with
+    Sphinx's search order, its `~`/`.`/`!` modifiers, and the builtin
+    fallback (`:py:class:`int`` resolves). `:any:` resolves across domains.
+  - **py-modindex data**: modules are grouped and sorted the way
+    `PythonModuleIndex` groups them, honoring `modindex_common_prefix`. Like
+    `genindex`, the page itself needs the HTML writer.
+  - **`include`**: the whole docutils option set (`:literal:`, `:code:`,
+    `:number-lines:`, `:encoding:`, `:tab-width:`,
+    `:start-line:`/`:end-line:`/`:start-after:`/`:end-before:`,
+    `:class:`/`:name:`), Sphinx's srcdir-relative `/path` rewrite, circular
+    inclusion detection, and the docutils standard include files
+    (`.. include:: <isonum.txt>`).
+  - **`literalinclude`**: `:lines:`, `:start-after:`/`:end-before:`/
+    `:start-at:`/`:end-at:`, `:pyobject:`, `:prepend:`/`:append:`,
+    `:dedent:`, `:diff:`, `:emphasize-lines:`, `:linenos:`/`:lineno-match:`/
+    `:lineno-start:`, `:tab-width:`, `:encoding:`, `:caption:`, `:name:`,
+    `:class:`, `:language:`, `:force:`.
+  - **incremental builds**: `include` and `literalinclude` record their
+    member files as dependencies, so editing an included fragment rebuilds
+    the documents that include it. Wave 4's dependency tracking is no
+    longer images-only.
+  - **glossary**: the three misformat diagnostics Sphinx raises
+    (`glossary term must be preceded by empty line`, `glossary terms must
+    not be separated by empty lines`, `glossary seems to be misformatted,
+    check indentation`) now appear.
+  Evidence: the environment oracle grew to 25 projects / 78 documents and
+  the read-phase doctree oracle to 426 cases, both at zero divergence
+  against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
+  against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
+  mismatches).
+- New configuration knobs for object signatures, readable from `conf.py`,
+  YAML/JSON and `-D` (all ten verified `-D`-settable):
+  `maximum_signature_line_length`,
+  `python_maximum_signature_line_length`,
+  `python_trailing_comma_in_multi_line_signatures`,
+  `python_display_short_literal_types`,
+  `python_use_unqualified_type_names`, `toc_object_entries`,
+  `toc_object_entries_show_parents`, `add_function_parentheses`,
+  `add_module_names`, `strip_signature_backslash`. An out-of-range
+  `toc_object_entries_show_parents` warns and is kept, like Sphinx.
+
 - **M2 wave 4: the build has a real environment, and it warns like Sphinx.**
   The pipeline is now read → merge → resolve → write over a serialized
   `BuildEnvironment`, and the diagnostics that come out of it are
@@ -122,6 +183,25 @@ everything forward is [ROADMAP.md](ROADMAP.md).
 
 ### Changed
 
+- **Breaking: the doctree and environment cache formats both changed
+  (M2 wave 4.5).** `DOCTREE_FORMAT_VERSION` went 1 → 2 and `ENV_VERSION`
+  2 → 3, because both structures gained fields (per-line source provenance
+  on doctrees; py-domain registries, the inclusion graph and file
+  dependencies on the environment). Old blobs are an honest cache **miss**,
+  not a mis-decode, so **the first build after upgrading is a full cold
+  build**. No action is required; `-E` is not needed.
+- **More warnings are new by default in this release (M2 wave 4.5).** The
+  py domain now participates in cross-reference resolution, so a project
+  with Python API docs gains diagnostics it never saw here before:
+  `duplicate object description of …, other instance in …, use :no-index:
+  for one of them`, `more than one target found for cross-reference …`,
+  `more than one target found for 'any' cross-reference …`, and — under
+  `-n`/`nitpicky` — dangling `:py:*:` references. The
+  "skipping N python-domain references" notice that stood in for all of
+  this is **gone**; nothing is silently unvalidated any more.
+  **This can turn a passing `-W` build into a failing one** for any project
+  that documents Python objects. Build once without `-W` before upgrading a
+  CI job that uses it.
 - **Broken standard-domain references now warn without `-n`.**
   Sphinx sets `warn_dangling` on seven std reftypes — `:ref:`, `:numref:`,
   `:doc:`, `:term:`, `:keyword:`, `:option:` and `:confval:`
@@ -198,6 +278,26 @@ surface. The binary's CLI is unaffected.
 
 ### Fixed
 
+- **Directive validation invented `Unknown option '…'` warnings for options
+  Sphinx accepts (M2 wave 4.5).** `literalinclude` warned about `:lines:`,
+  `:emphasize-lines:` and `:lineno-match:`; `code-block` about `:force:` and
+  `:class:`; `figure` about its own `:figwidth:`/`:figclass:` (naming the
+  *image* directive in the message); `image` and `figure` about
+  `:loading:`; `include` about `:parser:`/`:class:`/`:name:`. Each of these
+  failed `-W` on a project `sphinx-build` builds clean. Every validator's
+  option list is now checked against the parser's own option spec, in both
+  directions, by a test that covers all ten of them — which also removed
+  `literalinclude`'s advertised `:start-line:`/`:end-line:`, options
+  Sphinx's `literalinclude` does not have.
+- **A `glossary` comment split a multi-term entry (M2 wave 4.5).** A `.. `
+  comment line between two terms produced two definition list items, the
+  first with an empty `<definition>` — a shape docutils never emits. The
+  entry split is now a faithful port of Sphinx's own line state machine, so
+  terms on both sides of a comment share one entry, terms separated by a
+  blank line share one entry (and warn), and a definition dedents by its
+  first line rather than by the block minimum.
+- **`:number-lines:` on an empty included file padded the line number to two
+  columns** where docutils uses one.
 - **The `objects.inv` reader corrupted real inventories.** It converted the
   zlib-compressed payload to a `String` lossily and then split it with
   `str::lines`, so any inventory whose compressed bytes happened to contain
