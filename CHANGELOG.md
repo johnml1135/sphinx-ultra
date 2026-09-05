@@ -21,9 +21,10 @@ everything forward is [ROADMAP.md](ROADMAP.md).
     `py:class`, `py:exception`, `py:method`, `py:classmethod`,
     `py:staticmethod`, `py:attribute`, `py:property`, `py:data`,
     `py:decorator`, `py:decoratormethod`, `py:type` — with real signature
-    parsing. Defaults and annotations go through a port of CPython's
-    `ast.unparse`, so `def f(x: int = 0x10)` renders the way Sphinx renders
-    it, down to the preserved `0x10`; PEP 695 type-parameter lists,
+    parsing. Annotations go through a port of CPython's `ast.unparse`;
+    parameter defaults go through a port of `sphinx.pycode.ast.unparse`,
+    which keeps a literal's source text — so `def f(x: int = 0x10)` still
+    shows `0x10`, as it does under Sphinx; PEP 695 type-parameter lists,
     multi-line signatures, `:async:`/`:abstractmethod:`/`:final:` and the
     whole `:no-index:` option family are supported.
   - **doc fields**: `:param:`, `:type:`, `:raises:`, `:returns:`, `:rtype:`,
@@ -57,9 +58,19 @@ everything forward is [ROADMAP.md](ROADMAP.md).
   - **glossary**: the three misformat diagnostics Sphinx raises
     (`glossary term must be preceded by empty line`, `glossary terms must
     not be separated by empty lines`, `glossary seems to be misformatted,
-    check indentation`) now appear.
-  Evidence: the environment oracle grew to 25 projects / 78 documents and
-  the read-phase doctree oracle to 428 cases, both at zero divergence
+    check indentation`) are recorded in the doctree (not yet printed — see
+    the known limitation below).
+  - **Known limitation — `include`/`literalinclude` diagnostics are not
+    printed yet.** The diagnostics these directives raise (a missing or
+    unreadable file, the refused `:parser:`, a circular inclusion) are
+    docutils *reporter* messages, which this build records in the doctree
+    but does not yet stream to stderr or to the `-w` file — a pre-existing
+    reporter-channel gap the wave-5 diagnostics work closes. Until then a
+    broken include path drops its content **silently**, and `-W` stays
+    green where `sphinx-build` fails. The glossary diagnostics above take
+    the same channel.
+  Evidence: the environment oracle grew to 28 projects / 83 documents and
+  the read-phase doctree oracle to 453 cases, both at zero divergence
   against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
   against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
   mismatches).
@@ -73,6 +84,23 @@ everything forward is [ROADMAP.md](ROADMAP.md).
   `toc_object_entries_show_parents`, `add_function_parentheses`,
   `add_module_names`, `strip_signature_backslash`. An out-of-range
   `toc_object_entries_show_parents` warns and is kept, like Sphinx.
+- `source_encoding` is a real configuration key (`conf.py`, YAML/JSON and
+  `-D`; default `utf-8-sig`, Sphinx's own) and is the default `:encoding:`
+  of `include` and `literalinclude`. A non-UTF-8 value prints Sphinx's
+  deprecation warning byte-for-byte (`Support for source encodings other
+  than UTF-8 is deprecated and will be removed in Sphinx 10. …`); a codec
+  this crate cannot decode earns one additional notice, and included files
+  are read as `utf-8-sig`.
+- `maximum_signature_line_length` and `python_maximum_signature_line_length`
+  are type-checked the way Sphinx's `check_confval_types` checks them.
+  `-D maximum_signature_line_length=20` — which Sphinx keeps as the
+  *string* `'20'`, because a key whose default is `None` is never coerced —
+  now warns ``The config value `maximum_signature_line_length' has type
+  `str'; expected `NoneType' or `int'.`` (byte-exact, counts toward `-W`)
+  and leaves the key unset, where earlier builds silently coerced it. A
+  mistyped `conf.py` literal warns the same way with its Python type name.
+  Sphinx itself goes on to crash on the first signature; this build does
+  not.
 
 - **M2 wave 4: the build has a real environment, and it warns like Sphinx.**
   The pipeline is now read → merge → resolve → write over a serialized
@@ -196,12 +224,19 @@ everything forward is [ROADMAP.md](ROADMAP.md).
   `duplicate object description of …, other instance in …, use :no-index:
   for one of them`, `more than one target found for cross-reference …`,
   `more than one target found for 'any' cross-reference …`, and — under
-  `-n`/`nitpicky` — dangling `:py:*:` references. The
-  "skipping N python-domain references" notice that stood in for all of
-  this is **gone**; nothing is silently unvalidated any more.
+  `-n`/`nitpicky` — dangling `:py:*:` references. `:any:` is now the
+  domainless, `warn_dangling` role it is in Sphinx, so a broken `:any:`
+  target warns `'any' reference target not found: … [ref.any]` **without
+  `-n`** — that one reaches any project that uses `:any:`, whether or not
+  it documents Python objects. The "skipping N python-domain references"
+  notice lost its python-domain population (those references are now
+  resolved and warned about); it survives, re-worded, as `N cross-domain
+  reference(s) not validated (domain not implemented until M5)`, and still
+  covers `:c:`, `:cpp:`, `:js:` and `:rst:` references, which stay
+  unvalidated until those domains land.
   **This can turn a passing `-W` build into a failing one** for any project
-  that documents Python objects. Build once without `-W` before upgrading a
-  CI job that uses it.
+  that documents Python objects or uses `:any:`. Build once without `-W`
+  before upgrading a CI job that uses it.
 - **Broken standard-domain references now warn without `-n`.**
   Sphinx sets `warn_dangling` on seven std reftypes — `:ref:`, `:numref:`,
   `:doc:`, `:term:`, `:keyword:`, `:option:` and `:confval:`
@@ -278,6 +313,34 @@ surface. The binary's CLI is unaffected.
 
 ### Fixed
 
+- **Directive validation invented four more warnings `sphinx-build` never
+  emits (M2 wave 4.5, panel fix round B).** `.. include::` of a file whose
+  extension is not `.rst`/`.txt`/`.md`/`.inc` — the docutils standard
+  include files, `.. include:: <isonum.txt>`, among them — warned `Unusual
+  file extension for include:`; `literalinclude` and `code-block` rejected
+  `:lineno-start:`, `:tab-width:` and `:dedent:` values Sphinx's option
+  converters accept with `… must be a positive integer`; an empty
+  `code-block` warned `Code-block directive has no content` (it is legal);
+  and `toctree`'s `:maxdepth:` was range-checked although `-1` is the
+  documented "unlimited". Each of those failed `-W` on a project Sphinx
+  builds clean. All four are gone, the validator drift audit now sweeps
+  negative and zero values, and a probe-clean Sphinx project is pinned
+  end-to-end to earn no validation warning at all.
+- **Warnings raised inside an included file now name that file (M2 wave
+  4.5, panel fix round B).** Toctree, numbering and directive/role
+  validation warnings for content that arrived through `.. include::` were
+  reported against the *including* document at the included file's line
+  number; they now carry the included file's path, as under Sphinx (modulo
+  the relative-vs-absolute spelling recorded in the known divergences). Two
+  cross-reference warnings were located wrongly as well: a dangling
+  annotation reference in a Python signature (`def f(x: Missing)`) rendered
+  `:0:` and named the wrong file — it now locates at the signature's own
+  file and line, the included file's for a signature inside an include —
+  and a dangling `:param Missing x:` doc-field reference located at the
+  field list's own line where Sphinx walks up to the nearest ancestor that
+  has a location (the enclosing section, an admonition, or no location at
+  all directly under the document). Pinned byte-for-byte by the
+  `py_locations` oracle project.
 - **Directive validation invented `Unknown option '…'` warnings for options
   Sphinx accepts (M2 wave 4.5).** `literalinclude` warned about `:lines:`,
   `:emphasize-lines:` and `:lineno-match:`; `code-block` about `:force:` and

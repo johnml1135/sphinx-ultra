@@ -277,12 +277,15 @@ fn normalize_source_paths(rendered: &str, root: &str) -> String {
 /// `resolved_pformat` comparisons: collapse the `<project>/` prefix so the
 /// canonical spelling of every in-srcdir path is srcdir-relative.
 ///
-/// Sphinx spells the paths of *included* content cwd-relative (docutils'
-/// `adapt_path`) and everything else absolute; this crate deliberately
-/// spells included-content provenance srcdir-relative (node `source`
-/// attrs, circular-inclusion chains, SEVERE error texts, in-include
-/// warning locations — see `resolve_include_target` in src/rst/block.rs)
-/// and everything else absolute. The generator already rewrites both
+/// docutils' `adapt_path` keeps the cwd-relative spelling of an *included*
+/// file only in the node `source` attribute; what sphinx PRINTS is absolute
+/// (an in-include warning location is cwd-absolutized by
+/// `get_node_location`, or srcdir-joined by `doc2path` for a tuple
+/// location). This crate deliberately spells included-content provenance
+/// srcdir-relative (node `source` attrs, circular-inclusion chains, SEVERE
+/// error texts, in-include warning locations — see `resolve_include_target`
+/// in src/rst/block.rs) and everything else absolute, so a CLI user sees a
+/// bare relative path where sphinx prints an absolute one. The generator already rewrites both
 /// sphinx spellings to `<project>/...`; collapsing the token here maps our
 /// absolute spellings AND sphinx's onto the same srcdir-relative form the
 /// srcdir-relative spellings already use. Because the same transformation
