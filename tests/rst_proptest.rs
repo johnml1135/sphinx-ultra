@@ -31,7 +31,29 @@ fn opts() -> ParseOptions {
         py: Default::default(),
         srcdir: None,
         found_docs: None,
+        ..Default::default()
     }
+}
+
+/// The include-argument generator for the arbitrary-path sweep: control
+/// characters and newlines (the `(?s)` arms), printable text, and the
+/// path shapes a `\\PC` regex can never produce — empty, absolute,
+/// `..`-traversing (both into a real file outside the scratch project and
+/// into nothing), and a genuine member with a traversal prefix.
+fn include_argument() -> impl Strategy<Value = String> {
+    prop_oneof![
+        4 => "(?s).{0,40}",
+        2 => "\\PC{0,40}",
+        1 => "(?s)[\\x00-\\x1f\\x7f]{1,8}",
+        1 => Just(String::new()),
+        1 => Just("/".to_string()),
+        1 => Just("/etc/hosts".to_string()),
+        1 => Just("/nonexistent/dir/file.rst".to_string()),
+        1 => Just("../".repeat(6) + "etc/hosts"),
+        1 => Just("../../nope/../member.rst".to_string()),
+        1 => Just("./sub/../member.rst".to_string()),
+        1 => "(\\.\\./){0,4}[a-z.]{0,10}",
+    ]
 }
 
 /// Sphinx-mode options rooted at a real source directory, so the
@@ -46,6 +68,7 @@ fn opts_in(srcdir: &Path) -> ParseOptions {
         py: Default::default(),
         srcdir: Some(srcdir.to_path_buf()),
         found_docs: None,
+        ..Default::default()
     }
 }
 
@@ -428,12 +451,20 @@ proptest! {
         let _ = tree.root.pformat();
     }
 
-    /// Arbitrary text as the include argument, against a real srcdir: path
-    /// resolution (absolute, `..`-bearing, empty, control characters) must
-    /// degrade to a message, never a panic — and never read outside the
-    /// project by accident, which the missing-file message pins.
+    /// Arbitrary text as the include argument, against a real srcdir. The
+    /// property is TOTALITY and nothing more: whatever the argument —
+    /// printable Unicode, control characters and newlines (`(?s).` draws
+    /// the whole Unicode range, which `\PC` never does), an empty
+    /// argument, an absolute path, a `..` traversal that leaves the
+    /// project, a real member — path resolution and the read either splice
+    /// content or degrade to a `system_message`, never a panic. It does
+    /// NOT pin "never reads outside the project": neither sphinx nor this
+    /// crate has that property (docutils' `Include` opens whatever path
+    /// `relfn2path` produces, `..` and absolute forms included), and a
+    /// traversal case is drawn here precisely so the read path past the
+    /// srcdir is exercised.
     #[test]
-    fn include_never_panics_on_arbitrary_paths(arg in "\\PC{0,40}") {
+    fn include_never_panics_on_arbitrary_paths(arg in include_argument()) {
         let src = format!(".. include:: {arg}\n");
         let tree = parse_rst(&src, &opts_in(scratch()));
         let _ = tree.root.pformat();

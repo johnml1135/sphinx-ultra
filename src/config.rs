@@ -170,6 +170,29 @@ pub struct BuildConfig {
     /// top-level section (1.1, 1.2, 2.1...).
     pub numfig_secnum_depth: u32,
 
+    /// `source_encoding` (`config.py:244`, default `'utf-8-sig'`, rebuild
+    /// class `'env'` — so it enters the cache fingerprint like every other
+    /// read-phase key). The encoding the file-inserting directives decode
+    /// their targets with when no `:encoding:` option is given: `include`
+    /// through `settings.input_encoding`, which the environment sets from
+    /// this key (`environment/__init__.py:375`), and `literalinclude`
+    /// through `config.source_encoding` directly (`code.py:210`). A value
+    /// other than UTF-8 earns sphinx's own deprecation warning at config
+    /// time ([`BuildConfig::validate`]). Documented limitation: this
+    /// crate still reads its OWN source documents as UTF-8.
+    pub source_encoding: String,
+
+    /// Type mismatches `check_confval_types` (`config.py:775-847`) will
+    /// report — `(key, python type name)` for the two `int | None` keys
+    /// whose value arrived as some other type: a `-D` override (always
+    /// `str`, because `convert_overrides` has no int branch for a key whose
+    /// default is `None` and returns the raw string, `config.py:397`) or a
+    /// mistyped `conf.py` assignment. Diagnostic state rather than
+    /// configuration: skipped by serde, so it neither enters the cache
+    /// fingerprint nor survives a save/load.
+    #[serde(skip)]
+    pub confval_type_mismatches: Vec<(String, String)>,
+
     // --- Object-signature / py-domain family (research spec §1-5, §7) ---
     //
     // The first ten keys below are rebuild category `'env'` in sphinx, i.e.
@@ -268,6 +291,22 @@ pub struct BuildConfig {
     /// [`crate::intersphinx::DEFAULT_USER_AGENT`].
     pub user_agent: Option<String>,
 }
+
+/// Sphinx's default `source_encoding` (`config.py:244`).
+pub const DEFAULT_SOURCE_ENCODING: &str = crate::rst::DEFAULT_SOURCE_ENCODING;
+
+/// The config keys registered with a `None` default and `int | NoneType`
+/// as their valid types (`config.py:279-281`,
+/// `domains/python/__init__.py:1108-1113`), in sphinx's registration
+/// order — the order `check_confval_types` reports them in.
+const NONE_DEFAULT_INT_KEYS: [&str; 2] = [
+    "maximum_signature_line_length",
+    "python_maximum_signature_line_length",
+];
+
+/// `deprecate_source_encoding` (`config.py:886-896`, a `config-inited`
+/// handler at priority 790): the encodings it does NOT warn about.
+const UTF8_SPELLINGS: [&str; 3] = ["utf-8", "utf-8-sig", "utf8"];
 
 /// The three values `toc_object_entries_show_parents` accepts —
 /// `ENUM('domain', 'all', 'hide')` (`config.py:251-253`), in sphinx's own
@@ -405,6 +444,8 @@ impl Default for BuildConfig {
             numfig: false,
             numfig_format: default_numfig_format(),
             numfig_secnum_depth: 1,
+            source_encoding: DEFAULT_SOURCE_ENCODING.to_string(),
+            confval_type_mismatches: Vec::new(),
 
             // Object-signature / py-domain family, probe-verified against
             // sphinx 9.1.0 (task-2 brief, "Probe outcomes").
@@ -559,8 +600,41 @@ impl BuildConfig {
     /// element order is hash-order and therefore varies between processes
     /// (verified: three runs, three orders). The registration order is used
     /// here instead, which is the only deterministic choice.
+    ///
+    /// The `config-inited` handlers run in priority order, which fixes the
+    /// order of the warnings: `deprecate_source_encoding` (790) before
+    /// `check_confval_types` (800), and inside the latter the options in
+    /// registration order — `toc_object_entries_show_parents`
+    /// (`config.py:251`) before `maximum_signature_line_length`
+    /// (`config.py:279`) before the py domain's
+    /// `python_maximum_signature_line_length`. Each message is logged
+    /// `once=True`, so a key is reported at most once.
     pub fn validate(&self) -> Vec<String> {
         let mut warnings = Vec::new();
+
+        // config-inited @790: `deprecate_source_encoding`. Byte-exact.
+        if !UTF8_SPELLINGS.contains(&self.source_encoding.to_lowercase().as_str()) {
+            warnings.push(
+                "Support for source encodings other than UTF-8 is deprecated and will be \
+                 removed in Sphinx 10. Please comment at \
+                 https://github.com/sphinx-doc/sphinx/issues/13665 if this causes a problem."
+                    .to_string(),
+            );
+        }
+        // This crate's own check (sphinx has none — it raises `LookupError`
+        // at the first file it opens): a codec outside the include
+        // directives' table cannot be decoded here, and the parser falls
+        // back to the default rather than mis-decoding silently.
+        if !crate::rst::block::is_supported_encoding(&self.source_encoding) {
+            warnings.push(format!(
+                "source_encoding '{}' is not an encoding sphinx-ultra can decode \
+                 (utf-8, utf-8-sig, ascii, latin-1); included files will be read as \
+                 '{DEFAULT_SOURCE_ENCODING}'",
+                self.source_encoding
+            ));
+        }
+
+        // config-inited @800: `check_confval_types`, in registration order.
         if !TOC_OBJECT_ENTRIES_SHOW_PARENTS.contains(&self.toc_object_entries_show_parents.as_str())
         {
             let candidates = TOC_OBJECT_ENTRIES_SHOW_PARENTS
@@ -574,7 +648,37 @@ impl BuildConfig {
                 self.toc_object_entries_show_parents
             ));
         }
+        // The type-mismatch branch (`config.py:822-838`): `type_value` is not
+        // in `{int, NoneType}` and shares no non-trivial base with NoneType,
+        // so the warning names the permitted set, `sorted` by the
+        // backticked spelling — `NoneType' before `int' (N < i).
+        for key in NONE_DEFAULT_INT_KEYS {
+            if let Some((_, type_name)) = self
+                .confval_type_mismatches
+                .iter()
+                .find(|(mismatched, _)| mismatched == key)
+            {
+                warnings.push(format!(
+                    "The config value `{key}' has type `{type_name}'; expected `NoneType' or \
+                     `int'."
+                ));
+            }
+        }
         warnings
+    }
+
+    /// Record that `key` (one of [`NONE_DEFAULT_INT_KEYS`]) received a value
+    /// of python type `type_name`, for [`Self::validate`] to report. One
+    /// entry per key, like sphinx's `once=True`.
+    pub fn note_confval_type_mismatch(&mut self, key: &str, type_name: &str) {
+        if !self
+            .confval_type_mismatches
+            .iter()
+            .any(|(mismatched, _)| mismatched == key)
+        {
+            self.confval_type_mismatches
+                .push((key.to_string(), type_name.to_string()));
+        }
     }
 
     /// Apply a `-D key=value` override (sphinx-build semantics): the value is
@@ -602,6 +706,25 @@ impl BuildConfig {
                 // fall through to set html_static_path itself below
             }
             _ => {}
+        }
+
+        // `convert_overrides` (`config.py:354-399`) has no `int` branch for
+        // a key whose default is `None`: control reaches `isinstance(default,
+        // str) or default is None: return value`, so the value stays the
+        // raw STRING, and `check_confval_types` then warns that it has type
+        // `str'. Sphinx keeps that string — and the first py signature
+        // raises `TypeError: '>' not supported between instances of 'int'
+        // and 'str'` at `_object.py:304` (probe-pinned, panel fix round B)
+        // — so "unset" is the only value this crate can sanely carry. The
+        // warning itself is reported by [`Self::validate`], at
+        // `config-inited` like sphinx's.
+        if NONE_DEFAULT_INT_KEYS.contains(&key) {
+            match key {
+                "maximum_signature_line_length" => self.maximum_signature_line_length = None,
+                _ => self.python_maximum_signature_line_length = None,
+            }
+            self.note_confval_type_mismatch(key, "str");
+            return Ok(None);
         }
 
         let mut tree = serde_json::to_value(&*self)?;
@@ -639,7 +762,7 @@ impl BuildConfig {
             && matches!(slot, serde_json::Value::Null);
         *slot = coerced;
 
-        let applied: Self = match serde_json::from_value(tree.clone()) {
+        let mut applied: Self = match serde_json::from_value(tree.clone()) {
             Ok(config) => config,
             // A Null slot gave no type information and the numeric guess was
             // wrong (e.g. -D html_title=2024 targets an Option<String>):
@@ -680,6 +803,8 @@ impl BuildConfig {
             )));
         }
 
+        // Serde-skipped state does not survive the round trip; carry it.
+        applied.confval_type_mismatches = std::mem::take(&mut self.confval_type_mismatches);
         *self = applied;
         Ok(None)
     }
@@ -1024,27 +1149,124 @@ output:
         assert!(config.modindex_common_prefix.is_empty());
     }
 
+    /// Sphinx's `convert_overrides` has no `int` branch for a key whose
+    /// default is `None` (`config.py:354-399` ends in `isinstance(default,
+    /// str) or default is None: return value`), so `-D` hands
+    /// `check_confval_types` the raw STRING and it warns — for `20`, `0`,
+    /// `abc` and `None` alike. Probed on the pinned toolchain (panel fix
+    /// round B, [18]): the warning fires with no py directive in the
+    /// project, `-W` exits 1, and with a `.. py:function::` present sphinx
+    /// then crashes (`TypeError: '>' not supported between instances of
+    /// 'int' and 'str'`, `_object.py:304`). This crate warns byte-exactly
+    /// and leaves the key UNSET, the only value it can sanely carry.
+    #[test]
+    fn a_none_default_int_key_overridden_from_the_command_line_warns_like_sphinx() {
+        for value in ["20", "0", "abc", "None"] {
+            let mut config = BuildConfig {
+                maximum_signature_line_length: Some(60),
+                ..Default::default()
+            };
+            assert!(config
+                .apply_override("maximum_signature_line_length", value)
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                config.maximum_signature_line_length, None,
+                "{value}: never coerced, never kept as the old number"
+            );
+            assert!(config
+                .apply_override("python_maximum_signature_line_length", value)
+                .unwrap()
+                .is_none());
+            assert_eq!(config.python_maximum_signature_line_length, None);
+            assert_eq!(
+                config.validate(),
+                vec![
+                    "The config value `maximum_signature_line_length' has type `str'; \
+                     expected `NoneType' or `int'."
+                        .to_string(),
+                    "The config value `python_maximum_signature_line_length' has type `str'; \
+                     expected `NoneType' or `int'."
+                        .to_string(),
+                ],
+                "{value}"
+            );
+        }
+
+        // `once=True`: a key overridden twice is reported once, and a
+        // later ordinary override keeps the record through the round trip.
+        let mut config = BuildConfig::default();
+        config
+            .apply_override("maximum_signature_line_length", "1")
+            .unwrap();
+        config
+            .apply_override("maximum_signature_line_length", "2")
+            .unwrap();
+        config.apply_override("nitpicky", "1").unwrap();
+        assert_eq!(config.validate().len(), 1);
+
+        // Registration order: the ENUM key (`config.py:251`) is reported
+        // before `maximum_signature_line_length` (`config.py:279`).
+        let mut config = BuildConfig::default();
+        config
+            .apply_override("maximum_signature_line_length", "20")
+            .unwrap();
+        config
+            .apply_override("toc_object_entries_show_parents", "bogus")
+            .unwrap();
+        let warnings = config.validate();
+        assert!(warnings[0].contains("toc_object_entries_show_parents"));
+        assert!(warnings[1].contains("maximum_signature_line_length"));
+    }
+
+    /// `source_encoding` (`config.py:244`): default `'utf-8-sig'`,
+    /// overridable, a non-UTF-8 value earns sphinx's deprecation text
+    /// (byte-exact, probed: `deprecate_source_encoding` at config-inited
+    /// priority 790, i.e. BEFORE the type checks), and a codec this crate
+    /// cannot decode earns this crate's own fallback notice on top.
+    #[test]
+    fn source_encoding_is_a_real_key_with_sphinxs_deprecation_warning() {
+        let config = BuildConfig::default();
+        assert_eq!(config.source_encoding, "utf-8-sig");
+        assert!(config.validate().is_empty());
+
+        let deprecation = "Support for source encodings other than UTF-8 is deprecated and \
+                           will be removed in Sphinx 10. Please comment at \
+                           https://github.com/sphinx-doc/sphinx/issues/13665 if this causes \
+                           a problem.";
+        for quiet in ["utf-8", "UTF-8", "utf8", "utf-8-sig", "UTF-8-SIG"] {
+            let mut config = BuildConfig::default();
+            assert!(config
+                .apply_override("source_encoding", quiet)
+                .unwrap()
+                .is_none());
+            assert_eq!(config.source_encoding, quiet);
+            assert!(config.validate().is_empty(), "{quiet}");
+        }
+
+        let mut config = BuildConfig::default();
+        config.apply_override("source_encoding", "latin-1").unwrap();
+        assert_eq!(config.validate(), vec![deprecation.to_string()]);
+
+        let mut config = BuildConfig::default();
+        config.apply_override("source_encoding", "cp1252").unwrap();
+        config
+            .apply_override("maximum_signature_line_length", "20")
+            .unwrap();
+        let warnings = config.validate();
+        assert_eq!(warnings.len(), 3, "{warnings:#?}");
+        assert_eq!(warnings[0], deprecation);
+        assert_eq!(
+            warnings[1],
+            "source_encoding 'cp1252' is not an encoding sphinx-ultra can decode (utf-8, \
+             utf-8-sig, ascii, latin-1); included files will be read as 'utf-8-sig'"
+        );
+        assert!(warnings[2].starts_with("The config value `maximum_signature_line_length'"));
+    }
+
     #[test]
     fn object_signature_family_is_overridable_from_the_command_line() {
         let mut config = BuildConfig::default();
-
-        // `Option<i64>` lands in the Null-guessing branch of
-        // `coerce_override_value`, which must produce a number, not a string.
-        assert!(config
-            .apply_override("maximum_signature_line_length", "20")
-            .unwrap()
-            .is_none());
-        assert_eq!(config.maximum_signature_line_length, Some(20));
-        assert!(config
-            .apply_override("python_maximum_signature_line_length", "0")
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            config.python_maximum_signature_line_length,
-            Some(0),
-            "an explicit 0 must survive as Some(0) — the truthiness \
-             fall-through is max_len()'s job, not the override's"
-        );
 
         for key in [
             "python_trailing_comma_in_multi_line_signatures",

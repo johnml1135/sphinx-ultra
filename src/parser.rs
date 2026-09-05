@@ -38,6 +38,8 @@ pub struct Parser {
     /// [`Parser::with_srcdir`] so the `include` directive resolves paths
     /// sphinx-style; a bare `Parser::new` keeps standalone behavior.
     srcdir: Option<std::path::PathBuf>,
+    /// `source_encoding` (see [`crate::rst::ParseOptions::source_encoding`]).
+    source_encoding: String,
 }
 
 /// Everything one source file's parse produces: the pipeline's [`Document`]
@@ -55,6 +57,7 @@ impl Parser {
             exclude_patterns: config.exclude_patterns.clone(),
             py: crate::py::PySigConfig::from(config),
             srcdir: None,
+            source_encoding: config.source_encoding.clone(),
         })
     }
 
@@ -138,6 +141,7 @@ impl Parser {
                 exclude_patterns: self.exclude_patterns.clone(),
                 py: self.py.clone(),
                 srcdir: self.srcdir.clone(),
+                source_encoding: self.source_encoding.clone(),
             },
         );
         {
@@ -410,6 +414,7 @@ mod tests {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         );
 

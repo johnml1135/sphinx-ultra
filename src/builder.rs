@@ -1912,6 +1912,26 @@ mod tests {
         tagged.tags = vec!["draft".to_string()];
         assert_ne!(config_fingerprint(&tagged).unwrap(), baseline, "tags");
 
+        // `source_encoding` is rebuild class `'env'` (`config.py:244`): a
+        // change must re-read every document.
+        let mut encoded = base.clone();
+        encoded.source_encoding = "latin-1".to_string();
+        assert_ne!(
+            config_fingerprint(&encoded).unwrap(),
+            baseline,
+            "source_encoding"
+        );
+
+        // ...while the config-inited diagnostic record is not configuration
+        // at all, and must not invalidate anything.
+        let mut mismatched = base.clone();
+        mismatched.note_confval_type_mismatch("maximum_signature_line_length", "str");
+        assert_eq!(
+            config_fingerprint(&mismatched).unwrap(),
+            baseline,
+            "confval_type_mismatches"
+        );
+
         let mut nitpick_ignore = base.clone();
         nitpick_ignore.nitpick_ignore = vec![("ref".to_string(), "x".to_string())];
         assert_ne!(

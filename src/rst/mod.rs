@@ -59,7 +59,19 @@ pub struct ParseOptions {
     /// parses (the differential harnesses, `parse_rst` callers) keep their
     /// current behavior.
     pub srcdir: Option<std::path::PathBuf>,
+    /// Sphinx's `source_encoding` config value (`config.py:244`, default
+    /// `'utf-8-sig'`), which the environment copies onto
+    /// `settings.input_encoding` (`environment/__init__.py:375`). In sphinx
+    /// mode both file-inserting directives read it as their default:
+    /// `include` through `settings.input_encoding` (`misc.py:116`) and
+    /// `literalinclude` through `config.source_encoding` (`code.py:210`);
+    /// an explicit `:encoding:` option still wins. Ignored outside sphinx
+    /// mode, where bare docutils' `'utf-8'` default applies.
+    pub source_encoding: String,
 }
+
+/// Sphinx's default `source_encoding` (`config.py:244`).
+pub const DEFAULT_SOURCE_ENCODING: &str = "utf-8-sig";
 
 impl Default for ParseOptions {
     fn default() -> Self {
@@ -71,6 +83,7 @@ impl Default for ParseOptions {
             exclude_patterns: Vec::new(),
             py: crate::py::PySigConfig::default(),
             srcdir: None,
+            source_encoding: DEFAULT_SOURCE_ENCODING.to_string(),
         }
     }
 }
@@ -378,6 +391,7 @@ pub fn parse_rst_full(source: &str, opts: &ParseOptions) -> ParseOutput {
     parser.exclude_patterns = opts.exclude_patterns.clone();
     parser.py = opts.py.clone();
     parser.srcdir = opts.srcdir.clone();
+    parser.source_encoding = opts.source_encoding.clone();
     parser.parse_document_full()
 }
 
@@ -385,103 +399,97 @@ pub fn parse_rst_full(source: &str, opts: &ParseOptions) -> ParseOutput {
 mod tests {
     use super::*;
 
+    /// The complete current [`RegistryExport`] shape, with one record of
+    /// every kind, so that a guard below can remove exactly ONE field and
+    /// know the decode failed for no other reason.
+    const COMPLETE_REGISTRY: &str = r#"{"nameids":[],"index_serial":0,
+        "program_options":[{"source":0,"program":null,"name":"-f","node_id":"a"}],
+        "std_objects":[{"source":0,"objtype":"envvar","name":"P","node_id":"b","line":1}],
+        "py_objects":[{"fullname":"m.f","objtype":"function","node_id":"m.f",
+            "aliased":false,"source":0,"lineno":1}],
+        "py_modules":[{"name":"m","node_id":"module-m","synopsis":"","platform":"",
+            "deprecated":false,"source":0,"lineno":1}],
+        "log_warnings":[{"source":0,"message":"m","line":2,"doc2path_location":false}],
+        "dependencies":["part.rst"],"included":["part"]}"#;
+
+    /// Decode [`COMPLETE_REGISTRY`] with the field `name` removed at
+    /// `path` (object keys and array indices), and require the failure
+    /// to be about THAT field. A blob that also omitted some other
+    /// required field would fail whether or not the field under test is
+    /// defaulting — which is how the earlier hand-written blobs stopped
+    /// discriminating (panel fix round B, [3]).
+    fn must_miss(path: &[&str], name: &str) {
+        let mut value: serde_json::Value = serde_json::from_str(COMPLETE_REGISTRY).unwrap();
+        serde_json::from_value::<RegistryExport>(value.clone())
+            .expect("the complete current shape decodes");
+        let mut slot = &mut value;
+        for part in path {
+            slot = match part.parse::<usize>() {
+                Ok(index) => &mut slot[index],
+                Err(_) => &mut slot[*part],
+            };
+        }
+        slot.as_object_mut()
+            .unwrap()
+            .remove(name)
+            .unwrap_or_else(|| panic!("{path:?}/{name} is not in the complete shape"));
+        let error = serde_json::from_value::<RegistryExport>(value)
+            .err()
+            .unwrap_or_else(|| panic!("a registry missing {path:?}/{name} decoded"))
+            .to_string();
+        assert!(
+            error.contains(&format!("missing field `{name}`")),
+            "the decode must fail on the missing {path:?}/{name}, not elsewhere: {error}"
+        );
+    }
+
     /// [`RegistryExport`]'s newer fields carry state that cannot be recovered
     /// from a cached doctree, so a cache entry written before they existed
     /// must MISS rather than decode with empty vectors — decoding it would
     /// reuse a doctree still full of unknown-directive errors and leave every
     /// `:option:`/`:envvar:`/`:confval:` in the project dangling. Guards the
     /// `#[serde(default)]` off these fields, which nothing else would catch:
-    /// the warm-rebuild tests round-trip the current shape only.
+    /// the warm-rebuild tests round-trip the current shape only. Each case
+    /// removes exactly one top-level field from the complete shape.
     #[test]
     fn a_registry_written_before_the_std_records_existed_fails_to_decode() {
-        let complete = r#"{"nameids":[],"index_serial":0,"program_options":[],
-            "std_objects":[],"py_objects":[],"py_modules":[],"log_warnings":[],
-            "dependencies":[],"included":[]}"#;
-        serde_json::from_str::<RegistryExport>(complete).expect("the current shape decodes");
-
-        for missing in [
+        for field in [
+            // A wave-4 registry (no py record streams at all) must MISS: a
+            // defaulted empty vector would leave every py xref in the
+            // project dangling on a warm rebuild.
+            "program_options",
+            "std_objects",
+            "py_objects",
+            "py_modules",
+            "log_warnings",
             // A wave-4.5 pre-include registry (no dependencies/included
             // stream) must MISS: a defaulted empty list would never
             // re-read the document when an included file changes, and
             // would silently un-suppress the orphan warning.
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
-                "py_objects":[],"py_modules":[],"log_warnings":[],"included":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
-                "py_objects":[],"py_modules":[],"log_warnings":[],"dependencies":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"std_objects":[],"py_objects":[],
-                "py_modules":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"py_objects":[],
-                "py_modules":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
-                "py_objects":[],"py_modules":[]}"#,
-            // A wave-4 registry (no py record streams at all) must MISS: a
-            // defaulted empty vector would leave every py xref in the
-            // project dangling on a warm rebuild.
-            r#"{"nameids":[],"index_serial":0,"program_options":[],
-                "std_objects":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],
-                "std_objects":[],"py_objects":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],
-                "std_objects":[],"py_modules":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0}"#,
+            "dependencies",
+            "included",
         ] {
-            assert!(
-                serde_json::from_str::<RegistryExport>(missing).is_err(),
-                "a registry missing a record field must fail to decode: {missing}"
-            );
+            must_miss(&[], field);
         }
     }
 
     /// The per-record `source` fields added by the provenance wave follow
     /// the same rule: a cache entry whose records predate them must FAIL to
     /// decode (a defaulted 0 would silently mis-attribute nothing today,
-    /// but would decode a stale record stream as current).
+    /// but would decode a stale record stream as current). Each case
+    /// removes exactly one field from one record of the complete shape.
     #[test]
     fn records_written_before_the_source_field_existed_fail_to_decode() {
-        let with_source = r#"{"nameids":[],"index_serial":0,
-            "program_options":[{"source":0,"program":null,"name":"-f","node_id":"a"}],
-            "std_objects":[{"source":0,"objtype":"envvar","name":"P","node_id":"b","line":1}],
-            "py_objects":[{"fullname":"m.f","objtype":"function","node_id":"m.f",
-                "aliased":false,"source":0,"lineno":1}],
-            "py_modules":[{"name":"m","node_id":"module-m","synopsis":"","platform":"",
-                "deprecated":false,"source":0,"lineno":1}],
-            "log_warnings":[{"source":0,"message":"m","line":2,"doc2path_location":false}],
-            "dependencies":["part.rst"],"included":["part"]}"#;
-        serde_json::from_str::<RegistryExport>(with_source).expect("the current shape decodes");
-
-        for stale in [
-            r#"{"nameids":[],"index_serial":0,
-                "program_options":[{"program":null,"name":"-f","node_id":"a"}],
-                "std_objects":[],"py_objects":[],"py_modules":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],
-                "std_objects":[{"objtype":"envvar","name":"P","node_id":"b","line":1}],
-                "py_objects":[],"py_modules":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
-                "py_objects":[{"fullname":"m.f","objtype":"function","node_id":"m.f",
-                    "aliased":false,"lineno":1}],
-                "py_modules":[],"log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
-                "py_objects":[],
-                "py_modules":[{"name":"m","node_id":"module-m","synopsis":"",
-                    "platform":"","deprecated":false,"lineno":1}],
-                "log_warnings":[]}"#,
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
-                "py_objects":[],"py_modules":[],
-                "log_warnings":[{"message":"m","line":2,"doc2path_location":false}]}"#,
-            // A wave-4.5 pre-literalinclude log record (no
-            // doc2path_location) must MISS: decoding it with the flag
-            // silently off would render the three literalinclude reader
-            // warnings at the un-doubled path on a warm rebuild.
-            r#"{"nameids":[],"index_serial":0,"program_options":[],"std_objects":[],
-                "py_objects":[],"py_modules":[],
-                "log_warnings":[{"source":0,"message":"m","line":2}],
-                "dependencies":[],"included":[]}"#,
-        ] {
-            assert!(
-                serde_json::from_str::<RegistryExport>(stale).is_err(),
-                "a record missing its source field must fail to decode: {stale}"
-            );
-        }
+        must_miss(&["program_options", "0"], "source");
+        must_miss(&["std_objects", "0"], "source");
+        must_miss(&["py_objects", "0"], "source");
+        must_miss(&["py_modules", "0"], "source");
+        must_miss(&["log_warnings", "0"], "source");
+        // A wave-4.5 pre-literalinclude log record (no doc2path_location)
+        // must MISS: decoding it with the flag silently off would render
+        // the three literalinclude reader warnings at the un-doubled path
+        // on a warm rebuild.
+        must_miss(&["log_warnings", "0"], "doc2path_location");
     }
 
     /// The provenance fields panel fix round B added to the DOCUMENT-side

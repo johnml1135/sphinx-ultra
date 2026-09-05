@@ -36,6 +36,7 @@ fn round_trip_fixture(raw: &str, sphinx: bool, source: &str) {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         );
         let original_pformat = tree.root.pformat();

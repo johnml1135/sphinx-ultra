@@ -192,6 +192,7 @@ fn matches_sphinx_oracle_pformat() {
                     py,
                     found_docs: None,
                     srcdir: None,
+                    ..Default::default()
                 },
             )
             .root

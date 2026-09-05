@@ -1019,6 +1019,7 @@ mod tests {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: Some(std::sync::Arc::new(found.clone())),
+                ..Default::default()
             },
         )
     }

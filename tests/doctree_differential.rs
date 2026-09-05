@@ -51,6 +51,7 @@ fn matches_docutils_parser_pformat() {
                     py: Default::default(),
                     srcdir: None,
                     found_docs: None,
+                    ..Default::default()
                 },
             )
             .root

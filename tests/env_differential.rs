@@ -3814,3 +3814,49 @@ fn a_clean_sphinx_project_earns_no_validation_warnings() {
     );
     assert_eq!(warnings, Vec::<String>::new());
 }
+
+// ---------------------------------------------------------------------------
+// `source_encoding` reaches the read phase (panel fix round B, [19])
+// ---------------------------------------------------------------------------
+
+/// The configured `source_encoding` is what the build's parser decodes
+/// include and literalinclude targets with (probed: sphinx 9.1.0 with
+/// `source_encoding = 'latin-1'` renders `café here` for both directives
+/// over `caf\xe9 here\n`, plus its deprecation warning).
+#[test]
+fn source_encoding_is_threaded_from_the_build_configuration_into_the_parser() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::write(
+        source_dir.join("index.rst"),
+        "Top\n===\n\n.. include:: inc.inc\n\n.. literalinclude:: inc.inc\n",
+    )
+    .unwrap();
+    std::fs::write(source_dir.join("inc.inc"), b"caf\xe9 here\n").unwrap();
+    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let config = BuildConfig {
+        source_encoding: "latin-1".to_string(),
+        ..Default::default()
+    };
+    let mut builder =
+        SphinxBuilder::new(config, source_dir.clone(), tmp.path().join("out")).unwrap();
+    let stats = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(builder.build())
+        .unwrap();
+    let env = builder.snapshot_env();
+    let index = env["resolved_pformat"]["index"].as_str().unwrap();
+    assert_eq!(
+        index.matches("caf\u{e9} here").count(),
+        2,
+        "both directives decode through source_encoding: {index}"
+    );
+    assert!(
+        stats.warning_details.is_empty(),
+        "{:?}",
+        stats.warning_details
+    );
+}

@@ -241,6 +241,9 @@ pub(crate) struct BlockParser {
     /// `Some` switches the `include` directive to sphinx-mode path
     /// resolution and turns its `included`/`dependencies` recording on.
     pub(crate) srcdir: Option<std::path::PathBuf>,
+    /// [`super::ParseOptions::source_encoding`]: the sphinx-mode default
+    /// for `include`'s and `literalinclude`'s `:encoding:`.
+    pub(crate) source_encoding: String,
     /// `.. highlight::` state consumed by later code-blocks in the same
     /// document (sphinx env.temp_data\['highlight_language'\]).
     highlight_language: Option<String>,
@@ -360,6 +363,7 @@ impl BlockParser {
             exclude_patterns: Vec::new(),
             py: crate::py::PySigConfig::default(),
             srcdir: None,
+            source_encoding: super::DEFAULT_SOURCE_ENCODING.to_string(),
             highlight_language: None,
             program: None,
             py_module: None,
@@ -3614,13 +3618,17 @@ impl BlockParser {
                 // `'utf-8'` default and a BOM survives as U+FEFF, while
                 // sphinx overwrites the setting with
                 // `config.source_encoding`
-                // (`environment/__init__.py:68` + `:375`), whose default
-                // [`SPHINX_DEFAULT_SOURCE_ENCODING`] strips it.
+                // (`environment/__init__.py:68` + `:375`) — the
+                // `source_encoding` config key, whose default
+                // [`SPHINX_DEFAULT_SOURCE_ENCODING`] strips it. A
+                // configured name outside this crate's table falls back to
+                // that default; `BuildConfig::validate` already warned.
                 let encoding = match opt_get(&input.options, "encoding") {
                     Some(OptVal::Str(name)) => {
                         lookup_encoding(name).expect("the encoding converter validated the name")
                     }
-                    _ if self.sphinx => SPHINX_DEFAULT_SOURCE_ENCODING,
+                    _ if self.sphinx => lookup_encoding(&self.source_encoding)
+                        .unwrap_or(SPHINX_DEFAULT_SOURCE_ENCODING),
                     _ => IncludeEncoding::Utf8,
                 };
                 match decode_include_bytes(&bytes, encoding) {
@@ -3936,7 +3944,11 @@ impl BlockParser {
             self.dependency_records.push(rel);
         }
         let options = self.literalinclude_options(&input);
-        let mut reader = match LiteralIncludeReader::new(filename.clone(), options.clone()) {
+        let mut reader = match LiteralIncludeReader::new(
+            filename.clone(),
+            options.clone(),
+            &self.source_encoding,
+        ) {
             Ok(reader) => reader,
             Err(text) => {
                 out.push(self.msg(messages::WARNING, &text, input.span.source, input.lineno));
@@ -10441,16 +10453,22 @@ enum IncludeEncoding {
 /// environment copies onto `settings.input_encoding`
 /// (`environment/__init__.py:68` `'input_encoding': 'utf-8-sig'` and
 /// `:375` `self.settings['input_encoding'] = config.source_encoding`).
-/// Both file-inserting directives fall back to it: `include` through
+/// Both file-inserting directives fall back to the CONFIGURED value
+/// ([`BlockParser::source_encoding`], threaded from
+/// `BuildConfig::source_encoding`): `include` through
 /// `settings.input_encoding` (`misc.py:116`) and `literalinclude` through
-/// `config.source_encoding` directly, which is why
-/// [`LiteralIncludeReader::new`] spells the same default as a string.
-///
-/// SEAM: when `source_encoding` becomes a real config key, thread its
-/// value here instead of the constant (and to the `"utf-8-sig"` literal
-/// in `LiteralIncludeReader::new`). Only a conf.py that overrides the key
-/// can tell the difference.
+/// `config.source_encoding` directly ([`LiteralIncludeReader::new`]).
+/// This constant is what a configured name outside [`lookup_encoding`]'s
+/// table degrades to (sphinx would raise `LookupError` at the first read;
+/// `BuildConfig::validate` warns instead).
 const SPHINX_DEFAULT_SOURCE_ENCODING: IncludeEncoding = IncludeEncoding::Utf8Sig;
+
+/// Whether `name` is a codec this crate can decode — the `source_encoding`
+/// config check in `BuildConfig::validate` asks before the parser has to
+/// fall back.
+pub(crate) fn is_supported_encoding(name: &str) -> bool {
+    lookup_encoding(name).is_some()
+}
 
 /// `codecs.lookup` normalization + alias resolution for the supported
 /// set. Python lowercases and collapses runs of punctuation to `_`.
@@ -11137,8 +11155,8 @@ struct LiteralIncludeOptions {
     language: Option<String>,
     force: bool,
     /// Validated by the option converter. `None` means sphinx's
-    /// `source_encoding` config default, `'utf-8-sig'` (probe-pinned in
-    /// the default-encoding error text).
+    /// the configured `source_encoding` (default `'utf-8-sig'`,
+    /// probe-pinned in the default-encoding error text).
     encoding: Option<String>,
     pyobject: Option<String>,
     lines: Option<String>,
@@ -11202,8 +11220,13 @@ struct LiteralIncludeReader {
 
 impl LiteralIncludeReader {
     /// Construction runs `parse_options` — the INVALID_OPTIONS_PAIR
-    /// check (`code.py:215-219`).
-    fn new(filename: std::path::PathBuf, options: LiteralIncludeOptions) -> Result<Self, String> {
+    /// check (`code.py:215-219`). `source_encoding` is the configured
+    /// `config.source_encoding`, the `:encoding:` default (`code.py:210`).
+    fn new(
+        filename: std::path::PathBuf,
+        options: LiteralIncludeOptions,
+        source_encoding: &str,
+    ) -> Result<Self, String> {
         for (option1, option2) in LITERALINCLUDE_INVALID_PAIRS {
             if options.has(option1) && options.has(option2) {
                 return Err(format!(
@@ -11214,7 +11237,7 @@ impl LiteralIncludeReader {
         let encoding = options
             .encoding
             .clone()
-            .unwrap_or_else(|| "utf-8-sig".to_string());
+            .unwrap_or_else(|| source_encoding.to_string());
         let lineno_start = options.lineno_start.unwrap_or(1);
         Ok(LiteralIncludeReader {
             filename,
@@ -13124,6 +13147,7 @@ mod tests {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -13164,6 +13188,7 @@ mod tests {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         );
         let section = &tree.root.children[0];
@@ -13195,6 +13220,7 @@ mod tests {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         )
         .root
@@ -13213,6 +13239,7 @@ mod tests {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         )
         .root
@@ -13376,6 +13403,7 @@ mod tests {
                 py: Default::default(),
                 srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         );
         let second = &tree.root.children[1];
@@ -14000,6 +14028,7 @@ mod py_desc_tests {
             py,
             found_docs: None,
             srcdir: None,
+            ..Default::default()
         }
     }
 
@@ -15263,6 +15292,7 @@ mod py_docfield_tests {
             py,
             found_docs: None,
             srcdir: None,
+            ..Default::default()
         };
         parse_rst_full(src, &opts).doctree.root.pformat()
     }
@@ -16508,6 +16538,7 @@ mod include_tests {
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
                 srcdir: Some(srcdir.to_path_buf()),
+                ..Default::default()
             },
         )
     }
@@ -16525,6 +16556,7 @@ mod include_tests {
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
                 srcdir: None,
+                ..Default::default()
             },
         )
     }
@@ -16924,6 +16956,74 @@ mod include_tests {
             ".. include:: inc.rst\n   :encoding: latin-1\n",
         );
         assert_eq!(paragraphs_of(&tree), vec!["caf\u{e9}".to_string()]);
+    }
+
+    /// The `source_encoding` config key (panel fix round B, [19]) is the
+    /// `:encoding:` default of BOTH file-inserting directives in sphinx
+    /// mode — `include` via `settings.input_encoding`
+    /// (`environment/__init__.py:375`), `literalinclude` via
+    /// `config.source_encoding` (`code.py:210`). Probed on the pinned
+    /// toolchain with `source_encoding = 'latin-1'` over `caf\xe9 here\n`:
+    /// both nodes render `café here`. An explicit `:encoding:` still
+    /// wins, and docutils mode ignores the key (its own default is
+    /// `'utf-8'`, so the bytes fail to decode there).
+    #[test]
+    fn source_encoding_is_the_default_for_include_and_literalinclude() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("inc.txt"), b"caf\xe9 here\n").unwrap();
+        let parse = |main: &str, encoding: &str, sphinx: bool| {
+            crate::rst::parse_rst(
+                main,
+                &ParseOptions {
+                    source_path: tmp.path().join("main.rst").display().to_string(),
+                    sphinx,
+                    docname: "main".to_string(),
+                    srcdir: Some(tmp.path().to_path_buf()),
+                    source_encoding: encoding.to_string(),
+                    ..Default::default()
+                },
+            )
+        };
+
+        let tree = parse(
+            ".. include:: inc.txt\n\n.. literalinclude:: inc.txt\n",
+            "latin-1",
+            true,
+        );
+        assert_eq!(paragraphs_of(&tree), vec!["caf\u{e9} here".to_string()]);
+        let literal = tree
+            .root
+            .children
+            .iter()
+            .find(|node| node.kind == kinds::LITERAL_BLOCK)
+            .expect("the literalinclude block");
+        assert_eq!(literal.astext(), "caf\u{e9} here\n");
+
+        // The default (`utf-8-sig`) cannot decode the byte: include SEVEREs,
+        // literalinclude funnels the decode error into its reporter warning.
+        let pf = parse(
+            ".. include:: inc.txt\n\n.. literalinclude:: inc.txt\n",
+            "utf-8-sig",
+            true,
+        )
+        .root
+        .pformat();
+        assert!(pf.contains("UnicodeDecodeError"), "{pf}");
+        assert!(!pf.contains("caf\u{e9}"), "{pf}");
+
+        // `:encoding:` wins over the configured default.
+        let tree = parse(
+            ".. include:: inc.txt\n   :encoding: latin-1\n",
+            "utf-8-sig",
+            true,
+        );
+        assert_eq!(paragraphs_of(&tree), vec!["caf\u{e9} here".to_string()]);
+
+        // Docutils mode: the key is sphinx's, not docutils'.
+        let pf = parse(".. include:: inc.txt\n", "latin-1", false)
+            .root
+            .pformat();
+        assert!(pf.contains("UnicodeDecodeError"), "{pf}");
     }
 
     // ---- row 5: clipping ---------------------------------------------
@@ -17672,6 +17772,7 @@ mod include_tests {
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
                 srcdir: Some(srcdir.to_path_buf()),
+                ..Default::default()
             },
         )
     }
@@ -17740,6 +17841,7 @@ mod include_tests {
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
                 srcdir: None,
+                ..Default::default()
             },
         );
         assert!(out.registry.dependencies.is_empty());
@@ -17799,13 +17901,14 @@ mod literalinclude_reader_tests {
     }
 
     fn read(options: LiteralIncludeOptions) -> Result<(String, usize), String> {
-        LiteralIncludeReader::new(example(), options)?.read()
+        LiteralIncludeReader::new(example(), options, "utf-8-sig")?.read()
     }
 
     fn read_with_warnings(
         options: LiteralIncludeOptions,
     ) -> (Result<(String, usize), String>, Vec<String>) {
-        let mut reader = LiteralIncludeReader::new(example(), options).expect("no option conflict");
+        let mut reader =
+            LiteralIncludeReader::new(example(), options, "utf-8-sig").expect("no option conflict");
         let result = reader.read();
         (result, reader.take_warnings())
     }
@@ -17818,7 +17921,7 @@ mod literalinclude_reader_tests {
             let mut options = LiteralIncludeOptions::default();
             set_opt(&mut options, option1);
             set_opt(&mut options, option2);
-            let err = LiteralIncludeReader::new(example(), options)
+            let err = LiteralIncludeReader::new(example(), options, "utf-8-sig")
                 .err()
                 .unwrap_or_else(|| panic!("{option1}+{option2} must conflict"));
             assert_eq!(
@@ -17838,7 +17941,9 @@ mod literalinclude_reader_tests {
         set_opt(&mut options, "lineno-start");
         set_opt(&mut options, "diff");
         assert_eq!(
-            LiteralIncludeReader::new(example(), options).err().unwrap(),
+            LiteralIncludeReader::new(example(), options, "utf-8-sig")
+                .err()
+                .unwrap(),
             "Cannot use both \"lineno-match\" and \"lineno-start\" options"
         );
     }
@@ -17909,6 +18014,7 @@ mod literalinclude_reader_tests {
                 lineno_match: true,
                 ..Default::default()
             },
+            "utf-8-sig",
         )
         .expect("no option conflict");
         let (text, count) = reader.read().expect("Foo.method is a tag");
@@ -17942,6 +18048,7 @@ mod literalinclude_reader_tests {
                 lineno_match: true,
                 ..Default::default()
             },
+            "utf-8-sig",
         )
         .expect("no option conflict");
         let (text, _) = reader.read().expect("Foo is a tag");
@@ -17986,7 +18093,7 @@ mod literalinclude_reader_tests {
             pyobject: Some("f".to_string()),
             ..Default::default()
         };
-        let err = LiteralIncludeReader::new(broken.clone(), options)
+        let err = LiteralIncludeReader::new(broken.clone(), options, "utf-8-sig")
             .expect("no option conflict")
             .read()
             .err()
@@ -18201,7 +18308,7 @@ mod literalinclude_reader_tests {
             lineno_match: true,
             ..Default::default()
         };
-        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        let mut reader = LiteralIncludeReader::new(example(), options, "utf-8-sig").unwrap();
         reader.read().unwrap();
         // 1 + lineno(10) — start-at keeps the matched line.
         assert_eq!(reader.lineno_start, 11);
@@ -18214,7 +18321,7 @@ mod literalinclude_reader_tests {
             lineno_match: true,
             ..Default::default()
         };
-        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        let mut reader = LiteralIncludeReader::new(example(), options, "utf-8-sig").unwrap();
         reader.read().unwrap();
         // 1 + lineno(0) + 1 — start-after drops through the match.
         assert_eq!(reader.lineno_start, 2);
@@ -18227,7 +18334,7 @@ mod literalinclude_reader_tests {
             lineno_match: true,
             ..Default::default()
         };
-        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        let mut reader = LiteralIncludeReader::new(example(), options, "utf-8-sig").unwrap();
         let (text, _) = reader.read().unwrap();
         assert_eq!(
             text,
@@ -18246,7 +18353,7 @@ mod literalinclude_reader_tests {
             lineno_match: true,
             ..Default::default()
         };
-        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        let mut reader = LiteralIncludeReader::new(example(), options, "utf-8-sig").unwrap();
         reader.read().unwrap();
         assert_eq!(reader.lineno_start, 0);
     }
@@ -18341,7 +18448,7 @@ mod literalinclude_reader_tests {
     fn missing_file_errs_with_the_exact_text() {
         let path = fixture("nothere.py");
         let options = LiteralIncludeOptions::default();
-        let err = LiteralIncludeReader::new(path.clone(), options)
+        let err = LiteralIncludeReader::new(path.clone(), options, "utf-8-sig")
             .unwrap()
             .read()
             .err()
@@ -18363,11 +18470,12 @@ mod literalinclude_reader_tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("bad.bin");
         std::fs::write(&path, b"caf\xe9 line\n").unwrap();
-        let err = LiteralIncludeReader::new(path.clone(), LiteralIncludeOptions::default())
-            .unwrap()
-            .read()
-            .err()
-            .unwrap();
+        let err =
+            LiteralIncludeReader::new(path.clone(), LiteralIncludeOptions::default(), "utf-8-sig")
+                .unwrap()
+                .read()
+                .err()
+                .unwrap();
         assert_eq!(
             err,
             format!(
@@ -18380,7 +18488,7 @@ mod literalinclude_reader_tests {
             encoding: Some("ascii".to_string()),
             ..Default::default()
         };
-        let err = LiteralIncludeReader::new(path.clone(), options)
+        let err = LiteralIncludeReader::new(path.clone(), options, "utf-8-sig")
             .unwrap()
             .read()
             .err()
@@ -18398,7 +18506,7 @@ mod literalinclude_reader_tests {
             encoding: Some("latin-1".to_string()),
             ..Default::default()
         };
-        let (text, _) = LiteralIncludeReader::new(path, options)
+        let (text, _) = LiteralIncludeReader::new(path, options, "utf-8-sig")
             .unwrap()
             .read()
             .unwrap();
@@ -18414,7 +18522,7 @@ mod literalinclude_reader_tests {
             tab_width: Some(4),
             ..Default::default()
         };
-        let (text, count) = LiteralIncludeReader::new(path, options)
+        let (text, count) = LiteralIncludeReader::new(path, options, "utf-8-sig")
             .unwrap()
             .read()
             .unwrap();
@@ -18434,7 +18542,7 @@ mod literalinclude_reader_tests {
             append: Some("# after".to_string()),
             ..Default::default()
         };
-        let (text, count) = LiteralIncludeReader::new(path, options)
+        let (text, count) = LiteralIncludeReader::new(path, options, "utf-8-sig")
             .unwrap()
             .read()
             .unwrap();
@@ -18447,10 +18555,11 @@ mod literalinclude_reader_tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("crlf.py");
         std::fs::write(&path, "a\r\nb\rc\n").unwrap();
-        let (text, count) = LiteralIncludeReader::new(path, LiteralIncludeOptions::default())
-            .unwrap()
-            .read()
-            .unwrap();
+        let (text, count) =
+            LiteralIncludeReader::new(path, LiteralIncludeOptions::default(), "utf-8-sig")
+                .unwrap()
+                .read()
+                .unwrap();
         assert_eq!(text, "a\nb\nc\n");
         assert_eq!(count, 3);
     }
@@ -18466,7 +18575,7 @@ mod literalinclude_reader_tests {
             diff: Some(old.clone()),
             ..Default::default()
         };
-        let mut reader = LiteralIncludeReader::new(example(), options).unwrap();
+        let mut reader = LiteralIncludeReader::new(example(), options, "utf-8-sig").unwrap();
         let (text, count) = reader.read().unwrap();
         let expected = format!(
             "--- {}\n+++ {}\n@@ -1,7 +1,21 @@\n \"\"\"Example module.\"\"\"\n \n\

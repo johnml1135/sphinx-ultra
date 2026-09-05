@@ -152,6 +152,13 @@ pub struct ConfPyConfig {
     pub python_use_unqualified_type_names: Option<bool>,
     pub toc_object_entries: Option<bool>,
     pub toc_object_entries_show_parents: Option<String>,
+    /// `source_encoding` as written, `None` when conf.py said nothing.
+    pub source_encoding: Option<String>,
+    /// `(key, python type name)` for the `int | None` keys whose conf.py
+    /// value is neither an int nor `None` — what sphinx's
+    /// `check_confval_types` warns about (see
+    /// [`crate::config::BuildConfig::confval_type_mismatches`]).
+    pub confval_type_mismatches: Vec<(String, String)>,
     pub add_function_parentheses: Option<bool>,
     pub add_module_names: Option<bool>,
     pub strip_signature_backslash: Option<bool>,
@@ -402,14 +409,28 @@ impl PythonConfigParser {
         // `int | None`, so they read through `as_i64` rather than
         // `extract_int`: `x = None` in conf.py is a JSON null, which lands
         // as `None` exactly like an absent key, and `x = 0` stays `Some(0)`.
-        config.maximum_signature_line_length = self
-            .conf_namespace
-            .get("maximum_signature_line_length")
-            .and_then(serde_json::Value::as_i64);
-        config.python_maximum_signature_line_length = self
-            .conf_namespace
-            .get("python_maximum_signature_line_length")
-            .and_then(serde_json::Value::as_i64);
+        // Any other type is what sphinx's `check_confval_types` warns about
+        // (`The config value ... has type `str'; expected `NoneType' or
+        // `int'.`) — recorded with the python type name and left unset.
+        let mut mismatches: Vec<(String, String)> = Vec::new();
+        let mut extract_none_default_int = |key: &str| -> Option<i64> {
+            match self.conf_namespace.get(key) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(value) => match value.as_i64() {
+                    Some(int) => Some(int),
+                    None => {
+                        mismatches.push((key.to_string(), python_type_name(value).to_string()));
+                        None
+                    }
+                },
+            }
+        };
+        config.maximum_signature_line_length =
+            extract_none_default_int("maximum_signature_line_length");
+        config.python_maximum_signature_line_length =
+            extract_none_default_int("python_maximum_signature_line_length");
+        config.confval_type_mismatches = mismatches;
+        config.source_encoding = extract_string("source_encoding");
         config.python_trailing_comma_in_multi_line_signatures =
             extract_bool("python_trailing_comma_in_multi_line_signatures");
         config.python_display_short_literal_types =
@@ -475,6 +496,7 @@ impl PythonConfigParser {
                 | "exclude_patterns"
                 | "include_patterns"
                 | "source_suffix"
+                | "source_encoding"
                 | "root_doc"
                 | "master_doc"
                 | "language"
@@ -546,6 +568,22 @@ impl PythonConfigParser {
                 | "gettext_auto_build"
                 | "gettext_additional_targets"
         )
+    }
+}
+
+/// The `type(value).__name__` sphinx's `check_confval_types` prints for a
+/// conf.py literal, by way of its JSON shape. A python tuple arrives as a
+/// list here, so it would be named `list` — a spelling-only difference in
+/// a warning about an already-rejected value.
+fn python_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "NoneType",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(number) if number.is_i64() || number.is_u64() => "int",
+        serde_json::Value::Number(_) => "float",
+        serde_json::Value::String(_) => "str",
+        serde_json::Value::Array(_) => "list",
+        serde_json::Value::Object(_) => "dict",
     }
 }
 
@@ -1102,6 +1140,8 @@ impl Default for ConfPyConfig {
             python_use_unqualified_type_names: None,
             toc_object_entries: None,
             toc_object_entries_show_parents: None,
+            source_encoding: None,
+            confval_type_mismatches: Vec::new(),
             add_function_parentheses: None,
             add_module_names: None,
             strip_signature_backslash: None,
@@ -1245,6 +1285,10 @@ impl ConfPyConfig {
         // them "unset" and "set to None" are the same thing in sphinx too.
         config.maximum_signature_line_length = self.maximum_signature_line_length;
         config.python_maximum_signature_line_length = self.python_maximum_signature_line_length;
+        config.confval_type_mismatches = self.confval_type_mismatches.clone();
+        if let Some(source_encoding) = &self.source_encoding {
+            config.source_encoding = source_encoding.clone();
+        }
         if let Some(trailing_comma) = self.python_trailing_comma_in_multi_line_signatures {
             config.python_trailing_comma_in_multi_line_signatures = trailing_comma;
         }
@@ -1666,5 +1710,87 @@ e = 'esc\n'
         assert!(!config.numfig);
         assert_eq!(config.numfig_secnum_depth, 1);
         assert_eq!(config.numfig_format["figure"], "Fig. %s");
+    }
+
+    /// conf.py side of `check_confval_types` for the two `int | None` keys
+    /// (panel fix round B, [18]): an int or `None` is taken as is; any
+    /// other literal is recorded with its python type name for
+    /// `BuildConfig::validate` to report, and the key stays unset.
+    #[test]
+    fn a_mistyped_none_default_int_key_in_conf_py_is_recorded_not_coerced() {
+        let p = parse(
+            "maximum_signature_line_length = '88'\n\
+             python_maximum_signature_line_length = 42\n",
+        );
+        let config = p.extract_configuration().unwrap();
+        assert_eq!(config.maximum_signature_line_length, None);
+        assert_eq!(config.python_maximum_signature_line_length, Some(42));
+        assert_eq!(
+            config.confval_type_mismatches,
+            vec![(
+                "maximum_signature_line_length".to_string(),
+                "str".to_string()
+            )]
+        );
+        let build = config.to_build_config().unwrap();
+        assert_eq!(build.maximum_signature_line_length, None);
+        assert_eq!(
+            build.validate(),
+            vec![
+                "The config value `maximum_signature_line_length' has type `str'; expected \
+                 `NoneType' or `int'."
+                    .to_string()
+            ]
+        );
+
+        for (literal, type_name) in [
+            ("88.0", "float"),
+            ("True", "bool"),
+            ("[88]", "list"),
+            ("{'a': 1}", "dict"),
+        ] {
+            let p = parse(&format!(
+                "python_maximum_signature_line_length = {literal}\n"
+            ));
+            let config = p.extract_configuration().unwrap();
+            assert_eq!(
+                config.python_maximum_signature_line_length, None,
+                "{literal}"
+            );
+            assert_eq!(
+                config.confval_type_mismatches,
+                vec![(
+                    "python_maximum_signature_line_length".to_string(),
+                    type_name.to_string()
+                )],
+                "{literal}"
+            );
+        }
+
+        // `None` and an absent key are the same thing, and neither is a
+        // mismatch.
+        let p = parse("maximum_signature_line_length = None\n");
+        let config = p.extract_configuration().unwrap();
+        assert_eq!(config.maximum_signature_line_length, None);
+        assert!(config.confval_type_mismatches.is_empty());
+    }
+
+    /// `source_encoding` is a standard key: read from conf.py, handed to
+    /// the build configuration, and never dropped into `custom_configs`.
+    #[test]
+    fn source_encoding_is_read_from_conf_py() {
+        let p = parse("source_encoding = 'latin-1'\n");
+        let config = p.extract_configuration().unwrap();
+        assert_eq!(config.source_encoding.as_deref(), Some("latin-1"));
+        assert!(!config.custom_configs.contains_key("source_encoding"));
+        assert_eq!(config.to_build_config().unwrap().source_encoding, "latin-1");
+
+        let p = parse("project = 'x'\n");
+        let config = p.extract_configuration().unwrap();
+        assert_eq!(config.source_encoding, None);
+        assert_eq!(
+            config.to_build_config().unwrap().source_encoding,
+            "utf-8-sig"
+        );
     }
 }

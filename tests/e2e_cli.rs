@@ -959,10 +959,13 @@ fn sphinx_build_d_unknown_key_warns_and_continues() {
 }
 
 /// The object-signature / py-domain config family is reachable from `-D`:
-/// the `Option<i64>` keys land in the Null-guessing coercion branch, the
-/// booleans in the bool branch, and the ENUM key keeps whatever string it is
-/// given while warning — which is exactly what sphinx's `check_confval_types`
-/// does (probe E, task-2 brief).
+/// the booleans land in the bool branch, the ENUM key keeps whatever
+/// string it is given while warning — exactly what sphinx's
+/// `check_confval_types` does (probe E, task-2 brief) — and the two
+/// `int | None` keys warn TOO: sphinx's `convert_overrides` keeps the raw
+/// string for a None-default key and `check_confval_types` rejects its
+/// type (probed, panel fix round B [18]; sphinx then crashes on the first
+/// py signature, which this crate replaces with "unset").
 #[test]
 fn sphinx_build_d_reaches_the_object_signature_config_family() {
     let out = out_dir("sb-D-py-config");
@@ -970,10 +973,6 @@ fn sphinx_build_d_reaches_the_object_signature_config_family() {
     let result = sphinx_build(&[
         src.to_str().unwrap(),
         out.to_str().unwrap(),
-        "-D",
-        "maximum_signature_line_length=88",
-        "-D",
-        "python_maximum_signature_line_length=0",
         "-D",
         "add_function_parentheses=0",
         "-D",
@@ -984,9 +983,52 @@ fn sphinx_build_d_reaches_the_object_signature_config_family() {
 
     assert!(result.status.success(), "stderr: {}", stderr_of(&result));
     assert!(
-        !stderr_of(&result).contains("unknown config value"),
-        "every key in the family must be a known setting, stderr: {}",
+        !stderr_of(&result).contains("unknown config value")
+            && !stderr_of(&result).contains("The config value"),
+        "every key in the family must be a known, well-typed setting, stderr: {}",
         stderr_of(&result)
+    );
+
+    // The `int | None` keys: sphinx's type warning, byte-exact, and the
+    // build carries on.
+    let typed = out_dir("sb-D-py-config-int-none");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        typed.to_str().unwrap(),
+        "-D",
+        "maximum_signature_line_length=88",
+        "-D",
+        "python_maximum_signature_line_length=0",
+    ]);
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    let stderr = stderr_of(&result);
+    assert!(
+        stderr.contains(
+            "The config value `maximum_signature_line_length' has type `str'; expected \
+             `NoneType' or `int'."
+        ),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "The config value `python_maximum_signature_line_length' has type `str'; \
+             expected `NoneType' or `int'."
+        ),
+        "stderr: {stderr}"
+    );
+    let typed_w = out_dir("sb-D-py-config-int-none-W");
+    let result_w = sphinx_build(&[
+        src.to_str().unwrap(),
+        typed_w.to_str().unwrap(),
+        "-D",
+        "maximum_signature_line_length=88",
+        "-W",
+    ]);
+    assert_eq!(
+        result_w.status.code(),
+        Some(1),
+        "-W must see the type warning, stderr: {}",
+        stderr_of(&result_w)
     );
 
     // An out-of-ENUM value warns and the build carries on with it.
@@ -1656,4 +1698,54 @@ fn an_empty_inventory_location_tuple_exits_two_with_sphinxs_invariant_error() {
         stderr.contains("An invalid intersphinx_mapping entry was added after normalisation."),
         "stderr: {stderr}"
     );
+}
+
+/// `source_encoding` is a real key (panel fix round B, [19]): `-D` reaches
+/// it, a non-UTF-8 value prints sphinx's deprecation warning byte-exactly
+/// (probed), and the warning counts toward `-W`.
+#[test]
+fn sphinx_build_d_source_encoding_warns_about_deprecation_like_sphinx() {
+    let src = fixture("basic");
+    let out = out_dir("sb-D-source-encoding");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        out.to_str().unwrap(),
+        "-D",
+        "source_encoding=latin-1",
+    ]);
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    assert!(
+        stderr_of(&result).contains(
+            "Support for source encodings other than UTF-8 is deprecated and will be removed \
+             in Sphinx 10. Please comment at https://github.com/sphinx-doc/sphinx/issues/13665 \
+             if this causes a problem."
+        ),
+        "stderr: {}",
+        stderr_of(&result)
+    );
+    assert!(
+        !stderr_of(&result).contains("unknown config value"),
+        "stderr: {}",
+        stderr_of(&result)
+    );
+
+    let out_w = out_dir("sb-D-source-encoding-W");
+    let result_w = sphinx_build(&[
+        src.to_str().unwrap(),
+        out_w.to_str().unwrap(),
+        "-D",
+        "source_encoding=latin-1",
+        "-W",
+    ]);
+    assert_eq!(result_w.status.code(), Some(1));
+
+    let quiet = out_dir("sb-D-source-encoding-utf8");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        quiet.to_str().unwrap(),
+        "-D",
+        "source_encoding=utf-8",
+    ]);
+    assert!(result.status.success());
+    assert!(!stderr_of(&result).contains("deprecated"));
 }

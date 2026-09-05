@@ -718,6 +718,7 @@ mod tests {
                 exclude_patterns: Vec::new(),
                 py: Default::default(),
                 srcdir: None,
+                ..Default::default()
             },
         )
     }

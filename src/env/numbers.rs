@@ -592,6 +592,7 @@ mod tests {
                     py: Default::default(),
                     srcdir: None,
                     found_docs: Some(std::sync::Arc::clone(&found)),
+                    ..Default::default()
                 },
             );
             env.all_docs.insert((*docname).to_string(), 0);
