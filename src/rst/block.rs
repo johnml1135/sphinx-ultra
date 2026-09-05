@@ -3412,6 +3412,21 @@ impl BlockParser {
         // `settings.file_insertion_enabled` is not modeled (always true —
         // this crate has no docutils settings surface).
         let tab_width = opt_i64(&input.options, "tab-width").unwrap_or(8);
+        // Every include mode reaches `expandtabs(tab_width)` — insert mode
+        // through `string2lines`, the other two directly — so the C-int
+        // range check happens once, here. See [`c_int_tabsize`]: docutils
+        // lets the OverflowError escape and sphinx aborts the build, where
+        // an unbounded pad loop would instead hang this parser.
+        if let Err(text) = c_int_tabsize(tab_width) {
+            out.push(self.directive_run_message(
+                messages::SEVERE,
+                &format!("Problem with \"{}\" directive:\n{text}", input.name),
+                input.span.source,
+                input.lineno,
+                input.rawsource,
+            ));
+            return DirectiveOutcome::Done;
+        }
         // The circular-inclusion identity 4-tuple (`misc.py:85-88`).
         let clip: IncludeClip = (
             opt_i64(&input.options, "start-line"),
@@ -3438,10 +3453,15 @@ impl BlockParser {
         // file records — but only when the path maps to a docname, and
         // never for a standard include (`other.py:410-412` bypasses the
         // rewrite entirely).
-        if let IncludeTarget::File { io_path, .. } = &target {
+        if let IncludeTarget::File { .. } = &target {
             if self.sphinx {
                 if let Some(srcdir) = &self.srcdir {
-                    if let Some(docname) = crate::utils::path2doc(io_path, srcdir) {
+                    // The docname mapping keys off the §Scope-8
+                    // srcdir-relative spelling, not the resolved open
+                    // path: a resolved path under an unresolved srcdir
+                    // would not even share its prefix.
+                    let lexical = crate::utils::relfn2path(&path_arg, &self.docname, srcdir);
+                    if let Some(docname) = crate::utils::path2doc(&lexical, srcdir) {
                         self.included_records.push(docname);
                     }
                 }
@@ -3491,7 +3511,12 @@ impl BlockParser {
         if self.sphinx {
             if let Some(srcdir) = &self.srcdir {
                 let rel = crate::utils::relfn2path_rel(path_arg, &self.docname);
-                let abs = crate::utils::relfn2path(path_arg, &self.docname, srcdir);
+                // The OPEN path resolves symlinks before interpreting
+                // `..`, exactly as sphinx's `.resolve()` does — a lexical
+                // collapse would read a different file through a
+                // symlinked directory (see
+                // [`crate::utils::relfn2path_io`]).
+                let abs = crate::utils::relfn2path_io(path_arg, &self.docname, srcdir);
                 // §Scope-8: every path-bearing surface of included content
                 // spells the srcdir-relative form (deliberate divergence
                 // from sphinx's environment-dependent cwd-relative
@@ -3581,10 +3606,20 @@ impl BlockParser {
                 // A successful open records the dependency BEFORE reading
                 // (`misc.py:130`) — a decode failure below still records.
                 self.record_include_dependency(display);
+                // `encoding = self.options.get('encoding',
+                // self.state.document.settings.input_encoding)`
+                // (`misc.py:116`). The fallback differs by venue, both
+                // probed: bare docutils leaves `input_encoding` at its
+                // `'utf-8'` default and a BOM survives as U+FEFF, while
+                // sphinx overwrites the setting with
+                // `config.source_encoding`
+                // (`environment/__init__.py:68` + `:375`), whose default
+                // [`SPHINX_DEFAULT_SOURCE_ENCODING`] strips it.
                 let encoding = match opt_get(&input.options, "encoding") {
                     Some(OptVal::Str(name)) => {
                         lookup_encoding(name).expect("the encoding converter validated the name")
                     }
+                    _ if self.sphinx => SPHINX_DEFAULT_SOURCE_ENCODING,
                     _ => IncludeEncoding::Utf8,
                 };
                 match decode_include_bytes(&bytes, encoding) {
@@ -3778,9 +3813,6 @@ impl BlockParser {
         // It is NOT the same count as the rendered lines, which come from
         // `text.split('\n')`: an EMPTY file splitlines to zero lines but
         // splits to one, and the difference is a whole column of padding
-        // (probe: `.. include:: empty.txt` + `:literal:` + `:number-lines:`
-        // renders `1 `, width 1, where a split-based count gives ` 1 `).
-        let include_lines_len = string2lines_tw(text, tab_width).len();
         // Tabs expand unless `tab_width` is negative (`misc.py:165-167`).
         let text = if tab_width >= 0 {
             py_expandtabs(text, tab_width)
@@ -3810,21 +3842,20 @@ impl BlockParser {
                     _ => 1,
                 };
                 let text = text.strip_suffix('\n').unwrap_or(&text);
-                // Unlike :code: mode, literal mode sizes the number column
-                // from the REAL line count — `include_lines`, computed
-                // above with docutils' own `string2lines`, not from the
-                // rendered `split('\n')` lines. The two agree on every
-                // text that ends in a newline and differ on the empty file
-                // and on the splitlines-only separators
-                // (`\x1c`-`\x1e`, NEL, LS, PS).
+                // `lastline = firstline + len(text.splitlines())`
+                // (`misc.py:176`) — measured on THIS text, i.e. after
+                // `expandtabs` and after the single trailing newline is
+                // removed, and with Python's full `splitlines()` boundary
+                // set. The rendering below still walks `split('\n')`,
+                // because that is what `NumberLines.__iter__` does; only
+                // the column WIDTH comes from the splitlines count. The
+                // two counts differ for a text ending in a blank line
+                // (one fewer) and for the splitlines-only separators
+                // (`\x1c`-`\x1e`, NEL, LS, PS), and an empty file counts
+                // 0 — which is what keeps its column one digit wide.
+                let content_len = py_splitlines(text).len();
                 let code_lines: Vec<String> = text.split('\n').map(String::from).collect();
-                push_number_lines(
-                    &mut node,
-                    &code_lines,
-                    firstline,
-                    include_lines_len,
-                    input.span,
-                );
+                push_number_lines(&mut node, &code_lines, firstline, content_len, input.span);
             }
             None => node.children.push(Node::text_node(text, input.span)),
         }
@@ -10257,17 +10288,21 @@ fn saturating_i64(canonical: &str) -> i64 {
 /// Python `str.expandtabs(tabsize)`: the column resets at `\n`/`\r` and
 /// counts characters; `tabsize <= 0` removes tabs outright.
 fn py_expandtabs(text: &str, tabsize: i64) -> String {
+    // The caller must have run [`c_int_tabsize`] first: CPython refuses a
+    // tabsize outside C-int range before it looks at the string, and an
+    // unchecked i64 would push spaces here until the allocator gives up.
+    debug_assert!(c_int_tabsize(tabsize).is_ok(), "unchecked tabsize");
     let mut out = String::with_capacity(text.len());
     let mut col: i64 = 0;
     for c in text.chars() {
         match c {
             '\t' => {
                 if tabsize > 0 {
-                    let pad = tabsize - (col % tabsize);
+                    let pad = tabsize.saturating_sub(col % tabsize);
                     for _ in 0..pad {
                         out.push(' ');
                     }
-                    col += pad;
+                    col = col.saturating_add(pad);
                 }
             }
             '\n' | '\r' => {
@@ -10276,11 +10311,32 @@ fn py_expandtabs(text: &str, tabsize: i64) -> String {
             }
             _ => {
                 out.push(c);
-                col += 1;
+                col = col.saturating_add(1);
             }
         }
     }
     out
+}
+
+/// `str.expandtabs`'s `OverflowError` text.
+const PY_INT_TOO_LARGE_FOR_C_INT: &str = "Python int too large to convert to C int";
+
+/// CPython parses `str.expandtabs(tabsize)`'s argument with `i` — a C
+/// `int` — so a value outside `[i32::MIN, i32::MAX]` raises
+/// `OverflowError: Python int too large to convert to C int` BEFORE the
+/// string is examined: even `'ab'.expandtabs(2**31)` raises, while
+/// `2**31 - 1` and `-2**31` are accepted (probed, scratchpad A/tw.py).
+///
+/// `literalinclude` funnels the exception into one directive warning
+/// (`code.py:505`, `except Exception`), matching sphinx byte-for-byte.
+/// `include` has no such guard, so sphinx ABORTS the whole build on the
+/// same input — a crash has no pformat, so our SEVERE there is an
+/// unpinnable better-than-sphinx divergence.
+fn c_int_tabsize(tabsize: i64) -> Result<i64, &'static str> {
+    if tabsize < i64::from(i32::MIN) || tabsize > i64::from(i32::MAX) {
+        return Err(PY_INT_TOO_LARGE_FOR_C_INT);
+    }
+    Ok(tabsize)
 }
 
 /// docutils `statemachine.string2lines(text, tab_width,
@@ -10343,6 +10399,21 @@ enum IncludeEncoding {
     Ascii,
     Latin1,
 }
+
+/// The default value of sphinx's `source_encoding` config key, which the
+/// environment copies onto `settings.input_encoding`
+/// (`environment/__init__.py:68` `'input_encoding': 'utf-8-sig'` and
+/// `:375` `self.settings['input_encoding'] = config.source_encoding`).
+/// Both file-inserting directives fall back to it: `include` through
+/// `settings.input_encoding` (`misc.py:116`) and `literalinclude` through
+/// `config.source_encoding` directly, which is why
+/// [`LiteralIncludeReader::new`] spells the same default as a string.
+///
+/// SEAM: when `source_encoding` becomes a real config key, thread its
+/// value here instead of the constant (and to the `"utf-8-sig"` literal
+/// in `LiteralIncludeReader::new`). Only a conf.py that overrides the key
+/// can tell the difference.
+const SPHINX_DEFAULT_SOURCE_ENCODING: IncludeEncoding = IncludeEncoding::Utf8Sig;
 
 /// `codecs.lookup` normalization + alias resolution for the supported
 /// set. Python lowercases and collapses runs of punctuation to `_`.
@@ -11149,7 +11220,12 @@ impl LiteralIncludeReader {
     /// `read_file` (`code.py:221-240`): open + decode + expandtabs +
     /// `splitlines(True)`, with both probe-pinned error texts.
     fn read_file(&self, filename: &std::path::Path) -> Result<Vec<String>, String> {
-        let bytes = std::fs::read(filename).map_err(|_| {
+        // Sphinx opens the `.resolve()`d path
+        // (`environment/__init__.py:466`/`:475`), so an argument that
+        // walks out of a symlinked directory reads the link TARGET's
+        // neighbour, not the link's. Only the open uses the resolved
+        // spelling; every reported path stays as §Scope-8 fixed it.
+        let bytes = std::fs::read(crate::utils::resolve_path(filename)).map_err(|_| {
             format!(
                 "Include file '{}' not found or reading it failed",
                 filename.display()
@@ -11170,6 +11246,9 @@ impl LiteralIncludeReader {
             text = text.replace("\r\n", "\n").replace('\r', "\n");
         }
         if let Some(tab_width) = self.options.tab_width {
+            // `except Exception` in `LiteralInclude.run` turns the
+            // OverflowError into one directive warning (`code.py:505`).
+            let tab_width = c_int_tabsize(tab_width)?;
             text = py_expandtabs(&text, tab_width);
         }
         Ok(py_splitlines_keepends(&text))

@@ -22,6 +22,72 @@ pub fn relfn2path(uri: &str, docname: &str, srcdir: &Path) -> PathBuf {
     path
 }
 
+/// The path to actually OPEN for `uri` written in `docname`.
+///
+/// Sphinx's `relfn2path` calls `.resolve()` on the joined path
+/// (`environment/__init__.py:466`/`:475`), so symlinks are followed BEFORE
+/// any `..` is interpreted. [`relfn2path`] instead collapses `..`
+/// lexically, which under a symlinked directory — `docs/examples ->
+/// ../../examples` and an `include` of `examples/../shared.txt` — names a
+/// DIFFERENT FILE: sphinx walks up from the link's target, the lexical
+/// rule walks up from the link's own parent.
+///
+/// The two are separate functions on purpose. §Scope-8 fixes the
+/// srcdir-relative spelling every path-bearing surface of included
+/// content shows, so [`relfn2path`] keeps feeding those; only the read
+/// goes through here.
+pub fn relfn2path_io(uri: &str, docname: &str, srcdir: &Path) -> PathBuf {
+    let mut path = srcdir.to_path_buf();
+    for segment in relfn2path_join(uri, docname).split('/') {
+        if !segment.is_empty() {
+            path.push(segment);
+        }
+    }
+    resolve_path(&path)
+}
+
+/// The join `relfn2path` does before resolving — `srcdir.joinpath(doc_dir,
+/// file_name)` — with the `.`/`..` segments still IN. Sphinx collapses
+/// them inside `.resolve()`, i.e. AFTER symlinks, so they must not be
+/// collapsed here.
+fn relfn2path_join(uri: &str, docname: &str) -> String {
+    match uri.strip_prefix('/') {
+        Some(rooted) => rooted.to_string(),
+        None => match docname.rsplit_once('/') {
+            Some((dir, _)) => format!("{dir}/{uri}"),
+            None => uri.to_string(),
+        },
+    }
+}
+
+/// `pathlib.Path.resolve()` with `strict=False`, which is what
+/// `relfn2path` calls: symlinks are followed component by component and
+/// `..` is applied to what is already RESOLVED, so a path leaving a
+/// symlinked directory lands beside the link's target, not beside the
+/// link. Components past the last existing one cannot be followed and
+/// collapse lexically, exactly as `os.path.realpath(strict=False)` does —
+/// which is how a not-yet-existing include target still normalizes.
+pub(crate) fn resolve_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                resolved.push(name);
+                if let Ok(real) = std::fs::canonicalize(&resolved) {
+                    resolved = real;
+                }
+            }
+        }
+    }
+    resolved
+}
+
 /// The srcdir-relative half of [`relfn2path`]: the normalized posix path
 /// (relative to the source directory) that `uri` written in `docname`
 /// refers to. Sphinx's `rel_fn` return value.
