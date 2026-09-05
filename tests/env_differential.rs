@@ -29,7 +29,7 @@
 //! cannot express fails here instead of silently comparing against a
 //! differently configured oracle.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -663,6 +663,13 @@ const KNOWN_RESOLVED_GAPS: &[(&str, &str, &str)] = &[
     ("inc_basic", "index", TOCTREE_RESOLUTION),
     ("inc_warn", "index", TOCTREE_RESOLUTION),
     ("inc_deps", "index", TOCTREE_RESOLUTION),
+    // Panel fix round B: `py_any` keeps every `:any:` reference in `a`
+    // (compared at full strength) and its definitions in `b`, whose two
+    // labels sit before section titles — the PropagateTargets shape. The
+    // module is the document's LAST node, so its target propagates onto
+    // nothing (the py_dup shape) and is not part of the diff.
+    ("py_any", "index", TOCTREE_RESOLUTION),
+    ("py_any", "b", PROPAGATE_TARGETS),
     (
         "inc_deps",
         "a",
@@ -703,16 +710,26 @@ const HIGHLIGHT_STAMP_ATTRS: [&str; 3] = ["language", "force", "linenos"];
 /// BOUNDARY, stated so the next reader does not have to derive it: the
 /// forgiveness is keyed on OUR side lacking the attribute entirely
 /// ([`drop_unstamped_highlight_attrs`] skips any attribute we do carry).
-/// On these six documents that also means a `language`/`force`/`linenos`
-/// value set explicitly BY A DIRECTIVE would be forgiven if we failed to
-/// emit it at all — e.g. a `.. literalinclude::` with `:language:` or
-/// `:linenos:` added to `inc_basic/a`, where the whole attribute going
-/// missing on our side would read as an unstamped attribute rather than as
-/// the bug it is. The six documents are exempt precisely because they
-/// currently have no such directive-set values; a new one belongs in a
-/// document outside this table, or the table shrinks. Everywhere else in
-/// the corpus the attributes are compared at full strength, and the
-/// stamping mechanics themselves are unit-pinned.
+/// On these six documents that means a `language`/`force` value set
+/// explicitly BY A DIRECTIVE would be forgiven if we failed to emit it at
+/// all — e.g. a `:language:` added to `inc_basic/a`, where the whole
+/// attribute going missing on our side would read as an unstamped
+/// attribute rather than as the bug it is. (Panel fix round B, [21]: the
+/// earlier claim that none of the six carries a directive-set value was
+/// false — `inc_basic/b`'s `:lineno-match:` literalinclude carries
+/// `linenos="1"`, set by the directive, `code.py:476-481`.) `linenos` is
+/// therefore held to a tighter rule: the transform only ever stamps
+/// `linenos` from the `linenothreshold` comparison, which this corpus
+/// never lowers below its `sys.maxsize` default, so a stamped value is
+/// always `"0"` and an oracle `linenos="1"` is by construction
+/// directive-set — [`drop_unstamped_highlight_attrs`] refuses to drop it.
+/// A `language`/`force` value set by a directive on one of these six
+/// documents still belongs in a document outside this table, or the
+/// table shrinks. The full-strength venue for all three attributes is
+/// `inc_highlight/index` (two literalincludes with `:language:` plus
+/// `:linenos:`/`:lineno-start:`, one with `:force:`, and a `:linenos:`
+/// code-block), which is in neither table; every other `literal_block`
+/// in the corpus lives in a document one of the two tables covers.
 const KNOWN_HIGHLIGHT_STAMP_GAPS: &[(&str, &str)] = &[
     ("inc_basic", "a"),
     ("inc_basic", "b"),
@@ -752,6 +769,11 @@ fn drop_unstamped_highlight_attrs(expected: &str, actual: &str) -> String {
             for attr in HIGHLIGHT_STAMP_ATTRS {
                 let needle = format!(" {attr}=\"");
                 if our_line.contains(&needle) {
+                    continue;
+                }
+                // A `linenos="1"` cannot be the transform's doing in this
+                // corpus (see the table's BOUNDARY note): never forgive it.
+                if attr == "linenos" && oracle_line.contains(" linenos=\"1\"") {
                     continue;
                 }
                 let Some(start) = oracle_line.find(&needle) else {
@@ -802,12 +824,31 @@ fn known_warning_gap(project: &str) -> Option<&'static str> {
 /// a fabricated diagnostic, which is precisely what breaks `-W` on a
 /// project Sphinx builds clean.
 fn assert_warning_gap_is_sound(project: &str, actual: &[String], expected: &[String]) {
-    let extra: Vec<&String> = actual.iter().filter(|a| !expected.contains(a)).collect();
+    // Multiset containment, not set membership: the corpus treats
+    // multiplicity as load-bearing (inc_warn expects one line exactly
+    // twice), and a warning the oracle emits once that we emit twice is an
+    // invented duplicate, which set membership would wave through (panel
+    // fix round B, minor). Each oracle line is a budget one actual line
+    // may spend.
+    let mut budget: BTreeMap<&String, usize> = BTreeMap::new();
+    for line in expected {
+        *budget.entry(line).or_default() += 1;
+    }
+    let extra: Vec<&String> = actual
+        .iter()
+        .filter(|line| match budget.get_mut(line) {
+            Some(remaining) if *remaining > 0 => {
+                *remaining -= 1;
+                false
+            }
+            _ => true,
+        })
+        .collect();
     assert!(
         extra.is_empty(),
         "[{project}] is in KNOWN_WARNING_GAPS, but emits warnings the oracle \
-         does not — the exemption covers MISSING warnings, never invented \
-         ones: {extra:#?}"
+         does not (or emits one more often than it does) — the exemption \
+         covers MISSING warnings, never invented ones: {extra:#?}"
     );
     if project == "inc_basic" {
         // Its reason is specifically that the whole set is reporter-side,
@@ -1642,6 +1683,114 @@ fn resolved_doctrees_match_oracle() {
     }
 
     report(&divergences, "resolved_pformat");
+}
+
+/// The exemption arithmetic the docs quote (docs/IMPLEMENTATION_STATUS.md,
+/// ROADMAP.md, CHANGELOG.md, README.md), computed from the tables and the
+/// fixture rather than by hand (panel fix round B, [29]): how many
+/// documents' resolved doctrees and how many projects' warning streams are
+/// compared byte-for-byte, how many documents are skipped wholesale, and
+/// how many are compared modulo the highlight stamp. The subtraction is
+/// sound on its own terms — the test first proves that each table names a
+/// fixture document (or project) exactly once and that the two document
+/// tables are disjoint — so the table lengths ARE the exemption counts.
+/// Update the seven constants and the doc sites together.
+const DOCUMENTED_PROJECTS: usize = 28;
+const DOCUMENTED_DOCUMENTS: usize = 83;
+const DOCUMENTED_WHOLESALE_EXEMPT_DOCUMENTS: usize = 43;
+const DOCUMENTED_STAMP_EXEMPT_DOCUMENTS: usize = 6;
+const DOCUMENTED_BYTE_EXACT_DOCUMENTS: usize = 34;
+const DOCUMENTED_WARNING_EXEMPT_PROJECTS: usize = 5;
+const DOCUMENTED_BYTE_EXACT_WARNING_PROJECTS: usize = 23;
+
+#[test]
+fn exemption_arithmetic_matches_the_documented_numbers() {
+    let fixture = load_fixture();
+    let projects: BTreeSet<&str> = fixture.projects.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        projects.len(),
+        fixture.projects.len(),
+        "a project name repeats"
+    );
+    let documents: BTreeSet<(&str, &str)> = fixture
+        .projects
+        .iter()
+        .flat_map(|project| {
+            project
+                .expect
+                .resolved_pformat
+                .keys()
+                .map(move |docname| (project.name.as_str(), docname.as_str()))
+        })
+        .collect();
+
+    let wholesale: BTreeSet<(&str, &str)> = KNOWN_RESOLVED_GAPS
+        .iter()
+        .map(|(project, docname, _)| (*project, *docname))
+        .collect();
+    let stamp: BTreeSet<(&str, &str)> = KNOWN_HIGHLIGHT_STAMP_GAPS.iter().copied().collect();
+    let warning_exempt: BTreeSet<&str> = KNOWN_WARNING_GAPS.iter().map(|(p, _)| *p).collect();
+    assert_eq!(
+        wholesale.len(),
+        KNOWN_RESOLVED_GAPS.len(),
+        "KNOWN_RESOLVED_GAPS lists a document twice"
+    );
+    assert_eq!(
+        stamp.len(),
+        KNOWN_HIGHLIGHT_STAMP_GAPS.len(),
+        "KNOWN_HIGHLIGHT_STAMP_GAPS lists a document twice"
+    );
+    assert_eq!(
+        warning_exempt.len(),
+        KNOWN_WARNING_GAPS.len(),
+        "KNOWN_WARNING_GAPS lists a project twice"
+    );
+    assert!(
+        wholesale.is_disjoint(&stamp),
+        "a document is in both document tables: {:?}",
+        wholesale.intersection(&stamp).collect::<Vec<_>>()
+    );
+    assert!(
+        wholesale.is_subset(&documents) && stamp.is_subset(&documents),
+        "a document table names a document the fixture does not have"
+    );
+    assert!(
+        warning_exempt.is_subset(&projects),
+        "KNOWN_WARNING_GAPS names a project the fixture does not have"
+    );
+
+    let byte_exact_documents = documents.len() - wholesale.len() - stamp.len();
+    let byte_exact_warning_projects = projects.len() - warning_exempt.len();
+    assert_eq!(
+        (
+            projects.len(),
+            documents.len(),
+            wholesale.len(),
+            stamp.len(),
+            byte_exact_documents,
+            warning_exempt.len(),
+            byte_exact_warning_projects,
+        ),
+        (
+            DOCUMENTED_PROJECTS,
+            DOCUMENTED_DOCUMENTS,
+            DOCUMENTED_WHOLESALE_EXEMPT_DOCUMENTS,
+            DOCUMENTED_STAMP_EXEMPT_DOCUMENTS,
+            DOCUMENTED_BYTE_EXACT_DOCUMENTS,
+            DOCUMENTED_WARNING_EXEMPT_PROJECTS,
+            DOCUMENTED_BYTE_EXACT_WARNING_PROJECTS,
+        ),
+        "the corpus or a table changed: {} projects, {} documents, {} wholesale-exempt, \
+         {} stamp-exempt ({byte_exact_documents} documents byte-for-byte), {} \
+         warning-exempt projects ({byte_exact_warning_projects} warning streams \
+         byte-for-byte) — update the constants AND the doc sites \
+         (docs/IMPLEMENTATION_STATUS.md, ROADMAP.md, CHANGELOG.md, README.md)",
+        projects.len(),
+        documents.len(),
+        wholesale.len(),
+        stamp.len(),
+        warning_exempt.len(),
+    );
 }
 
 /// The build must not leave the environment's per-document state doubled up
@@ -3048,7 +3197,15 @@ fn py_builtins_in_a_loaded_inventory_resolve_externally_before_the_silencer() {
 // ---------------------------------------------------------------------------
 // `:any:` resolution: `ReferencesResolver._resolve_pending_any_xref`
 // (`post_transforms/__init__.py:180-250`), each expectation byte-pinned to a
-// sphinx 9.1.0 dummy build (probe_any.py, session of 2026-09-02).
+// sphinx 9.1.0 dummy build (probe_any.py, session of 2026-09-02). The
+// COMMITTED oracle for the same shapes is the `py_any` project of
+// tests/fixtures/env_differential.json (panel fix round B, [23]): its `a`
+// document — a py-func hit bare and as `f()`, py-mod and py-data hits, a std
+// label and a doc hit, each with the winner's extended literal classes, the
+// std/py ambiguity with its ` or `-joined `[ref.any]` warning, and a dangling
+// target warning without nitpicky — compares at full strength in
+// `resolved_doctrees_match_oracle` and `warnings_match_oracle`. The tests
+// below stay as the fast, in-process feedback layer.
 // ---------------------------------------------------------------------------
 
 /// [PY §3.4] `resolve_any_role`: `f` → py-func with refid, `m` → py-mod —

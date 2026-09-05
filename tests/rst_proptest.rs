@@ -72,16 +72,24 @@ fn opts_in(srcdir: &Path) -> ParseOptions {
     }
 }
 
-/// A scratch project the include sweeps read from: built once, never
-/// mutated, and dropped with the process. Its members cover the shapes the
-/// filter chain branches on — markers for `:start-after:`/`:end-before:`,
-/// python definitions for `:pyobject:`, an empty file (the zero-line
+/// A scratch project the include sweeps read from: built once and never
+/// mutated. It lives in a `static`, and Rust never drops statics, so the
+/// `TempDir` guard's cleanup does not run at exit: one directory per test
+/// run is deliberately LEAKED in the system temp dir (panel fix round B,
+/// minor — an earlier comment claimed it was dropped with the process). It
+/// carries the `sphinx-ultra-proptest-` prefix so the leftovers are
+/// recognizable and greppable. Its members cover the shapes the filter
+/// chain branches on — markers for `:start-after:`/`:end-before:`, python
+/// definitions for `:pyobject:`, an empty file (the zero-line
 /// `:number-lines:` width edge), a tab-indented file (`:tab-width:` and
 /// `:dedent:`), and a non-UTF-8 file (the `:encoding:` failure path).
 fn scratch() -> &'static Path {
     static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = tempfile::tempdir().expect("scratch srcdir");
+        let dir = tempfile::Builder::new()
+            .prefix("sphinx-ultra-proptest-")
+            .tempdir()
+            .expect("scratch srcdir");
         let p = dir.path();
         std::fs::write(
             p.join("member.rst"),

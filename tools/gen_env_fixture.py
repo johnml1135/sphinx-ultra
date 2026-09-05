@@ -1216,6 +1216,168 @@ part para
             "pic.png": "not really a png\n",
         },
     },
+    # -----------------------------------------------------------------------
+    # Panel fix round B additions.
+    # -----------------------------------------------------------------------
+    {
+        # [23] `:any:` resolution, the wave-4.5 deliverable that had no
+        # oracle coverage: a py:func hit (bare and with `()`, which
+        # `find_obj` strips), a py:mod hit, a py:data hit, a std label hit
+        # (lowercased ref lookup), a doc hit (std's doc-first branch), the
+        # winner's extended literal classes (`xref any py py-func`,
+        # `std std-ref`, `doc doc doc`), a std/py ambiguity — a label and a
+        # function both named `dup` — with its ` or `-joined `[ref.any]`
+        # warning, and a dangling target (`:any:` is warn_dangling, so it
+        # warns WITHOUT nitpicky). No `:module:` option and no py:module
+        # scope around the refs: the two shapes the T11 report keeps on the
+        # avoid-list (round A closed the py:module-None key edge in the
+        # sphinx doctree corpus) are not needed to pin any of this.
+        #
+        # Layout: every reference lives in `a`, which therefore compares at
+        # FULL strength; the definitions live in `b`, whose resolved tree
+        # is Scope-3 propagation-visible (the `.. _dup:` label's ids move
+        # onto its section, a KNOWN_RESOLVED_GAPS shape) — the module sits
+        # LAST in `b`, the py_dup shape, so its target has nothing to
+        # propagate onto, and the label's name differs from its section's
+        # slug so the section's FIRST id (the toc anchor) still agrees.
+        "name": "py_any",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+Hits: :any:`f` and :any:`f()` and :any:`mod` and :any:`item`
+and :any:`std-label` and :any:`index`.
+
+Ambiguous: :any:`dup`. Dangling: :any:`nosuch_any`.
+""",
+            "b": """\
+B
+=
+
+.. _dup:
+
+Dup Section
+-----------
+
+.. py:function:: mod.f()
+
+.. py:function:: mod.dup()
+
+.. py:data:: mod.item
+
+.. _std-label:
+
+Only Label
+----------
+
+Text.
+
+.. py:module:: mod
+""",
+        },
+    },
+    {
+        # [4]/[5] warning locations for the xrefs the py directives
+        # synthesize, under nitpicky: an annotation xref (parameter,
+        # return, `:type:` on py:data) locates at its signature's own
+        # file:line — the INCLUDED file's for a signature inside an include
+        # — while a doc-field xref locates through docutils'
+        # `get_source_line` ancestor walk (the synthesized nodes and the
+        # desc/desc_content above them carry no provenance): the
+        # enclosing section's underline, a `.. note::` line, or the
+        # INCLUDER's section for a field written in an included file — and
+        # NO location at all for a description that sits directly under
+        # the document (the first `WARNING:` line below has no prefix). An
+        # inline role in a field body keeps its own line. Single document,
+        # no toctree, so every key compares at full strength.
+        "name": "py_locations",
+        "conf": {"nitpicky": True},
+        "files": {
+            "index": """\
+.. py:function:: top(q: nosuch_top)
+
+   :param nosuch_top_field q: q
+
+Top
+===
+
+.. include:: part.inc
+
+Sec
+---
+
+.. py:function:: g(y: alsomissing) -> retmissing
+
+   :param nosuch_doc y: d
+   :param k: see :py:class:`nosuch_inline`
+   :rtype: nosuch_rt
+
+.. py:data:: d
+   :type: typemissing
+
+.. note::
+
+   .. py:function:: h(z)
+
+      :param nosuch_note z: q
+""",
+        },
+        "data_files": {
+            "part.inc": (
+                ".. py:function:: f(x: missingtype)\n"
+                "\n"
+                "   :param nosuch_inc z: q\n"
+            ),
+        },
+    },
+    {
+        # [21] literal_blocks whose `language`/`force`/`linenos` are ALL
+        # directive-set, in a document outside both exemption tables, so
+        # the three attributes are compared at full strength somewhere in
+        # the corpus (HighlightLanguageTransform stamps only what a
+        # directive left unset: `code.py:81-86`). literalinclude with
+        # `:language:` + `:linenos:`, with `:language:` + `:lineno-start:`
+        # + `:force:`, and a code-block with `:linenos:`. Single document,
+        # no toctree.
+        "name": "inc_highlight",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. literalinclude:: example.py
+   :language: python
+   :linenos:
+   :lines: 1-3
+
+.. literalinclude:: example.py
+   :language: text
+   :lineno-start: 5
+   :force:
+   :lines: 4-5
+
+.. code-block:: python
+   :linenos:
+
+   x = 1
+""",
+        },
+        "data_files": {
+            "example.py": EXAMPLE_PY,
+        },
+    },
 ]
 
 
