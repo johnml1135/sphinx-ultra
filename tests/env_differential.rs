@@ -3782,3 +3782,35 @@ fn validation_warnings_inside_an_included_file_name_that_file() {
         "{warnings:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Validation must not fabricate (panel fix round B, cluster V)
+// ---------------------------------------------------------------------------
+
+/// A document sphinx-build 9.1.0 builds with NO warnings (probed:
+/// scratchpad/B/pv): a standard include, a `.py` shown with `:literal:`, a
+/// literalinclude with a negative `:tab-width:`/`:lineno-start:` (typed
+/// plain `int` in sphinx), two empty code-blocks, and a toctree with the
+/// documented `:maxdepth: -1`. The validators used to invent five
+/// warnings for it — "Unusual file extension", "must be a positive
+/// integer" (twice), "has no content", "maxdepth must be a positive
+/// integer" — every one a `-W` failure on a clean project.
+#[test]
+fn a_clean_sphinx_project_earns_no_validation_warnings() {
+    let warnings = tree_warnings(
+        &[
+            (
+                "index.rst",
+                "Title\n=====\n\n.. include:: <isonum.txt>\n\n\
+                 .. include:: snippet.py\n   :literal:\n\n\
+                 .. literalinclude:: snippet.py\n   :tab-width: -1\n   :lineno-start: -3\n\n\
+                 .. code-block::\n\n.. code-block:: python\n\n\
+                 .. toctree::\n   :maxdepth: -1\n\n   other\n",
+            ),
+            ("other.rst", "Other\n=====\n\nbody\n"),
+            ("snippet.py", "def f():\n\treturn 1\n"),
+        ],
+        &|_| {},
+    );
+    assert_eq!(warnings, Vec::<String>::new());
+}

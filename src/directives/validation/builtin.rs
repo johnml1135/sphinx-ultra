@@ -154,14 +154,10 @@ impl DirectiveValidator for CodeBlockValidator {
 
     fn validate(&self, directive: &ParsedDirective) -> DirectiveValidationResult {
         // A bare `.. code-block::` is valid Sphinx: the language falls back to
-        // highlight_language. Only the content check below applies then.
-
-        // Check if content is provided
-        if directive.content.trim().is_empty() {
-            return DirectiveValidationResult::Warning(
-                "Code-block directive has no content".to_string(),
-            );
-        }
+        // highlight_language. An EMPTY code-block is valid too — Sphinx's
+        // `CodeBlock.run` renders an empty literal_block without a word
+        // (`directives/code.py`), so "has no content" was a fabricated
+        // warning that failed `-W` on markup sphinx-build accepts.
 
         // Validate common options
         for (option, value) in &directive.options {
@@ -176,19 +172,16 @@ impl DirectiveValidator for CodeBlockValidator {
                         ));
                     }
                 }
-                "lineno-start" => {
-                    if value.parse::<u32>().is_err() {
-                        return DirectiveValidationResult::Error(
-                            "lineno-start must be a positive integer".to_string(),
-                        );
-                    }
-                }
                 "emphasize-lines" => {
                     // Could validate line numbers format here
                 }
-                "caption" | "name" | "dedent" | "class" => {
-                    // These are valid options
-                }
+                // Value-carrying options. `lineno-start` is typed `int` in
+                // sphinx (`code.py:112`), so `-3` and `0` are accepted there;
+                // `dedent` is `optional_int`. The parse-time converter owns
+                // every value diagnostic — a second opinion here can only
+                // fabricate ("must be a positive integer" for a value
+                // sphinx-build takes).
+                "caption" | "name" | "dedent" | "class" | "lineno-start" => {}
                 _ => {
                     return DirectiveValidationResult::Warning(format!(
                         "Unknown option '{}' for code-block directive",
@@ -521,19 +514,14 @@ impl DirectiveValidator for TocTreeValidator {
         // Validate options
         for (option, value) in &directive.options {
             match option.as_str() {
-                "maxdepth" => {
-                    if let Ok(depth) = value.parse::<u32>() {
-                        if depth > 10 {
-                            return DirectiveValidationResult::Warning(
-                                "Very deep toctree depth may cause performance issues".to_string(),
-                            );
-                        }
-                    } else {
-                        return DirectiveValidationResult::Error(
-                            "maxdepth must be a positive integer".to_string(),
-                        );
-                    }
-                }
+                // `maxdepth` is typed `int` (`directives/other.py`,
+                // `TocTree.option_spec`): `-1` is the documented "no limit"
+                // spelling, and no depth is "too deep" to Sphinx. The
+                // parse-time converter owns the value diagnostics; the
+                // positive-integer and depth>10 checks that lived here were
+                // fabricated warnings (same class as literalinclude's
+                // `tab-width`, panel fix round B).
+                "maxdepth" => {}
                 // `numbered` is NOT a flag: Sphinx types it `int_or_nothing`
                 // (`directives/other.py`, `TocTree.option_spec`), so
                 // `:numbered: 2` -- the documented spelling for a numbering
@@ -614,16 +602,11 @@ impl DirectiveValidator for IncludeValidator {
             );
         }
 
-        // Check for common file extensions
-        if let Some(extension) = file_path.split('.').next_back() {
-            let valid_extensions = ["rst", "txt", "md", "inc"];
-            if !valid_extensions.contains(&extension.to_lowercase().as_str()) {
-                return DirectiveValidationResult::Warning(format!(
-                    "Unusual file extension for include: {}",
-                    extension
-                ));
-            }
-        }
+        // No opinion on the target's spelling: docutils' `Include` opens
+        // whatever path it is given (`<isonum.txt>` is a standard include,
+        // `snippet.py` with `:literal:` is ordinary), and sphinx has no
+        // extension check to mirror. The "Unusual file extension" warning
+        // that lived here was fabricated (panel fix round B, [30]).
 
         DirectiveValidationResult::Valid
     }
@@ -675,27 +658,19 @@ impl DirectiveValidator for LiteralIncludeValidator {
             );
         }
 
-        // Validate line number options
+        // Option loop. NO value-range arms: `lineno-start` and `tab-width`
+        // are typed plain `int` in sphinx (`code.py:112`, `:425-427`) — a
+        // negative or zero value is accepted there — and `dedent` is
+        // `optional_int`, whose own converter rejects a negative one at
+        // parse time with sphinx's text. Every value diagnostic belongs to
+        // the parse-time converter; the "must be a positive integer" arms
+        // that lived here fabricated warnings sphinx-build never emits.
         for (option, value) in &directive.options {
             match option.as_str() {
-                "lineno-start" | "tab-width" => {
-                    if value.parse::<u32>().is_err() {
-                        return DirectiveValidationResult::Error(format!(
-                            "{} must be a positive integer",
-                            option
-                        ));
-                    }
-                }
-                "dedent" => {
-                    if !value.is_empty() && value.parse::<u32>().is_err() {
-                        return DirectiveValidationResult::Error(
-                            "dedent must be a positive integer".to_string(),
-                        );
-                    }
-                }
                 "language" | "start-after" | "end-before" | "prepend" | "append" | "caption"
-                | "name" | "class" | "encoding" | "pyobject" | "diff" => {
-                    // Valid text options
+                | "name" | "class" | "encoding" | "pyobject" | "diff" | "lineno-start"
+                | "tab-width" | "dedent" => {
+                    // Valid value-carrying options
                 }
                 "linenos" | "force" | "lineno-match" => {
                     // Flag options
@@ -1054,12 +1029,16 @@ mod tests {
     /// constraints: an advertised option must never produce the
     /// `Unknown option '…'` catch-all, whatever value it carries. (A
     /// value-checking arm may still reject a specific value — `:align: 1`
-    /// is an "Invalid alignment" error, and that is correct.)
+    /// is an "Invalid alignment" error, and that is correct.) The value
+    /// set includes a negative and a zero so an integer-typed option is
+    /// exercised on the values sphinx's plain `int` converter accepts —
+    /// the range where the fabricated "must be a positive integer" arms
+    /// used to hide.
     #[test]
     fn every_validator_accepts_every_option_it_advertises() {
         for (validator, arguments, content) in every_validator() {
             for option in validator.valid_options() {
-                for value in ["", "1", "left"] {
+                for value in ["", "1", "left", "-1", "0"] {
                     let mut options = HashMap::new();
                     options.insert(option.clone(), value.to_string());
                     let directive = create_test_directive(
@@ -1146,6 +1125,116 @@ mod tests {
                 DirectiveValidationResult::Warning(format!(
                     "Unknown option '{option}' for literalinclude directive"
                 ))
+            );
+        }
+    }
+    /// Panel fix round B, [17]/[31]: the integer-typed options accept
+    /// whatever sphinx's converters accept. `lineno-start`/`tab-width` are
+    /// plain `int` (negative and zero included), `maxdepth` is `int` with
+    /// `-1` as the documented "unlimited", `dedent` is `optional_int`
+    /// whose diagnostics are the parse-time converter's business. A
+    /// clean sphinx project must never earn a validation warning here.
+    #[test]
+    fn integer_options_accept_the_values_sphinxs_converters_accept() {
+        let cases: &[(&str, Vec<String>, &str, &str, &str)] = &[
+            (
+                "literalinclude",
+                vec!["f.py".to_string()],
+                "",
+                "tab-width",
+                "-1",
+            ),
+            (
+                "literalinclude",
+                vec!["f.py".to_string()],
+                "",
+                "lineno-start",
+                "-3",
+            ),
+            (
+                "literalinclude",
+                vec!["f.py".to_string()],
+                "",
+                "lineno-start",
+                "0",
+            ),
+            (
+                "literalinclude",
+                vec!["f.py".to_string()],
+                "",
+                "dedent",
+                "-2",
+            ),
+            ("literalinclude", vec!["f.py".to_string()], "", "dedent", ""),
+            (
+                "code-block",
+                vec!["python".to_string()],
+                "x = 1",
+                "lineno-start",
+                "-3",
+            ),
+            (
+                "code-block",
+                vec!["python".to_string()],
+                "x = 1",
+                "lineno-start",
+                "0",
+            ),
+            ("code-block", vec![], "x = 1", "dedent", "-2"),
+            ("toctree", vec![], "a\nb", "maxdepth", "-1"),
+            ("toctree", vec![], "a\nb", "maxdepth", "99"),
+        ];
+        let registry = crate::directives::validation::DirectiveRegistry::with_builtin_validators();
+        for (name, arguments, content, option, value) in cases {
+            let mut options = HashMap::new();
+            options.insert((*option).to_string(), (*value).to_string());
+            let directive = create_test_directive(name, arguments.clone(), options, content);
+            assert_eq!(
+                registry.validate_directive(&directive),
+                DirectiveValidationResult::Valid,
+                "{name} :{option}: {value:?} is accepted by sphinx-build"
+            );
+        }
+    }
+
+    /// Panel fix round B, [30]: docutils' `include` opens any path — a
+    /// standard include (`<isonum.txt>`), a `.py` shown with `:literal:`,
+    /// an extension-less file — and sphinx has no extension check, so the
+    /// old "Unusual file extension" warning fabricated a diagnostic.
+    #[test]
+    fn include_has_no_opinion_on_the_targets_extension() {
+        let registry = crate::directives::validation::DirectiveRegistry::with_builtin_validators();
+        for (target, option) in [
+            ("<isonum.txt>", None),
+            ("snippet.py", Some("literal")),
+            ("snippet.py", None),
+            ("NOTES", None),
+            ("data.csv", Some("code")),
+        ] {
+            let mut options = HashMap::new();
+            if let Some(option) = option {
+                options.insert(option.to_string(), String::new());
+            }
+            let directive = create_test_directive("include", vec![target.to_string()], options, "");
+            assert_eq!(
+                registry.validate_directive(&directive),
+                DirectiveValidationResult::Valid,
+                ".. include:: {target}"
+            );
+        }
+    }
+
+    /// Panel fix round B, [17]: an empty `code-block` is legal sphinx
+    /// (`CodeBlock.run` builds an empty `literal_block` and says nothing),
+    /// so it is not a validation finding either.
+    #[test]
+    fn an_empty_code_block_is_not_a_finding() {
+        let registry = crate::directives::validation::DirectiveRegistry::with_builtin_validators();
+        for arguments in [vec![], vec!["python".to_string()]] {
+            let directive = create_test_directive("code-block", arguments, HashMap::new(), "");
+            assert_eq!(
+                registry.validate_directive(&directive),
+                DirectiveValidationResult::Valid
             );
         }
     }
