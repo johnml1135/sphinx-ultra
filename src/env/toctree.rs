@@ -66,6 +66,9 @@ pub struct ToctreeContent<'a> {
     pub docname: &'a str,
     pub glob: bool,
     pub reversed: bool,
+    /// Source-table index of the `.. toctree::` marker's line (the node's
+    /// `source`): every diagnostic below is stamped with it.
+    pub source: u16,
     /// 1-based line of the `.. toctree::` marker. Sphinx logs every
     /// diagnostic below with `location=toctree`, i.e. the directive node's
     /// source info — *not* the offending entry's own line.
@@ -106,8 +109,16 @@ pub enum ToctreeWarningKind {
 /// still reproduce the build's warnings.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToctreeWarning {
+    /// Source-table index of the `.. toctree::` directive's line: a
+    /// toctree written inside an included file warns against THAT file
+    /// (`location=toctree` is the node, whose `source` is the included
+    /// file's). Deliberately not `#[serde(default)]` — the warning rides
+    /// the document cache, and a pre-provenance record decoding with
+    /// source 0 would name the includer again (cache-shape rule,
+    /// [`crate::rst::RegistryExport::program_options`]).
+    pub source: u16,
     /// 1-based line of the `.. toctree::` directive (Sphinx's
-    /// `location=toctree`).
+    /// `location=toctree`), within `source`.
     pub line: u32,
     /// The message, formatted exactly as Sphinx formats it.
     pub message: String,
@@ -174,6 +185,7 @@ pub fn resolve_entries(input: &ToctreeContent<'_>) -> ResolvedEntries {
         docname,
         glob,
         reversed,
+        source,
         line,
         found_docs,
         source_suffixes,
@@ -198,6 +210,7 @@ pub fn resolve_entries(input: &ToctreeContent<'_>) -> ResolvedEntries {
                 category: Option<&str>,
                 kind: ToctreeWarningKind| {
         sink.push(ToctreeWarning {
+            source,
             line,
             message,
             category: category.map(str::to_string),
@@ -1259,6 +1272,7 @@ mod tests {
             docname,
             glob: false,
             reversed: false,
+            source: 0,
             line: 1,
             found_docs: found,
             source_suffixes: &[".rst"],
@@ -1467,6 +1481,7 @@ mod tests {
         assert_eq!(
             resolved.warnings,
             vec![ToctreeWarning {
+                source: 0,
                 line: 1,
                 message: "toctree glob pattern 'missing*' didn't match any documents".to_string(),
                 category: None,

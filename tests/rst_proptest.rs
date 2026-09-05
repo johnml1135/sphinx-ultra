@@ -359,7 +359,7 @@ proptest! {
     /// to a plain-text node, and neither path may panic.
     #[test]
     fn parse_annotation_never_panics(s in "(?s).{0,80}") {
-        let ctx = PyRefContext { module: Some("m".into()), class_: Some("C".into()) };
+        let ctx = PyRefContext { module: Some("m".into()), class_: Some("C".into()), ..Default::default() };
         for cfg in [PySigConfig::default(), PySigConfig {
             python_use_unqualified_type_names: true,
             python_display_short_literal_types: true,

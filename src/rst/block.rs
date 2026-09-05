@@ -480,6 +480,7 @@ impl BlockParser {
             marker_text.split_whitespace().map(str::to_string).collect()
         };
         self.directive_records.push(super::DirectiveRecord {
+            source: first_line.source,
             name: name.to_string(),
             arguments,
             options,
@@ -5066,9 +5067,13 @@ impl BlockParser {
         // Annotation xrefs read the RAW ref_context, not the option-
         // modified modname: the `:module:` option only touches
         // `env.ref_context` in before_content (`_annotations.py:62-66`).
+        // They carry the signature's span: sphinx stamps the signode
+        // (`set_source_info`) and locates annotation-xref warnings there
+        // through the `get_source_line` ancestor walk.
         let ctx = crate::py::annotations::PyRefContext {
             module: self.py_module.clone(),
             class_: self.py_class.clone(),
+            span,
         };
 
         // 1. Signature prefix keywords (`get_signature_prefix`).
@@ -5430,9 +5435,12 @@ impl BlockParser {
     /// std kinds (none of them declare `doc_field_types`), whose fields
     /// therefore all take the unknown rename-and-pass-through branch.
     fn transform_doc_fields(&mut self, content: &mut Node, map: DocFieldTypeMap) {
+        // The field builders stamp their nodes from `DocFieldEnv::span`,
+        // not from here; the context's own span stays unstamped.
         let ctx = crate::py::annotations::PyRefContext {
             module: self.py_module.clone(),
             class_: self.py_class.clone(),
+            span: Span::ZERO,
         };
         for child in &mut content.children {
             if child.kind == kinds::FIELD_LIST {
@@ -5797,6 +5805,7 @@ impl BlockParser {
                     docname: &self.docname,
                     glob,
                     reversed: opt_get(&input.options, "reversed").is_some(),
+                    source: input.span.source,
                     line: input.lineno,
                     found_docs: found,
                     source_suffixes: SOURCE_SUFFIXES,
@@ -5808,6 +5817,7 @@ impl BlockParser {
         self.toctree_records.push(super::ToctreeRecord {
             glob,
             entries: entries.clone(),
+            source: input.span.source,
             line: input.lineno,
             warnings: resolved.warnings.clone(),
         });
@@ -9257,8 +9267,21 @@ fn doc_field_inline(kind: &'static str, text: &str, span: Span) -> Node {
 /// innernode INSIDE each condition [SIG §4.2 item 2, probes F-U1/F-U2].
 /// The directive/environment state every field builder reads: the
 /// ref_context slice the xrefs stamp, the py signature config, and the
-/// span new nodes carry (docutils tracks no provenance for them; the
-/// enclosing field_list's span keeps ours structural).
+/// span new nodes carry.
+///
+/// That span is UNSTAMPED (line 0, the field_list's source): docutils
+/// tracks no provenance for the nodes `DocFieldTransformer` builds — the
+/// new `field_list`, `field`, `field_body`, `paragraph` and the xrefs in
+/// them are all `nodes.X()` constructions with no `source`/`line` — and
+/// neither do the `desc_content`/`desc` above them, so a resolution
+/// warning on a doc-field xref locates through `get_source_line`'s
+/// ancestor walk at the nearest node that IS stamped: the enclosing
+/// section (its underline line), admonition, list item, ... — and for a
+/// field written inside an `.. include::`, at the INCLUDER's section
+/// (probe-pinned, `tests/env_differential.rs`). Stamping the field_list's
+/// own line here would report a line sphinx never prints. The resolver's
+/// walk (`src/env/resolve.rs`, `resolve_children`) reads a zero line as
+/// "inherit from the nearest stamped ancestor".
 struct DocFieldEnv<'a> {
     /// The directive's `get_field_type_map()` (py table or the empty std
     /// one).
@@ -9421,8 +9444,16 @@ fn transform_doc_field_list(
         map,
         ctx,
         cfg,
-        span: node.span,
+        // Unstamped on purpose — see the struct's doc comment.
+        span: Span {
+            line: 0,
+            ..node.span
+        },
     };
+    // Sphinx `replace_self`s the parsed field_list with a fresh
+    // `nodes.field_list()`: the node that survives here is that new,
+    // provenance-less list, not the stamped one the parser built.
+    node.span = env.span;
     let fields = std::mem::take(&mut node.children);
     node.attrs = crate::doctree::Attrs {
         ids: std::mem::take(&mut node.attrs.ids),
@@ -16402,6 +16433,7 @@ mod py_docfield_tests {
         let ctx = crate::py::annotations::PyRefContext {
             module: None,
             class_: None,
+            span: Span::ZERO,
         };
         transform_doc_field_list(&mut list, py_field_type_map, &ctx, &PySigConfig::default());
 

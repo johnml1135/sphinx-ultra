@@ -790,10 +790,35 @@ pub fn resolve_document(
         &mut doctree.root,
         &sources,
         path,
+        None,
         &mut out,
     );
     propagate_desc_domain(&mut doctree.root);
     out
+}
+
+/// The `(source, line)` a warning about a node reports — docutils'
+/// `get_source_line`, which `sphinx.util.logging.get_node_location` runs
+/// for every `logger.warning(..., location=node)`: the node's OWN
+/// `(source, line)` when it has one, else the nearest ancestor's, else
+/// nothing (the warning then prints with no location prefix at all).
+///
+/// Threaded down the resolution walk as the nearest stamped ancestor's
+/// location, so an unstamped `pending_xref` — the doc-field xrefs
+/// `DocFieldTransformer` synthesizes carry line 0 by design, see
+/// `DocFieldEnv` in src/rst/block.rs — locates where sphinx locates it.
+type Location = Option<(u16, u32)>;
+
+/// Whether docutils' walk would stop at this node. Our parser stamps a span
+/// on every node it builds; docutils stamps most containers too (sections,
+/// paragraphs, list items, admonitions, ...) but NOT the `document` root
+/// (its source lives in the attribute dict, not on `node.source`), nor
+/// `desc`/`desc_content` (`ObjectDescription.run` builds both bare and
+/// calls `set_source_info` on the signature only), so those three are
+/// skipped regardless of the span they carry. A zero line is "unstamped"
+/// for any kind.
+fn contributes_location(node: &Node) -> bool {
+    node.span.line != 0 && !matches!(node.kind, kinds::DOCUMENT | "desc" | "desc_content")
 }
 
 /// `PropagateDescDomain` (`post_transforms/__init__.py:382-390`, priority
@@ -826,10 +851,18 @@ fn resolve_children(
     node: &mut Node,
     sources: &[String],
     path: &Path,
+    inherited: Location,
     out: &mut DocumentResolution,
 ) {
+    let location = if contributes_location(node) {
+        Some((node.span.source, node.span.line))
+    } else {
+        inherited
+    };
     for child in &mut node.children {
-        resolve_children(resolver, nitpick, docname, child, sources, path, out);
+        resolve_children(
+            resolver, nitpick, docname, child, sources, path, location, out,
+        );
     }
     if !node
         .children
@@ -845,7 +878,7 @@ fn resolve_children(
             continue;
         }
         node.children.extend(resolve_one(
-            resolver, nitpick, docname, child, sources, path, out,
+            resolver, nitpick, docname, child, sources, path, location, out,
         ));
     }
 }
@@ -859,17 +892,32 @@ fn resolve_one(
     node: Node,
     sources: &[String],
     doc_path: &Path,
+    inherited: Location,
     out: &mut DocumentResolution,
 ) -> Vec<Node> {
     let span = node.span;
-    // Warnings locate at the node's own source and stamped line (docutils'
-    // `(node.source, node.line)`), not the enclosing document's path.
-    let source_path = sources
-        .get(span.source as usize)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| doc_path.to_path_buf());
+    // Warnings locate the way `get_source_line` does: at the node's own
+    // `(source, line)` when it is stamped, else at the nearest stamped
+    // ancestor's (an unstamped node under an unstamped tree — a doc-field
+    // xref in a description directly under the document — has no location
+    // at all, and sphinx prints the bare `WARNING:`). Never the enclosing
+    // document's path for a node that came from an included file.
+    let location = if span.line != 0 {
+        Some((span.source, span.line))
+    } else {
+        inherited
+    };
+    let (source_path, line): (PathBuf, Option<usize>) = match location {
+        Some((source, line)) => (
+            sources
+                .get(source as usize)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| doc_path.to_path_buf()),
+            Some(line as usize),
+        ),
+        None => (PathBuf::new(), None),
+    };
     let path = source_path.as_path();
-    let line = span.line as usize;
     let refdomain = attr_str(&node, "refdomain").unwrap_or_default().to_string();
     let reftype = attr_str(&node, "reftype").unwrap_or_default().to_string();
     let reftarget = attr_str(&node, "reftarget").unwrap_or_default().to_string();
@@ -1023,7 +1071,7 @@ fn resolve_one(
                 out.warnings.push(
                     BuildWarning::new(
                         path.to_path_buf(),
-                        Some(line),
+                        line,
                         message,
                         WarningType::BrokenCrossReference,
                     )
@@ -1069,7 +1117,7 @@ fn resolve_one(
                 out.warnings.push(
                     BuildWarning::new(
                         path.to_path_buf(),
-                        Some(line),
+                        line,
                         message,
                         WarningType::BrokenCrossReference,
                     )
@@ -1108,7 +1156,7 @@ fn resolve_py(
     ctx: PyRefContext<'_>,
     children: XrefChildren,
     span: crate::doctree::Span,
-    line: usize,
+    line: Option<usize>,
     path: &Path,
     out: &mut DocumentResolution,
 ) -> Vec<Node> {
@@ -1132,7 +1180,7 @@ fn resolve_py(
             out.warnings.push(
                 BuildWarning::new(
                     path.to_path_buf(),
-                    Some(line),
+                    line,
                     message,
                     WarningType::BrokenCrossReference,
                 )
@@ -1190,7 +1238,7 @@ fn resolve_py(
         out.warnings.push(
             BuildWarning::new(
                 path.to_path_buf(),
-                Some(line),
+                line,
                 message,
                 WarningType::BrokenCrossReference,
             )
@@ -1219,7 +1267,7 @@ fn resolve_any_ref(
     program: Option<&str>,
     children: XrefChildren,
     span: crate::doctree::Span,
-    line: usize,
+    line: Option<usize>,
     path: &Path,
     out: &mut DocumentResolution,
 ) -> Vec<Node> {
@@ -1259,7 +1307,7 @@ fn resolve_any_ref(
             out.warnings.push(
                 BuildWarning::new(
                     path.to_path_buf(),
-                    Some(line),
+                    line,
                     format!(
                         "more than one target found for 'any' cross-reference {}: \
                          could be {candidates}",
@@ -1321,7 +1369,7 @@ fn resolve_any_ref(
         out.warnings.push(
             BuildWarning::new(
                 path.to_path_buf(),
-                Some(line),
+                line,
                 message,
                 WarningType::BrokenCrossReference,
             )
@@ -1345,7 +1393,7 @@ fn resolve_external(
     role_error: Option<&str>,
     contnode: Option<Node>,
     span: crate::doctree::Span,
-    line: usize,
+    line: Option<usize>,
     path: &Path,
     out: &mut DocumentResolution,
 ) -> Vec<Node> {
@@ -1471,7 +1519,7 @@ impl XrefChildren {
     /// returned None, as opposed to a Kept/builtin-silenced outcome, which
     /// keeps the plain contnode: the `'*'` condition's children when the
     /// node leads with a condition, else the contnode (`run()`, `:76-90`).
-    fn fallback(self, out: &mut DocumentResolution, line: usize, path: &Path) -> Vec<Node> {
+    fn fallback(self, out: &mut DocumentResolution, line: Option<usize>, path: &Path) -> Vec<Node> {
         if self.first_is_condition {
             if let Some(star) = self.star {
                 return star;
@@ -1479,7 +1527,7 @@ impl XrefChildren {
             out.warnings.push(
                 BuildWarning::new(
                     path.to_path_buf(),
-                    Some(line),
+                    line,
                     "Could not determine the fallback text for the cross-reference. \
                      Might be a bug."
                         .to_string(),
@@ -1494,12 +1542,17 @@ impl XrefChildren {
 }
 
 /// Turn intersphinx diagnostics into build warnings at the reference's line.
-fn report(out: &mut DocumentResolution, diagnostics: Vec<Diagnostic>, line: usize, path: &Path) {
+fn report(
+    out: &mut DocumentResolution,
+    diagnostics: Vec<Diagnostic>,
+    line: Option<usize>,
+    path: &Path,
+) {
     for diagnostic in diagnostics {
         out.warnings.push(
             BuildWarning::new(
                 path.to_path_buf(),
-                Some(line),
+                line,
                 diagnostic.message,
                 WarningType::BrokenCrossReference,
             )

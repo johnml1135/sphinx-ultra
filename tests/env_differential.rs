@@ -3534,3 +3534,251 @@ fn py_modindex_snapshot_matches_the_two_module_probe() {
     );
     assert_eq!(warnings, Vec::<String>::new());
 }
+
+// ---------------------------------------------------------------------------
+// Warning provenance for content that lives in an included file, and for
+// the xrefs the py directives synthesize (panel fix round B, cluster P).
+// ---------------------------------------------------------------------------
+
+/// A build over files written at their RELATIVE PATHS (so `.inc` members
+/// that are not documents can sit beside the `.rst` sources), returning
+/// the rendered warnings with the srcdir prefix collapsed the way the
+/// oracle spells them (`canon_scope8`): `index.rst:4: WARNING: ...`.
+fn tree_warnings(files: &[(&str, &str)], configure: &dyn Fn(&mut BuildConfig)) -> Vec<String> {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    for (relative, body) in files {
+        let path = source_dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let mut config = BuildConfig::default();
+    configure(&mut config);
+    let mut builder =
+        SphinxBuilder::new(config, source_dir.clone(), tmp.path().join("out")).unwrap();
+    let stats = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(builder.build())
+        .unwrap();
+    let root = source_dir.to_string_lossy().into_owned();
+    normalize_warnings(&stats.warning_details, &root)
+        .iter()
+        .map(|warning| canon_scope8(warning))
+        .collect()
+}
+
+fn nitpicky(config: &mut BuildConfig) {
+    config.nitpicky = true;
+}
+
+/// Sphinx locates a resolution warning with `location=node`, which goes
+/// through docutils' `get_source_line`: the node's own `(source, line)`
+/// when it has one. A signature annotation's `pending_xref` is built by
+/// the directive and inherits the `desc_signature`'s stamp, so the warning
+/// names the signature's OWN file and line — the included file's for a
+/// signature written inside an `.. include::`. Bytes probed on the pinned
+/// toolchain (scratchpad/B/probe_loc2.py, `annotations`).
+#[test]
+fn annotation_xref_warnings_locate_at_the_signature_in_its_own_file() {
+    let warnings = tree_warnings(
+        &[
+            (
+                "index.rst",
+                "Top\n===\n\n.. include:: inc.inc\n\n\
+                 .. py:function:: g(y: alsomissing) -> retmissing\n\n\
+                 .. py:data:: d\n   :type: typemissing\n",
+            ),
+            ("inc.inc", ".. py:function:: f(x: missingtype)\n"),
+        ],
+        &nitpicky,
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "inc.inc:1: WARNING: py:class reference target not found: missingtype [ref.class]",
+            "index.rst:6: WARNING: py:class reference target not found: alsomissing [ref.class]",
+            "index.rst:6: WARNING: py:class reference target not found: retmissing [ref.class]",
+            "index.rst:8: WARNING: py:class reference target not found: typemissing [ref.class]",
+        ]
+    );
+}
+
+/// The doc-field xrefs (`:param T x:`, `:rtype:`) are synthesized by
+/// `DocFieldTransformer` into nodes that carry NO provenance in docutils —
+/// and neither do the `desc`/`desc_content` above them — so
+/// `get_source_line` walks up to the enclosing section (its underline
+/// line), the `.. note::` directive line, or the list item, whichever is
+/// nearest; through an include it lands in the INCLUDER's section. An
+/// inline role written in a field body keeps its own line. Bytes probed on
+/// the pinned toolchain (scratchpad/B/probe_loc2.py, `docfields`).
+#[test]
+fn doc_field_xref_warnings_locate_at_the_nearest_stamped_ancestor() {
+    let warnings = tree_warnings(
+        &[
+            (
+                "index.rst",
+                "Top\n===\n\n.. include:: inc.inc\n\nSec2\n----\n\n\
+                 .. py:function:: g(y)\n\n\
+                 \x20  :param nosuch_doc y: d\n\
+                 \x20  :param k: see :py:class:`nosuch_inline`\n\
+                 \x20  :rtype: nosuch_rt\n\n\
+                 .. note::\n\n\
+                 \x20  .. py:function:: h(z)\n\n\
+                 \x20     :param nosuch_note z: q\n\n\
+                 - item\n\n\
+                 \x20 .. py:class:: C\n\n\
+                 \x20    .. py:method:: m(w)\n\n\
+                 \x20       :param nosuch_nested w: q\n",
+            ),
+            (
+                "inc.inc",
+                ".. py:function:: h0(z)\n\n   :param nosuch_inc z: q\n",
+            ),
+        ],
+        &nitpicky,
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "index.rst:2: WARNING: py:class reference target not found: nosuch_inc [ref.class]",
+            "index.rst:7: WARNING: py:class reference target not found: nosuch_doc [ref.class]",
+            "index.rst:12: WARNING: py:class reference target not found: nosuch_inline [ref.class]",
+            "index.rst:7: WARNING: py:class reference target not found: nosuch_rt [ref.class]",
+            "index.rst:15: WARNING: py:class reference target not found: nosuch_note [ref.class]",
+            "index.rst:21: WARNING: py:class reference target not found: nosuch_nested [ref.class]",
+        ]
+    );
+}
+
+/// With no stamped ancestor at all (a description directly under the
+/// document, whose `document` node has no `source`/`line` in docutils'
+/// sense), `get_node_location` returns None and sphinx prints the warning
+/// with NO location prefix. Probed (`nosection`).
+#[test]
+fn a_doc_field_xref_with_no_stamped_ancestor_warns_without_a_location() {
+    let warnings = tree_warnings(
+        &[(
+            "index.rst",
+            ".. py:function:: g(y)\n\n   :param nosuch_doc y: d\n",
+        )],
+        &nitpicky,
+    );
+    assert_eq!(
+        warnings,
+        vec!["WARNING: py:class reference target not found: nosuch_doc [ref.class]"]
+    );
+}
+
+/// The `[ref.python]` ambiguity warning is not nitpick-gated, so a default
+/// build exercises both locations too: a `.Dup` annotation (refspecific)
+/// at the signature line, a `:param Dup y:` field at the section
+/// underline. Probed (`ambig`).
+#[test]
+fn ambiguity_warnings_follow_the_same_locations_in_a_default_build() {
+    let warnings = tree_warnings(
+        &[(
+            "index.rst",
+            "Top\n===\n\n.. py:module:: a\n\n.. py:class:: Dup\n\n.. py:module:: b\n\n\
+             .. py:class:: Dup\n\n.. py:currentmodule:: None\n\nSec\n---\n\n\
+             .. py:function:: f(x: .Dup)\n\n   :param Dup y: thing\n",
+        )],
+        &|_| {},
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "index.rst:17: WARNING: more than one target found for cross-reference 'Dup': \
+             a.Dup, b.Dup [ref.python]",
+            "index.rst:15: WARNING: more than one target found for cross-reference 'Dup': \
+             a.Dup, b.Dup [ref.python]",
+        ]
+    );
+}
+
+/// `TocTree.parse_content` logs with `location=toctree` — the node, whose
+/// `source` is the included file's. Probed (`tocinc`).
+#[test]
+fn toctree_warnings_inside_an_included_file_name_that_file() {
+    let warnings = tree_warnings(
+        &[
+            ("index.rst", "Index\n=====\n\n.. include:: toc_part.inc\n"),
+            (
+                "toc_part.inc",
+                "Shared fragment.\n\n.. toctree::\n\n   nosuchdoc\n",
+            ),
+        ],
+        &|_| {},
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "toc_part.inc:3: WARNING: toctree contains reference to nonexisting document \
+             'nosuchdoc' [toc.not_readable]"
+        ]
+    );
+}
+
+/// The section-numbering warning is logged at the `toctree` node too
+/// (`location=toctreenode`, `collectors/toctree.py`). The includer sorts
+/// AFTER `index` here so that `index`'s numbered toctree claims `b` first
+/// and the spliced toctree inside `z` is the one that finds it already
+/// assigned — sphinx iterates `env.numbered_toctrees` in set order, so the
+/// message SET is not oracle-stable, but the location of this warning is
+/// fixed by the node's provenance.
+#[test]
+fn numbering_warnings_inside_an_included_file_name_that_file() {
+    let warnings = tree_warnings(
+        &[
+            (
+                "index.rst",
+                "Index\n=====\n\n.. toctree::\n   :numbered:\n\n   z\n   b\n",
+            ),
+            ("z.rst", "Z\n=\n\n.. include:: part.inc\n"),
+            ("b.rst", "B\n=\n\nbody\n"),
+            ("part.inc", "Frag.\n\n.. toctree::\n   :numbered:\n\n   b\n"),
+        ],
+        &|_| {},
+    );
+    let nested = "b is already assigned section numbers (nested numbered toctree?) [toc.secnum]";
+    assert_eq!(
+        warnings,
+        vec![
+            format!("index.rst:4: WARNING: {nested}"),
+            format!("part.inc:3: WARNING: {nested}"),
+        ]
+    );
+}
+
+/// Directive validation findings for included content name the included
+/// file at its own line (sphinx: `frag.inc:3: ERROR: Error in "image"
+/// directive: invalid option value ...`), never the includer paired with
+/// the fragment's line number — `index.rst:3` is a blank line here.
+#[test]
+fn validation_warnings_inside_an_included_file_name_that_file() {
+    let warnings = tree_warnings(
+        &[
+            (
+                "index.rst",
+                "Title\n=====\n\nParagraph one.\n\nParagraph two.\n\n.. include:: frag.inc\n",
+            ),
+            (
+                "frag.inc",
+                "Fragment.\n\n.. image:: x.png\n   :align: bogus\n",
+            ),
+        ],
+        &|_| {},
+    );
+    let alignment: Vec<&String> = warnings
+        .iter()
+        .filter(|warning| warning.contains("Invalid alignment: bogus"))
+        .collect();
+    assert_eq!(alignment.len(), 1, "{warnings:#?}");
+    assert!(
+        alignment[0].starts_with("frag.inc:3: WARNING: Invalid alignment: bogus"),
+        "{warnings:#?}"
+    );
+}

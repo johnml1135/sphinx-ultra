@@ -52,11 +52,23 @@ use super::PySigConfig;
 /// annotation xref (`_annotations.py:62-66`): the enclosing `py:module` /
 /// `py:class`, or Python `None` when unset — which docutils pformat renders
 /// as the `"True"` sentinel (same convention as the inline parser's role
-/// xrefs, src/rst/inline.rs).
+/// xrefs, src/rst/inline.rs) — plus the provenance the built nodes carry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PyRefContext {
     pub module: Option<String>,
     pub class_: Option<String>,
+    /// The span every node this context builds is stamped with: the
+    /// enclosing `desc_signature`'s, i.e. the directive's own `(source,
+    /// line)`. Sphinx gives annotation xrefs no provenance of their own,
+    /// and a resolution warning on one then locates through docutils'
+    /// `get_source_line` ancestor walk — which stops at the signature,
+    /// because `ObjectDescription.run` calls `set_source_info(signode)`.
+    /// Stamping the signature's span directly yields the same location
+    /// without depending on the walk, and keeps the include case exact
+    /// (an annotation inside an included file names THAT file). A
+    /// `Span::ZERO` (line 0) means "unstamped", which the resolver treats
+    /// as "locate at the nearest stamped ancestor".
+    pub span: Span,
 }
 
 /// Port of `parse_reftarget` (`_annotations.py:30-55`), `suppress_prefix`
@@ -123,7 +135,7 @@ fn type_to_xref_impl(
 ) -> Node {
     let (reftype, target, title, refspecific) = parse_reftarget_impl(target, suppress_prefix);
 
-    let mut node = Node::elem("pending_xref", Span::ZERO);
+    let mut node = Node::elem("pending_xref", ctx.span);
     // Context attrs are Python None outside a py scope; pformat renders
     // None as the "True" sentinel (same convention as src/rst/inline.rs).
     node.set(
@@ -145,13 +157,13 @@ fn type_to_xref_impl(
         // `shortname = title.split('.')[-1]` (`_annotations.py:76-80`).
         let shortname = last_component(&title).to_string();
         for (condition, text) in [("resolved", shortname), ("*", title)] {
-            let mut cond = Node::elem("pending_xref_condition", Span::ZERO);
+            let mut cond = Node::elem("pending_xref_condition", ctx.span);
             cond.set("condition", AttrValue::Str(condition.to_string()));
-            cond.children.push(Node::text_node(text, Span::ZERO));
+            cond.children.push(Node::text_node(text, ctx.span));
             node.children.push(cond);
         }
     } else {
-        node.children.push(Node::text_node(title, Span::ZERO));
+        node.children.push(Node::text_node(title, ctx.span));
     }
     node
 }
@@ -1215,6 +1227,7 @@ mod tests {
         let ctx = PyRefContext {
             module: Some("mymod".to_string()),
             class_: Some("C".to_string()),
+            span: Span::ZERO,
         };
         assert_eq!(
             type_to_xref("int", &ctx, &PySigConfig::default()).pformat(),

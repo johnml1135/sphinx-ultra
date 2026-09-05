@@ -463,17 +463,19 @@ impl SphinxBuilder {
 
         // Keep documents in discovery order (the merge phase iterates a
         // docname-sorted view of its own): the write and validation phases
-        // below produce warnings in this order, which is user-visible.
-        let processed_docs: Vec<Document> = read_results
+        // below produce warnings in this order, which is user-visible. The
+        // doctrees ride along for their source tables, which the
+        // validation pass needs to spell an included file's path.
+        let (processed_docs, doctrees): (Vec<Document>, Vec<Doctree>) = read_results
             .into_iter()
-            .map(|result| result.document)
-            .collect();
+            .map(|result| (result.document, result.doctree))
+            .unzip();
 
         self.write_phase(&processed_docs);
 
         // Directive/role validation runs in every build unless disabled
         if self.config.validate_directives {
-            self.validate_directives_and_roles(&processed_docs);
+            self.validate_directives_and_roles(&processed_docs, &doctrees);
         }
 
         // Generate cross-references and indices
@@ -1116,8 +1118,9 @@ impl SphinxBuilder {
     /// interleaved by position — the same cross-category simplification
     /// `std_domain::process_doc` documents.
     ///
-    /// `doctree` supplies the source table: a log warning raised inside an
-    /// included file renders that file's path, not the document's.
+    /// `doctree` supplies the source table: a warning raised inside an
+    /// included file — a toctree's `location=toctree` or a log warning's
+    /// `location=node` — renders that file's path, not the document's.
     fn report_parse_warnings(&self, document: &Document, doctree: &Doctree) {
         let mut ordered: Vec<BuildWarning> = Vec::new();
         for toctree in &document.toctrees {
@@ -1129,9 +1132,14 @@ impl SphinxBuilder {
                     }
                     ToctreeWarningKind::DuplicateEntry => WarningType::Other,
                 };
+                let source_path = doctree
+                    .sources
+                    .get(warning.source as usize)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| document.source_path.clone());
                 ordered.push(
                     BuildWarning::new(
-                        document.source_path.clone(),
+                        source_path,
                         Some(warning.line as usize),
                         warning.message.clone(),
                         warning_type,
@@ -1393,23 +1401,32 @@ impl SphinxBuilder {
     }
 
     /// Surface one numbering diagnostic at the location Sphinx logs it —
-    /// the source line of the `toctree` node it names, which the parse
-    /// record for that document's Nth toctree carries.
+    /// the `(source, line)` of the `toctree` node it names
+    /// (`location=toctreenode`), which the parse record for that
+    /// document's Nth toctree carries; a toctree spliced in from an
+    /// included file names that file through the doctree's source table.
     fn report_numbering_warning(
         &self,
         warning: &env_numbers::NumberingWarning,
         results: &[ReadResult],
     ) {
-        let document = results
+        let result = results
             .iter()
-            .find(|result| result.docname == warning.docname)
-            .map(|result| &result.document);
-        let source = document
-            .map(|document| document.source_path.clone())
+            .find(|result| result.docname == warning.docname);
+        let document = result.map(|result| &result.document);
+        let toctree = document.and_then(|document| document.toctrees.get(warning.toctree_index));
+        let source = result
+            .and_then(|result| {
+                let toctree = toctree?;
+                result
+                    .doctree
+                    .sources
+                    .get(toctree.source as usize)
+                    .map(PathBuf::from)
+            })
+            .or_else(|| document.map(|document| document.source_path.clone()))
             .unwrap_or_else(|| PathBuf::from(&warning.docname));
-        let line = document
-            .and_then(|document| document.toctrees.get(warning.toctree_index))
-            .map(|toctree| toctree.line as usize);
+        let line = toctree.map(|toctree| toctree.line as usize);
         self.warnings.lock().unwrap().push(
             BuildWarning::new(
                 source,
@@ -1633,16 +1650,18 @@ impl SphinxBuilder {
     /// `Unknown` results stay silent — the built-in validators cover a
     /// fraction of real Sphinx, and reporting the rest would drown every
     /// real project in noise.
-    fn validate_directives_and_roles(&self, processed_docs: &[Document]) {
+    fn validate_directives_and_roles(&self, processed_docs: &[Document], doctrees: &[Doctree]) {
         use crate::directives::validation::{
             DirectiveValidationResult, DirectiveValidationSystem, ParsedDirective, ParsedRole,
             RoleValidationResult, SourceLocation,
         };
         use crate::document::DocumentContent;
 
+        debug_assert_eq!(processed_docs.len(), doctrees.len());
         let results: Vec<(Vec<BuildWarning>, usize)> = processed_docs
             .par_iter()
-            .filter_map(|doc| {
+            .zip(doctrees.par_iter())
+            .filter_map(|(doc, doctree)| {
                 if !matches!(&doc.content, DocumentContent::RestructuredText(_)) {
                     return None;
                 }
@@ -1653,8 +1672,17 @@ impl SphinxBuilder {
                 // gets its own (cheap) system instance for the parallel pass.
                 let mut system = DirectiveValidationSystem::new();
                 // Since wave 3 the feed comes from the parse-time records
-                // (M1-scanner-compatible tuples), not a raw re-scan.
-                let file = doc.source_path.display().to_string();
+                // (M1-scanner-compatible tuples), not a raw re-scan. Each
+                // record's `line` is numbered within its own source, so the
+                // path comes from the doctree's source table: a directive
+                // inside an included file is reported against that file.
+                let file_of = |source: u16| -> String {
+                    doctree
+                        .sources
+                        .get(source as usize)
+                        .cloned()
+                        .unwrap_or_else(|| doc.source_path.display().to_string())
+                };
                 let directives: Vec<ParsedDirective> = doc
                     .directive_records
                     .iter()
@@ -1664,7 +1692,7 @@ impl SphinxBuilder {
                         options: r.options.iter().cloned().collect(),
                         content: r.content.clone(),
                         location: SourceLocation {
-                            file: file.clone(),
+                            file: file_of(r.source),
                             line: r.line as usize,
                             column: 0,
                         },
@@ -1678,7 +1706,7 @@ impl SphinxBuilder {
                         target: r.target.clone(),
                         display_text: r.display.clone(),
                         location: SourceLocation {
-                            file: file.clone(),
+                            file: file_of(r.source),
                             line: r.line as usize,
                             column: 0,
                         },
@@ -1692,7 +1720,7 @@ impl SphinxBuilder {
                         DirectiveValidationResult::Warning(msg)
                         | DirectiveValidationResult::Error(msg) => {
                             warnings.push(BuildWarning::new(
-                                doc.source_path.clone(),
+                                PathBuf::from(&directive.location.file),
                                 Some(directive.location.line),
                                 msg,
                                 crate::error::WarningType::Other,
@@ -1707,7 +1735,7 @@ impl SphinxBuilder {
                         RoleValidationResult::Unknown => unknown += 1,
                         RoleValidationResult::Warning(msg) | RoleValidationResult::Error(msg) => {
                             warnings.push(BuildWarning::new(
-                                doc.source_path.clone(),
+                                PathBuf::from(&role.location.file),
                                 Some(role.location.line),
                                 msg,
                                 crate::error::WarningType::Other,

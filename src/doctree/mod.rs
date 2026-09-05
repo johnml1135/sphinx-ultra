@@ -36,7 +36,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// is stamped with the first line of its span, except a `section`, which
 /// is stamped one past that (docutils creates a section only once the
 /// state machine has consumed the title's underline).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Default` is [`Span::ZERO`]: source 0, line 0 (unknown), empty range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub source: u16,
     pub line: u32,

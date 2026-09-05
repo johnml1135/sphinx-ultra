@@ -80,24 +80,36 @@ impl Default for ParseOptions {
 /// raw string options) — the feed for `DirectiveValidationSystem`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DirectiveRecord {
+    /// Source-table index of the marker line (`Doctree::sources`): a
+    /// directive inside an included file must be reported against THAT
+    /// file, since `line` is numbered within it. Deliberately not
+    /// `#[serde(default)]` (cache-shape rule, see
+    /// [`RegistryExport::program_options`]): a pre-provenance document
+    /// cache entry decoding with source 0 would pair every included
+    /// directive's line with the includer's path again.
+    pub source: u16,
     pub name: String,
     pub arguments: Vec<String>,
     pub options: Vec<(String, String)>,
     pub content: String,
-    /// 1-based marker line.
+    /// 1-based marker line, within `source`.
     pub line: u32,
 }
 
 /// A role occurrence (sphinx mode): validation + nitpicky feed.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RoleRecord {
+    /// Source-table index of the enclosing text block's first line — see
+    /// [`DirectiveRecord::source`], same cache-shape rule.
+    pub source: u16,
     /// Final role-name segment, lowercased (`:py:func:` records `func`),
     /// with the full as-written name kept alongside.
     pub name: String,
     pub full_name: String,
     pub target: String,
     pub display: Option<String>,
-    /// 1-based line of the enclosing text block's first line.
+    /// 1-based line of the enclosing text block's first line, within
+    /// `source`.
     pub line: u32,
 }
 
@@ -106,6 +118,11 @@ pub struct RoleRecord {
 pub struct ToctreeRecord {
     pub glob: bool,
     pub entries: Vec<ToctreeEntryRecord>,
+    /// Source-table index of the `.. toctree::` line — the section-
+    /// numbering warning (`location=toctreenode`) names this source's
+    /// path. Not `#[serde(default)]` (see [`DirectiveRecord::source`]).
+    pub source: u16,
+    /// 1-based line of the directive, within `source`.
     pub line: u32,
     /// Diagnostics `TocTree.parse_content` produced while resolving this
     /// directive's entries. They ride the record (and therefore the
@@ -465,5 +482,50 @@ mod tests {
                 "a record missing its source field must fail to decode: {stale}"
             );
         }
+    }
+
+    /// The provenance fields panel fix round B added to the DOCUMENT-side
+    /// records (`DirectiveRecord`, `RoleRecord`, `ToctreeRecord` and the
+    /// `ToctreeWarning` it carries) follow the same rule. These ride the
+    /// document cache (`src/cache.rs`, serde_json): a pre-field entry
+    /// decoding with `source: 0` would silently report every directive,
+    /// role and toctree inside an included file against the includer's
+    /// path again — the exact regression the fields exist to close.
+    ///
+    /// Each stale blob is the CURRENT complete shape minus `source` and
+    /// nothing else, so the decode can fail for no other reason; the error
+    /// text is asserted to name that field.
+    #[test]
+    fn document_records_written_before_their_source_field_existed_fail_to_decode() {
+        fn must_miss<T: serde::de::DeserializeOwned>(complete: &str, stale: &str) {
+            serde_json::from_str::<T>(complete).expect("the current shape decodes");
+            let error = serde_json::from_str::<T>(stale)
+                .err()
+                .unwrap_or_else(|| panic!("a stale record decoded: {stale}"))
+                .to_string();
+            assert!(
+                error.contains("missing field `source`"),
+                "the decode must fail on the missing source field, not elsewhere: \
+                 {error} ({stale})"
+            );
+        }
+
+        must_miss::<DirectiveRecord>(
+            r#"{"source":1,"name":"note","arguments":[],"options":[],"content":"x","line":3}"#,
+            r#"{"name":"note","arguments":[],"options":[],"content":"x","line":3}"#,
+        );
+        must_miss::<RoleRecord>(
+            r#"{"source":1,"name":"ref","full_name":"ref","target":"t","display":null,
+                "line":3}"#,
+            r#"{"name":"ref","full_name":"ref","target":"t","display":null,"line":3}"#,
+        );
+        must_miss::<crate::env::toctree::ToctreeWarning>(
+            r#"{"source":1,"line":3,"message":"m","category":null,"kind":"MissingDocument"}"#,
+            r#"{"line":3,"message":"m","category":null,"kind":"MissingDocument"}"#,
+        );
+        must_miss::<ToctreeRecord>(
+            r#"{"glob":false,"entries":[],"source":1,"line":3,"warnings":[]}"#,
+            r#"{"glob":false,"entries":[],"line":3,"warnings":[]}"#,
+        );
     }
 }

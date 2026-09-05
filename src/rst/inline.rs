@@ -1386,6 +1386,7 @@ impl<'a> Inliner<'a> {
             };
             let last_segment = lower.rsplit(':').next().unwrap_or(&lower).to_string();
             self.roles.push(super::RoleRecord {
+                source: self.span.source,
                 name: last_segment,
                 full_name: given_name.to_string(),
                 target,
