@@ -512,4 +512,55 @@ mod path_tests {
         assert_eq!(path2doc(Path::new("/src/notes.md"), srcdir), None);
         assert_eq!(path2doc(Path::new("/elsewhere/part.rst"), srcdir), None);
     }
+    /// Sphinx `.resolve()`s the joined path, so `..` walks up from a
+    /// symlink's TARGET, not from the link's own parent. The lexical
+    /// collapse [`relfn2path`] keeps for §Scope-8 display spellings gets
+    /// this wrong, which is why the read goes through
+    /// [`relfn2path_io`].
+    ///
+    // oracle: sphinx/environment/__init__.py:475
+    //   `abs_fn = self.srcdir.joinpath(doc_dir, file_name).resolve()`
+    //   (probed: with BASE/src/link -> BASE/ext, a literalinclude of
+    //   `link/../secret.txt` reads BASE/ext/../secret.txt = BASE/secret.txt,
+    //   not BASE/src/secret.txt).
+    #[test]
+    fn relfn2path_io_walks_up_from_the_symlink_target() {
+        let base = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(base.path()).unwrap();
+        let srcdir = base.join("src");
+        std::fs::create_dir_all(srcdir.join("real")).unwrap();
+        std::fs::create_dir_all(base.join("ext/inner")).unwrap();
+        std::fs::write(base.join("ext/sibling.txt"), "OUTSIDE\n").unwrap();
+        std::fs::write(srcdir.join("sibling.txt"), "INSIDE\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(base.join("ext/inner"), srcdir.join("link")).unwrap();
+
+        // Lexically, `link/../sibling.txt` is `sibling.txt` under srcdir.
+        assert_eq!(
+            relfn2path("link/../sibling.txt", "index", &srcdir),
+            srcdir.join("sibling.txt")
+        );
+        // Resolved, `link` is `<base>/ext/inner`, so `..` lands in
+        // `<base>/ext` — a different file entirely.
+        #[cfg(unix)]
+        assert_eq!(
+            relfn2path_io("link/../sibling.txt", "index", &srcdir),
+            base.join("ext/sibling.txt")
+        );
+
+        // A path with no symlink in it is unchanged by the resolve, and a
+        // target that does not exist yet still normalizes.
+        assert_eq!(
+            relfn2path_io("real/../sibling.txt", "index", &srcdir),
+            srcdir.join("sibling.txt")
+        );
+        assert_eq!(
+            relfn2path_io("real/../nothere.txt", "index", &srcdir),
+            srcdir.join("nothere.txt")
+        );
+        assert_eq!(
+            relfn2path_io("/sibling.txt", "sub/page", &srcdir),
+            srcdir.join("sibling.txt")
+        );
+    }
 }

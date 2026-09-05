@@ -3925,7 +3925,8 @@ impl BlockParser {
     /// (always true — this crate has no docutils settings surface).
     fn run_literalinclude(&mut self, input: DirectiveInput<'_>, out: &mut Vec<Node>) {
         let path_arg = input.arguments.first().cloned().unwrap_or_default();
-        let (rel, filename) = self.literalinclude_resolve(&path_arg, input.span.source);
+        let (rel, filename, display_path) =
+            self.literalinclude_resolve(&path_arg, input.span.source);
         // `env.note_dependency(rel_filename)` runs BEFORE the file is
         // read (`code.py:463-464`) — an unreadable file still records,
         // and so does an option-conflict error (the reader is constructed
@@ -4017,7 +4018,7 @@ impl BlockParser {
         // The `source` ATTRIBUTE is the included file's absolute path
         // (what pformat shows, `code.py:469`); the node's span keeps the
         // rst file + directive line (`set_source_info`).
-        lb.set("source", AttrValue::Str(filename.display().to_string()));
+        lb.set("source", AttrValue::Str(display_path.display().to_string()));
         lb.set("xml:space", AttrValue::Str("preserve".to_string()));
         if !text.is_empty() {
             lb.children.push(Node::text_node(text, input.span));
@@ -4120,17 +4121,21 @@ impl BlockParser {
     /// attached (`code.py:454-456`, `:463`), else the containing-file
     /// fallback (a parse without an environment — the directive is
     /// sphinx-registered only, but the parser stays total). Returns
-    /// `(rel_filename, io path)` — the srcdir-relative half is what
-    /// `note_dependency` records.
+    /// `(rel_filename, io path, display path)`: `note_dependency` records
+    /// the srcdir-relative half, the reader OPENS the resolved path
+    /// ([`crate::utils::relfn2path_io`] — symlinks before `..`, like
+    /// sphinx's `.resolve()`), and the `literal_block` `source` attribute
+    /// keeps the lexical spelling §Scope-8 fixes.
     fn literalinclude_resolve(
         &self,
         path_arg: &str,
         at_source: u16,
-    ) -> (String, std::path::PathBuf) {
+    ) -> (String, std::path::PathBuf, std::path::PathBuf) {
         if self.sphinx {
             if let Some(srcdir) = &self.srcdir {
                 return (
                     crate::utils::relfn2path_rel(path_arg, &self.docname),
+                    crate::utils::relfn2path_io(path_arg, &self.docname, srcdir),
                     crate::utils::relfn2path(path_arg, &self.docname, srcdir),
                 );
             }
@@ -4150,7 +4155,8 @@ impl BlockParser {
         } else {
             crate::utils::normalize_dot_segments(&joined)
         };
-        (display.clone(), std::path::PathBuf::from(display))
+        let path = std::path::PathBuf::from(&display);
+        (display, path.clone(), path)
     }
 
     /// The converted directive options, retyped for the reader.
@@ -11220,12 +11226,9 @@ impl LiteralIncludeReader {
     /// `read_file` (`code.py:221-240`): open + decode + expandtabs +
     /// `splitlines(True)`, with both probe-pinned error texts.
     fn read_file(&self, filename: &std::path::Path) -> Result<Vec<String>, String> {
-        // Sphinx opens the `.resolve()`d path
-        // (`environment/__init__.py:466`/`:475`), so an argument that
-        // walks out of a symlinked directory reads the link TARGET's
-        // neighbour, not the link's. Only the open uses the resolved
-        // spelling; every reported path stays as §Scope-8 fixed it.
-        let bytes = std::fs::read(crate::utils::resolve_path(filename)).map_err(|_| {
+        // `filename` arrived already `.resolve()`d — see
+        // [`Self::literalinclude_resolve`].
+        let bytes = std::fs::read(filename).map_err(|_| {
             format!(
                 "Include file '{}' not found or reading it failed",
                 filename.display()
@@ -16588,6 +16591,85 @@ mod include_tests {
         assert!(pf.contains("a\tb"), "tabs must survive: {pf}");
     }
 
+    /// CPython converts `expandtabs`'s tabsize to a C `int` first, so a
+    /// value past `i32::MAX` is an `OverflowError` rather than a
+    /// multi-gigabyte pad. Every include mode reaches `expandtabs`, and
+    /// the check must return PROMPTLY — an unbounded loop pushing one
+    /// space at a time made the build effectively non-terminating.
+    ///
+    // oracle (scratchpad A/tw.py, pinned toolchain):
+    //   'ab'.expandtabs(2**31)   -> OverflowError: Python int too large
+    //                               to convert to C int  (no tab needed)
+    //   'a\tb'.expandtabs(2**31-1) and .expandtabs(-2**31) succeed
+    //   `.. literalinclude:: t.txt` + `:tab-width: 2147483648` ->
+    //     "index.rst:1: WARNING: Python int too large to convert to C int"
+    //   `.. include:: t.txt` + the same option -> sphinx ABORTS with the
+    //     uncaught OverflowError, so our SEVERE is a better-than-sphinx,
+    //     unpinnable divergence.
+    #[test]
+    fn a_huge_tab_width_is_an_overflow_error_not_a_hang() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "a\tb\n");
+        for options in [
+            "   :tab-width: 2147483648\n",
+            "   :literal:\n   :tab-width: 2147483648\n",
+            "   :code:\n   :tab-width: 9223372036854775807\n",
+            "   :tab-width: -2147483649\n",
+        ] {
+            let tree = parse_sphinx(
+                tmp.path(),
+                "main",
+                &format!(".. include:: inc.rst\n{options}"),
+            );
+            let msgs = messages_of(&tree);
+            assert_eq!(msgs.len(), 1, "{options}: {msgs:?}");
+            assert_eq!(msgs[0].0, 4, "SEVERE");
+            assert_eq!(
+                msgs[0].3,
+                "Problem with \"include\" directive:\nPython int too large to convert to C int"
+            );
+        }
+        // The largest accepted magnitude still parses: the range check
+        // happens before any padding, and a negative width removes tabs.
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :tab-width: -2147483648\n",
+        );
+        assert!(messages_of(&tree).is_empty());
+    }
+
+    /// End to end: the file OPENED is the one sphinx's `.resolve()`
+    /// names. `link` points outside the srcdir, so `link/../shared.txt`
+    /// is the link target's neighbour, not the srcdir's.
+    ///
+    // oracle: sphinx probe (scratchpad probe4 in the panel record) —
+    // BASE/secret.txt OUTSIDE, BASE/src/secret.txt INSIDE, BASE/src/link
+    // -> BASE/ext; `.. literalinclude:: link/../secret.txt` renders the
+    // OUTSIDE content.
+    #[cfg(unix)]
+    #[test]
+    fn an_include_through_a_symlink_reads_the_targets_neighbour() {
+        let base = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(base.path()).unwrap();
+        let srcdir = base.join("src");
+        std::fs::create_dir_all(base.join("ext/inner")).unwrap();
+        std::fs::create_dir_all(&srcdir).unwrap();
+        write(&srcdir, "shared.txt", "INSIDE\n");
+        std::fs::write(base.join("ext/shared.txt"), "OUTSIDE\n").unwrap();
+        std::os::unix::fs::symlink(base.join("ext/inner"), srcdir.join("link")).unwrap();
+
+        let tree = parse_sphinx(&srcdir, "main", ".. include:: link/../shared.txt\n");
+        assert_eq!(paragraphs_of(&tree), vec!["OUTSIDE".to_string()]);
+        // literalinclude resolves through the same rule.
+        let tree = parse_sphinx(&srcdir, "main", ".. literalinclude:: link/../shared.txt\n");
+        assert!(
+            tree.root.pformat().contains("OUTSIDE"),
+            "{}",
+            tree.root.pformat()
+        );
+    }
+
     // ---- row 2: path resolution (§Scope-2a) --------------------------
 
     #[test]
@@ -16751,6 +16833,53 @@ mod include_tests {
             "Problem with \"include\" directive:\nUnicodeDecodeError: 'utf-8' codec can't \
              decode byte 0xe9 in position 3: invalid continuation byte"
         );
+    }
+
+    /// No `:encoding:` option means `settings.input_encoding`, and the two
+    /// venues set it differently: sphinx overwrites it with
+    /// `config.source_encoding` (default `'utf-8-sig'`, which STRIPS a
+    /// BOM), while bare docutils leaves it at docutils' own `'utf-8'`
+    /// default and the BOM survives as U+FEFF. A surviving BOM also
+    /// disables the first construct — `\u{feff}.. note::` is not explicit
+    /// markup.
+    ///
+    // oracle (scratchpad A/encprobe.py, pinned toolchain):
+    //   get_default_settings(Parser).input_encoding == 'utf-8'
+    //   docutils publish_string of `.. include:: bom.txt` (bom.txt =
+    //     EF BB BF + '.. note::\n\n   Hi from include\n') ->
+    //     '<paragraph>\n        \ufeff.. note:\n    <literal_block ...'
+    //   sphinx dummy build of the same input -> '<note>\n <paragraph>\n
+    //     Hi from include\n' (no BOM anywhere)
+    #[test]
+    fn the_default_include_encoding_strips_a_bom_in_sphinx_mode_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("bom.txt"),
+            b"\xef\xbb\xbf.. note::\n\n   Hi from include\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("bom2.txt"), b"\xef\xbb\xbfhello bom\n").unwrap();
+
+        // Sphinx mode: the BOM is gone, so the directive fires.
+        let pf = parse_sphinx(tmp.path(), "main", ".. include:: bom.txt\n")
+            .root
+            .pformat();
+        assert!(pf.contains("<note>"), "must strip the BOM: {pf}");
+        assert!(!pf.contains('\u{feff}'), "{pf}");
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: bom2.txt\n");
+        assert_eq!(paragraphs_of(&tree), vec!["hello bom".to_string()]);
+
+        // Docutils mode: the BOM survives, exactly as bare docutils does.
+        let tree = parse_docutils(&tmp.path().join("main.rst"), ".. include:: bom2.txt\n");
+        assert_eq!(paragraphs_of(&tree), vec!["\u{feff}hello bom".to_string()]);
+
+        // An explicit `:encoding:` still wins over either default.
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: bom2.txt\n   :encoding: utf-8\n",
+        );
+        assert_eq!(paragraphs_of(&tree), vec!["\u{feff}hello bom".to_string()]);
     }
 
     #[test]
@@ -17278,6 +17407,55 @@ mod include_tests {
         .pformat();
         assert!(
             pf.contains("<inline classes=\"ln\">\n            1 \n        alpha\n"),
+            "{pf}"
+        );
+    }
+
+    /// The number column is sized from `len(text.splitlines())` AFTER the
+    /// single trailing newline is removed (`misc.py:175-176`), not from
+    /// the raw line count. A file whose last line is blank therefore
+    /// counts one fewer — and at a digit boundary that is a whole space of
+    /// padding.
+    ///
+    // oracle (scratchpad A/nlprobe.py, sphinx 9.1.0 dummy build):
+    //   nine.txt = '1\n2\n3\n4\n5\n6\n7\n8\n\n' -> `1 ` .. `9 ` (width 1)
+    //   ten.txt  = '1\n..\n9\n\n'                  -> ` 1 ` .. `10 ` (width 2)
+    #[test]
+    fn literal_number_lines_width_drops_the_trailing_blank_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "nine.txt", "1\n2\n3\n4\n5\n6\n7\n8\n\n");
+        let pf = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: nine.txt\n   :literal:\n   :number-lines:\n",
+        )
+        .root
+        .pformat();
+        assert!(
+            pf.contains("<inline classes=\"ln\">\n            1 \n        1\n"),
+            "width must be 1: {pf}"
+        );
+        assert!(
+            pf.ends_with("<inline classes=\"ln\">\n            9 \n"),
+            "{pf}"
+        );
+        assert!(!pf.contains("             1 "), "padded to width 2: {pf}");
+
+        // One more content line crosses the boundary: lastline is 10.
+        write(tmp.path(), "ten.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n\n");
+        let pf = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: ten.txt\n   :literal:\n   :number-lines:\n",
+        )
+        .root
+        .pformat();
+        assert!(
+            pf.contains("<inline classes=\"ln\">\n             1 \n        1\n"),
+            "width must be 2: {pf}"
+        );
+        assert!(
+            pf.ends_with("<inline classes=\"ln\">\n            10 \n"),
             "{pf}"
         );
     }
@@ -18471,6 +18649,16 @@ mod literalinclude_tests {
         std::fs::write(dir.join(name), content).unwrap();
     }
 
+    /// The srcdir as the READER spells it. Sphinx opens (and reports) the
+    /// `.resolve()`d path (`environment/__init__.py:475`), so every path
+    /// inside a reader message — and the `:diff:` header, which the
+    /// reader builds — carries symlinks already followed. On macOS the
+    /// system temp dir is itself a symlink, which is what makes the
+    /// difference visible here.
+    fn resolved(dir: &Path) -> String {
+        std::fs::canonicalize(dir).unwrap().display().to_string()
+    }
+
     /// Sphinx-mode parse of `main` as `main.rst` inside a srcdir holding
     /// the fixture module.
     fn parse(srcdir: &Path, main: &str) -> ParseOutput {
@@ -18777,6 +18965,7 @@ mod literalinclude_tests {
              \x20  :diff: example_old.py\n",
         );
         let p = tmp.path().display();
+        let r = resolved(tmp.path());
         let node = &output.doctree.root.children[0];
         assert_eq!(node.kind, kinds::LITERAL_BLOCK);
         assert_eq!(
@@ -18790,7 +18979,7 @@ mod literalinclude_tests {
         let text = node.children[0].astext();
         assert!(
             text.starts_with(&format!(
-                "--- {p}/example_old.py\n+++ {p}/example.py\n@@ -1,7 +1,21 @@\n"
+                "--- {r}/example_old.py\n+++ {r}/example.py\n@@ -1,7 +1,21 @@\n"
             )),
             "{text}"
         );
@@ -18879,6 +19068,7 @@ mod literalinclude_tests {
             "para\n\n.. literalinclude:: example.py\n\x20  :lines: 99\n",
         );
         let p = tmp.path().display();
+        let r = resolved(tmp.path());
         assert_eq!(output.registry.log_warnings.len(), 1);
         assert_eq!(
             output.registry.log_warnings[0].message,
@@ -18894,7 +19084,7 @@ mod literalinclude_tests {
                 format!("{p}/main.rst"),
                 format!(
                     "Line spec '99': no lines pulled from include file \
-                     _StrPath('{p}/example.py')"
+                     _StrPath('{r}/example.py')"
                 )
             )
         );
@@ -18976,6 +19166,26 @@ mod literalinclude_tests {
     /// Every reader error is ONE reporter warning at the directive line
     /// with the error text as the message — no literal rawsource child
     /// (`reporter.warning(exc, line=...)`, not a directive error).
+    /// `LiteralInclude.run`'s `except Exception` (`code.py:505`) turns
+    /// the same OverflowError into one directive warning — here sphinx and
+    /// the port agree exactly.
+    ///
+    // oracle (scratchpad A/tw.py): `.. literalinclude:: t.txt` +
+    // `:tab-width: 2147483648` -> "index.rst:1: WARNING: Python int too
+    // large to convert to C int [docutils]".
+    #[test]
+    fn a_huge_tab_width_becomes_the_readers_overflow_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("t.txt"), "a\tb\n").unwrap();
+        let output = parse(
+            tmp.path(),
+            ".. literalinclude:: t.txt\n   :tab-width: 2147483648\n",
+        );
+        let msgs = messages_of(&output);
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert_eq!(msgs[0].3, "Python int too large to convert to C int");
+    }
+
     #[test]
     fn reader_errors_funnel_into_one_reporter_warning() {
         let tmp = tempfile::tempdir().unwrap();
@@ -18985,7 +19195,7 @@ mod literalinclude_tests {
             "x = \"\"\"abc\ndef f():\n    pass\n",
         )
         .unwrap();
-        let p = tmp.path().display().to_string();
+        let p = resolved(tmp.path());
         for (main, line, message) in [
             (
                 "c\n\n.. literalinclude:: nothere.py\n".to_string(),
