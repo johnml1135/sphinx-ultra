@@ -70,7 +70,7 @@ everything forward is [ROADMAP.md](ROADMAP.md).
     green where `sphinx-build` fails. The glossary diagnostics above take
     the same channel.
   Evidence: the environment oracle grew to 28 projects / 83 documents and
-  the read-phase doctree oracle to 453 cases, both at zero divergence
+  the read-phase doctree oracle to 458 cases, both at zero divergence
   against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
   against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
   mismatches).
@@ -89,8 +89,10 @@ everything forward is [ROADMAP.md](ROADMAP.md).
   of `include` and `literalinclude`. A non-UTF-8 value prints Sphinx's
   deprecation warning byte-for-byte (`Support for source encodings other
   than UTF-8 is deprecated and will be removed in Sphinx 10. …`); a codec
-  this crate cannot decode earns one additional notice, and included files
-  are read as `utf-8-sig`.
+  this crate cannot decode earns one additional notice. The key governs the
+  file-inserting directives **only**: this crate still decodes its own
+  `.rst` sources as UTF-8, where Sphinx hands `source_encoding` to docutils
+  as `settings.input_encoding` for the document read as well.
 - `maximum_signature_line_length` and `python_maximum_signature_line_length`
   are type-checked the way Sphinx's `check_confval_types` checks them.
   `-D maximum_signature_line_length=20` — which Sphinx keeps as the
@@ -313,13 +315,55 @@ surface. The binary's CLI is unaffected.
 
 ### Fixed
 
+- **A huge `:tab-width:` on an `include` reported the wrong error first (M2
+  wave 4.5, panel fix round C).** The C-int range check that keeps an
+  out-of-range `:tab-width:` from hanging the parser ran before the file
+  was even opened, so `.. include:: missing.rst` with
+  `:tab-width: 2147483648` reported the overflow where docutils reports the
+  missing file. docutils reaches `expandtabs` only after the read and the
+  clip succeed — behind `tab_width >= 0` in `:literal:`/`:code:` mode, and
+  per line of `string2lines` in insert mode, which never expands an empty
+  file at all. The check now fires exactly there; probed against docutils
+  0.22.4 over missing/empty/normal files × the three modes × a huge and a
+  hugely negative width, plus the `:start-after:` and clip-to-empty
+  orderings.
+- **An `include` through a symlink recorded the path it had not read (M2
+  wave 4.5, panel fix round C).** The file *opened* followed the symlink,
+  like Sphinx's `relfn2path` (which `.resolve()`s the joined path), but the
+  two bookkeeping records — the included docname behind the "document isn't
+  included in any toctree" check, and the dependency an incremental rebuild
+  watches — still spelled the *lexical* path. `.. include:: link/../part.rst`
+  beside a real `part.rst` therefore suppressed the orphan warning Sphinx
+  prints for `part.rst`, and watched a file whose changes could not affect
+  the build. Both records now follow the resolved path, spelled relative to
+  the resolved source directory (`../ext/part.rst` for a file the link led
+  out of the tree) — the same `env.included` / `env.dependencies` a real
+  `sphinx-build` ends with.
+- **Cross-reference targets now collapse Python's whitespace, and an
+  explicit `Title <target>` keeps its padding (M2 wave 4.5, panel fix round
+  C).** Sphinx's `ws_re` is Python's `\s`, which admits `\x1c`-`\x1f`;
+  `:doc:`a\x1fb`` now reaches the resolver as `a b`, as it does under
+  Sphinx. And the target between the brackets of an explicit title is taken
+  verbatim — collapsed, never stripped — for every role, `:ref:` and
+  `:numref:` included: they lowercase their target and nothing more, where
+  this crate had been applying docutils' `fully_normalize_name`, which
+  strips the ends as well.
+- **`:eq:` is the math domain's role (M2 wave 4.5, panel fix round C).**
+  Registered without a domain prefix like `:any:`, it produced a
+  `pending_xref` with `refdomain=""`; `MathReferenceRole.result_nodes`
+  stamps `refdomain="math"`, and the inner node's classes stay
+  `xref eq`. Resolution of equation targets is a wave-5 domain, so an
+  `:eq:` reference now joins the build's "domain not implemented" count
+  instead of being run through the std resolver it never belonged to.
 - **Directive validation invented four more warnings `sphinx-build` never
   emits (M2 wave 4.5, panel fix round B).** `.. include::` of a file whose
   extension is not `.rst`/`.txt`/`.md`/`.inc` — the docutils standard
   include files, `.. include:: <isonum.txt>`, among them — warned `Unusual
-  file extension for include:`; `literalinclude` and `code-block` rejected
-  `:lineno-start:`, `:tab-width:` and `:dedent:` values Sphinx's option
-  converters accept with `… must be a positive integer`; an empty
+  file extension for include:`; `literalinclude` rejected `:lineno-start:`,
+  `:tab-width:` and `:dedent:` values, and `code-block` `:lineno-start:`
+  values, that Sphinx's option converters accept, with `… must be a
+  positive integer` (`code-block` has no `:tab-width:` and accepted
+  `:dedent:` all along); an empty
   `code-block` warned `Code-block directive has no content` (it is legal);
   and `toctree`'s `:maxdepth:` was range-checked although `-1` is the
   documented "unlimited". Each of those failed `-W` on a project Sphinx

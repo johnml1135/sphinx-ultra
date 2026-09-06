@@ -3,7 +3,8 @@
 //! smartquotes off, keep_warnings on) produces for the committed fixture corpus.
 //!
 //! Regenerate the fixture (manual, never in CI):
-//!     uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' \
+//!     PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' \
+//!         --with 'docutils==0.22.4' \
 //!         python tools/gen_sphinx_fixture.py
 //!
 //! Clones the tests/doctree_differential.rs shape: committed JSON, version

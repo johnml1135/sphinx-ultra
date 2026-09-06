@@ -9,7 +9,8 @@
 //! used to corrupt.
 //!
 //! Regenerate the fixture (manual, never in CI):
-//!     uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' \
+//!     PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' \
+//!         --with 'docutils==0.22.4' \
 //!         python tools/gen_inventory_fixture.py
 
 use std::collections::BTreeMap;
