@@ -656,6 +656,25 @@ CASES = [
     ('sx_roles', 'xref_target_wrapped_across_lines', 'See :term:`foo\nbar` here.\n'),
     # ... and the two std roles whose overrides skip super keep the run.
     ('sx_roles', 'xref_target_no_collapse_token_option', 'See :token:`a  b` and :option:`-x  y`.\n'),
+    # panel fix round C: `ws_re` is Python's `\s` == `str.isspace`, which
+    # admits \x1c-\x1f; \x1f is the one `splitlines` does not eat first.
+    ('sx_roles', 'xref_target_python_whitespace_collapsed', 'See :doc:`a\x1fb` and :term:`x\x1fy` here.\n'),
+    # ... an explicit title's target is taken VERBATIM between the brackets
+    # (`explicit_title_re`), so the padding survives every role's
+    # `process_link` — collapsed, never stripped; the title loses its
+    # trailing `\s*`.
+    ('sx_roles', 'xref_explicit_target_padding_kept', 'See :term:`x < foo   bar >` and :doc:`t < a  b >` and :any:`x < p  q >` and :ref:`r < l >` here.\n'),
+    # ... `:ref:`/`:numref:` are `lowercase=True` XRefRoles and nothing
+    # more: `target.lower()` then `ws_re.sub`, NOT docutils'
+    # `fully_normalize_name` (which would strip the padding as well).
+    ('sx_roles', 'xref_ref_target_lowercased_but_not_stripped', 'See :ref:`r < L abc >` and :numref:`n < X  y >` here.\n'),
+    # ... and a padded py target keeps its `()` through
+    # `update_title_and_target` (the target does not END with them).
+    ('sx_roles', 'xref_explicit_target_padding_kept_py', 'See :py:func:`x < f() >` and :func:`y\x1f<g>` here.\n'),
+    # ... `:eq:` is the math domain's, registered domainless like `:any:`
+    # (`app.add_role('eq', MathReferenceRole(warn_dangling=True))`):
+    # refdomain="math", classes "xref eq", refwarn=1.
+    ('sx_roles', 'eq_role_is_the_math_domains', 'See :eq:`euler` and :eq:`the one <euler>` and :eq:`a  b` here.\n'),
     # ----- wave-4.5 task 8: std-desc doc fields (T7 fix round 1) -----
     # DocFieldTransformer runs for EVERY object description; std kinds use
     # the empty typemap, so every field takes the unknown branch (renamed,

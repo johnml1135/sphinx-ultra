@@ -3417,21 +3417,10 @@ impl BlockParser {
         // `settings.file_insertion_enabled` is not modeled (always true —
         // this crate has no docutils settings surface).
         let tab_width = opt_i64(&input.options, "tab-width").unwrap_or(8);
-        // Every include mode reaches `expandtabs(tab_width)` — insert mode
-        // through `string2lines`, the other two directly — so the C-int
-        // range check happens once, here. See [`c_int_tabsize`]: docutils
-        // lets the OverflowError escape and sphinx aborts the build, where
-        // an unbounded pad loop would instead hang this parser.
-        if let Err(text) = c_int_tabsize(tab_width) {
-            out.push(self.directive_run_message(
-                messages::SEVERE,
-                &format!("Problem with \"{}\" directive:\n{text}", input.name),
-                input.span.source,
-                input.lineno,
-                input.rawsource,
-            ));
-            return DirectiveOutcome::Done;
-        }
+        // An out-of-C-int `tab_width` is checked where docutils actually
+        // calls `expandtabs` — never before the read, so a missing file, a
+        // decode failure or a bad clip reports ITS error alone, as docutils
+        // does (see [`c_int_tabsize`] and [`Self::tab_width_overflow`]).
         // The circular-inclusion identity 4-tuple (`misc.py:85-88`).
         let clip: IncludeClip = (
             opt_i64(&input.options, "start-line"),
@@ -3457,16 +3446,18 @@ impl BlockParser {
         // (`other.py:415` precedes `super().run()`), so even a missing
         // file records — but only when the path maps to a docname, and
         // never for a standard include (`other.py:410-412` bypasses the
-        // rewrite entirely).
-        if let IncludeTarget::File { .. } = &target {
+        // rewrite entirely). It maps the RESOLVED path (`relfn2path`'s
+        // `.resolve()`d `abs_fn`, `environment/__init__.py:475`) against
+        // the resolved srcdir: through a symlink that can be a different
+        // docname than the lexical spelling (`link/../c.rst` with `link ->
+        // a/b` is `a/c`, not `c`), or no docname at all when the file lies
+        // outside the tree — the §Scope-8 display spelling is not what
+        // sphinx records here (panel round C, sweep [8]).
+        if let IncludeTarget::File { io_path, .. } = &target {
             if self.sphinx {
                 if let Some(srcdir) = &self.srcdir {
-                    // The docname mapping keys off the §Scope-8
-                    // srcdir-relative spelling, not the resolved open
-                    // path: a resolved path under an unresolved srcdir
-                    // would not even share its prefix.
-                    let lexical = crate::utils::relfn2path(&path_arg, &self.docname, srcdir);
-                    if let Some(docname) = crate::utils::path2doc(&lexical, srcdir) {
+                    let resolved_srcdir = crate::utils::resolve_path(srcdir);
+                    if let Some(docname) = crate::utils::path2doc(io_path, &resolved_srcdir) {
                         self.included_records.push(docname);
                     }
                 }
@@ -3522,6 +3513,13 @@ impl BlockParser {
                 // symlinked directory (see
                 // [`crate::utils::relfn2path_io`]).
                 let abs = crate::utils::relfn2path_io(path_arg, &self.docname, srcdir);
+                // sphinx's `rel_fn` (`_relative_path(abs_fn, self.srcdir)`,
+                // `environment/__init__.py:477`): the RESOLVED path spelled
+                // relative to the resolved srcdir, walking up for a file
+                // outside it — the spelling `note_dependency` records, so
+                // `srcdir / record` is the file that was actually read.
+                let record =
+                    crate::utils::relative_path_walk_up(&abs, &crate::utils::resolve_path(srcdir));
                 // §Scope-8: every path-bearing surface of included content
                 // spells the srcdir-relative form (deliberate divergence
                 // from sphinx's environment-dependent cwd-relative
@@ -3529,6 +3527,7 @@ impl BlockParser {
                 return IncludeTarget::File {
                     io_path: abs,
                     display: rel,
+                    record,
                 };
             }
         }
@@ -3551,6 +3550,7 @@ impl BlockParser {
         };
         IncludeTarget::File {
             io_path: std::path::PathBuf::from(&display),
+            record: display.clone(),
             display,
         }
     }
@@ -3593,7 +3593,11 @@ impl BlockParser {
                     return None;
                 }
             },
-            IncludeTarget::File { io_path, display } => {
+            IncludeTarget::File {
+                io_path,
+                display,
+                record,
+            } => {
                 let bytes = match std::fs::read(io_path) {
                     Ok(bytes) => bytes,
                     Err(error) => {
@@ -3610,7 +3614,7 @@ impl BlockParser {
                 };
                 // A successful open records the dependency BEFORE reading
                 // (`misc.py:130`) — a decode failure below still records.
-                self.record_include_dependency(display);
+                self.record_include_dependency(record);
                 // `encoding = self.options.get('encoding',
                 // self.state.document.settings.input_encoding)`
                 // (`misc.py:116`). The fallback differs by venue, both
@@ -3692,16 +3696,40 @@ impl BlockParser {
 
     /// The docutils-side dependency record
     /// (`settings.record_dependencies.add(path)`, `misc.py:130`, which
-    /// sphinx's `DependenciesCollector` harvests into `env.dependencies`):
-    /// every successfully opened project file, non-doc files included.
-    /// Standard includes never reach here (§Scope-2b: recording their
-    /// environment-specific path would outdate the document on every warm
-    /// rebuild). Sphinx mode only — a standalone parse has no environment
-    /// to replay into.
-    fn record_include_dependency(&mut self, display: &str) {
+    /// sphinx's `DependenciesCollector` harvests into `env.dependencies`
+    /// as `srcdir / _relative_path(path, srcdir)`): every successfully
+    /// opened project file, non-doc files included, spelled as the
+    /// RESOLVED path relative to the srcdir (`IncludeTarget::File::record`)
+    /// — through a symlink that is the file actually read, not the lexical
+    /// display path. Standard includes never reach here (§Scope-2b:
+    /// recording their environment-specific path would outdate the
+    /// document on every warm rebuild). Sphinx mode only — a standalone
+    /// parse has no environment to replay into.
+    fn record_include_dependency(&mut self, record: &str) {
         if self.sphinx && self.srcdir.is_some() {
-            self.dependency_records.push(display.to_string());
+            self.dependency_records.push(record.to_string());
         }
+    }
+
+    /// The `OverflowError` docutils lets escape from `str.expandtabs`
+    /// (see [`c_int_tabsize`]) — sphinx aborts the whole build on it —
+    /// as the SEVERE this parser reports instead. Raised exactly where
+    /// docutils would have called `expandtabs`: after a successful read
+    /// and clip, in `:literal:`/`:code:` mode only for a non-negative
+    /// width (`misc.py:165-167`, `:193-194`), and in insert mode per line
+    /// of `string2lines` — so never for an empty text (probed against
+    /// docutils 0.22.4: a missing file, a decode failure or a bad
+    /// `start-after` with a huge width report only their own error; an
+    /// empty file in insert mode reports nothing; `:literal:` with a huge
+    /// NEGATIVE width keeps its tabs silently).
+    fn tab_width_overflow(&self, input: &DirectiveInput<'_>, text: &str) -> Node {
+        self.directive_run_message(
+            messages::SEVERE,
+            &format!("Problem with \"{}\" directive:\n{text}", input.name),
+            input.span.source,
+            input.lineno,
+            input.rawsource,
+        )
     }
 
     /// `insert_into_input_lines` (`misc.py:236-267`): length check,
@@ -3715,7 +3743,13 @@ impl BlockParser {
         input: &DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) -> DirectiveOutcome {
-        let textlines = string2lines_tw(text, tab_width);
+        let textlines = match string2lines_tw(text, tab_width) {
+            Ok(lines) => lines,
+            Err(overflow) => {
+                out.push(self.tab_width_overflow(input, overflow));
+                return DirectiveOutcome::Done;
+            }
+        };
         // Excessively long lines abort with a WARNING (`misc.py:245-250`);
         // the reported number restarts at the clip, like everything else.
         for (i, line) in textlines.iter().enumerate() {
@@ -3815,15 +3849,17 @@ impl BlockParser {
         input: &DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
-        // `include_lines = string2lines(rawtext, tab_width,
-        // convert_whitespace=True)` (`misc.py:150`) — computed on the RAW
-        // text, and used here only to size the `:number-lines:` column
-        // (`endline = startline + len(include_lines)`, `misc.py:176`).
-        // It is NOT the same count as the rendered lines, which come from
-        // `text.split('\n')`: an EMPTY file splitlines to zero lines but
-        // splits to one, and the difference is a whole column of padding
-        // Tabs expand unless `tab_width` is negative (`misc.py:165-167`).
+        // Tabs expand unless `tab_width` is negative (`misc.py:165-167`:
+        // `if self.tab_width >= 0: text = text.expandtabs(self.tab_width)`),
+        // so a negative width outside C-int range is never even looked at
+        // — only a non-negative one raises. The `:number-lines:` column
+        // width is sized further down from the EXPANDED text's
+        // `splitlines()` count (`misc.py:174-176`).
         let text = if tab_width >= 0 {
+            if let Err(overflow) = c_int_tabsize(tab_width) {
+                out.push(self.tab_width_overflow(input, overflow));
+                return;
+            }
             py_expandtabs(text, tab_width)
         } else {
             text.to_string()
@@ -3884,7 +3920,12 @@ impl BlockParser {
         input: &DirectiveInput<'_>,
         out: &mut Vec<Node>,
     ) {
+        // `misc.py:193-194`: the same negative-width gate as literal mode.
         let text = if tab_width >= 0 {
+            if let Err(overflow) = c_int_tabsize(tab_width) {
+                out.push(self.tab_width_overflow(input, overflow));
+                return;
+            }
             py_expandtabs(text, tab_width)
         } else {
             text.to_string()
@@ -4134,11 +4175,13 @@ impl BlockParser {
     /// attached (`code.py:454-456`, `:463`), else the containing-file
     /// fallback (a parse without an environment — the directive is
     /// sphinx-registered only, but the parser stays total). Returns
-    /// `(rel_filename, io path, display path)`: `note_dependency` records
-    /// the srcdir-relative half, the reader OPENS the resolved path
-    /// ([`crate::utils::relfn2path_io`] — symlinks before `..`, like
-    /// sphinx's `.resolve()`), and the `literal_block` `source` attribute
-    /// keeps the lexical spelling §Scope-8 fixes.
+    /// `(rel_filename, io path, display path)`: the reader OPENS the
+    /// resolved path ([`crate::utils::relfn2path_io`] — symlinks before
+    /// `..`, like sphinx's `.resolve()`), `note_dependency` records that
+    /// resolved path spelled relative to the resolved srcdir (sphinx's
+    /// `rel_fn`, `_relative_path(abs_fn, srcdir)` — `../ext/x.txt` for a
+    /// file the symlink led outside the tree), and the `literal_block`
+    /// `source` attribute keeps the lexical spelling §Scope-8 fixes.
     fn literalinclude_resolve(
         &self,
         path_arg: &str,
@@ -4146,9 +4189,14 @@ impl BlockParser {
     ) -> (String, std::path::PathBuf, std::path::PathBuf) {
         if self.sphinx {
             if let Some(srcdir) = &self.srcdir {
+                let io_path = crate::utils::relfn2path_io(path_arg, &self.docname, srcdir);
+                let record = crate::utils::relative_path_walk_up(
+                    &io_path,
+                    &crate::utils::resolve_path(srcdir),
+                );
                 return (
-                    crate::utils::relfn2path_rel(path_arg, &self.docname),
-                    crate::utils::relfn2path_io(path_arg, &self.docname, srcdir),
+                    record,
+                    io_path,
                     crate::utils::relfn2path(path_arg, &self.docname, srcdir),
                 );
             }
@@ -9515,7 +9563,7 @@ fn doc_field_step1(
     env: &DocFieldEnv<'_>,
 ) {
     // SANCTIONED DIVERGENCE. Sphinx has a bare `assert len(field) == 2`
-    // here (`docfields.py:376`), so a `field_list` child that is not a
+    // here (`docfields.py:381`), so a `field_list` child that is not a
     // two-child `field` aborts the whole build with an AssertionError;
     // this guard passes such a child through untouched instead. Strictly
     // better than sphinx and unpinnable by the oracle (a crash has no
@@ -10293,12 +10341,19 @@ type IncludeClip = (Option<i64>, Option<i64>, String, String);
 enum IncludeTarget {
     /// `<name>` — one of the vendored docutils standard include files.
     Standard(String),
-    /// A project file: the filesystem path to open, and the display
-    /// spelling every path-bearing surface uses (§Scope-8: srcdir-relative
-    /// in sphinx mode).
+    /// A project file: the filesystem path to open, the display spelling
+    /// every path-bearing surface uses (§Scope-8: srcdir-relative in
+    /// sphinx mode), and the bookkeeping spelling sphinx's `relfn2path`
+    /// returns as `rel_fn` — the RESOLVED `io_path` relative to the
+    /// resolved srcdir, walking up with `..` for a file outside it —
+    /// which is what `note_dependency` records. The two differ through a
+    /// symlinked directory (`link/../x.rst` displays as `x.rst`; it was
+    /// read beside the link's TARGET). Docutils mode has no srcdir and
+    /// records nothing, so there `record` is just the display spelling.
     File {
         io_path: std::path::PathBuf,
         display: String,
+        record: String,
     },
 }
 
@@ -10380,7 +10435,10 @@ const PY_INT_TOO_LARGE_FOR_C_INT: &str = "Python int too large to convert to C i
 /// (`code.py:505`, `except Exception`), matching sphinx byte-for-byte.
 /// `include` has no such guard, so sphinx ABORTS the whole build on the
 /// same input — a crash has no pformat, so our SEVERE there is an
-/// unpinnable better-than-sphinx divergence.
+/// unpinnable better-than-sphinx divergence. What IS pinnable is the
+/// ordering: docutils reaches `expandtabs` only after the read succeeds,
+/// so every earlier failure (and a text `expandtabs` never sees) must win
+/// over this check — see `BlockParser::tab_width_overflow`.
 fn c_int_tabsize(tabsize: i64) -> Result<i64, &'static str> {
     if tabsize < i64::from(i32::MIN) || tabsize > i64::from(i32::MAX) {
         return Err(PY_INT_TOO_LARGE_FOR_C_INT);
@@ -10391,15 +10449,25 @@ fn c_int_tabsize(tabsize: i64) -> Result<i64, &'static str> {
 /// docutils `statemachine.string2lines(text, tab_width,
 /// convert_whitespace=True)` (`DU/statemachine.py:1497-1516`): `\v`/`\f`
 /// to spaces, splitlines, per-line `expandtabs(tab_width)` + `rstrip()`.
-fn string2lines_tw(text: &str, tab_width: i64) -> Vec<String> {
+///
+/// `expandtabs` runs per LINE — `[s.expandtabs(tab_width).rstrip() for s
+/// in astring.splitlines()]` — regardless of the width's sign, so an
+/// out-of-C-int width is an error for any non-empty text and a no-op for
+/// an empty one (zero lines, zero calls; probed: an empty file included
+/// with `:tab-width: 2147483648` produces nothing at all).
+fn string2lines_tw(text: &str, tab_width: i64) -> Result<Vec<String>, &'static str> {
     let converted = text.replace(['\x0b', '\x0c'], " ");
-    py_splitlines(&converted)
+    let lines = py_splitlines(&converted);
+    if !lines.is_empty() {
+        c_int_tabsize(tab_width)?;
+    }
+    Ok(lines
         .into_iter()
         .map(|line| {
             let expanded = py_expandtabs(line, tab_width);
             expanded.trim_end().to_string()
         })
-        .collect()
+        .collect())
 }
 
 /// Python `sequence[start:end]` slice bounds: negatives count from the
@@ -15451,6 +15519,52 @@ mod py_docfield_tests {
         );
     }
 
+    /// The `len(field) != 2` pass-through on the input that makes sphinx
+    /// itself abort (`sphinx/util/docfields.py:381`, `assert len(field) ==
+    /// 2`): the unterminated emphasis in the option puts a one-child
+    /// `system_message` beside the generated `Type`/`Default` field, as a
+    /// DIRECT `field_list` child, and the transformer must leave both
+    /// there — the field untouched, the message untouched, no panic.
+    /// Sanctioned divergence; a crash has no oracle pformat, so the pin is
+    /// crate-side (panel round C; the corpus holds the case out as
+    /// `EXCLUDED["sx_std.confval_bad_type_markup"]`).
+    ///
+    // oracle (sphinx 9.1.0, full SphinxTestApp dummy build, verification
+    // records v9/v22/v27): `:type: *bad` and `:default: *bad` -> RAISED
+    // AssertionError at docfields.py:381; `:type: *bad*` / `:type: int`
+    // -> BUILD OK.
+    #[test]
+    fn a_one_child_field_list_member_passes_through_without_panicking() {
+        for (option, name) in [("type", "Type"), ("default", "Default")] {
+            let pf = pf(&format!(".. confval:: t\n   :{option}: *bad\n"));
+            let expected = format!(
+                concat!(
+                    "        <desc_content>\n",
+                    "            <field_list>\n",
+                    "                <field>\n",
+                    "                    <field_name>\n",
+                    "                        {name}\n",
+                    "                    <field_body>\n",
+                    "                        <problematic ids=\"id2\" refid=\"id1\">\n",
+                    "                            *\n",
+                    "                        bad\n",
+                    "                <system_message backrefs=\"id2\" ids=\"id1\" level=\"2\" ",
+                    "line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n",
+                    "                    <paragraph>\n",
+                    "                        Inline emphasis start-string without end-string.\n",
+                ),
+                name = name
+            );
+            assert!(pf.contains(&expected), "{option}: {pf}");
+        }
+        // The well-formed neighbours sphinx builds clean stay two-child
+        // fields with no message.
+        for option in [":type: *bad*", ":type: int"] {
+            let pf = pf(&format!(".. confval:: t\n   {option}\n"));
+            assert!(!pf.contains("system_message"), "{option}: {pf}");
+        }
+    }
+
     /// `describe` (bare docutils registration, domain='') transforms with
     /// the empty map too (probe describe_param).
     #[test]
@@ -16517,7 +16631,7 @@ mod py_docfield_tests {
 mod include_tests {
     use super::*;
     use crate::doctree::Doctree;
-    use crate::rst::{parse_rst, ParseOptions};
+    use crate::rst::{parse_rst, parse_rst_full, ParseOptions, ParseOutput};
     use std::path::Path;
 
     fn write(dir: &Path, name: &str, content: &str) {
@@ -16528,7 +16642,13 @@ mod include_tests {
 
     /// Sphinx-mode parse of `main` as `<docname>.rst` inside `srcdir`.
     fn parse_sphinx(srcdir: &Path, docname: &str, main: &str) -> Doctree {
-        parse_rst(
+        parse_sphinx_full(srcdir, docname, main).doctree
+    }
+
+    /// [`parse_sphinx`] keeping the whole [`ParseOutput`] — the
+    /// `dependencies`/`included` records live in its registry export.
+    fn parse_sphinx_full(srcdir: &Path, docname: &str, main: &str) -> ParseOutput {
+        parse_rst_full(
             main,
             &ParseOptions {
                 source_path: srcdir.join(format!("{docname}.rst")).display().to_string(),
@@ -16703,6 +16823,109 @@ mod include_tests {
         assert!(messages_of(&tree).is_empty());
     }
 
+    /// The range check waits for the read, exactly where docutils calls
+    /// `expandtabs`: an earlier failure reports ITSELF alone, an empty
+    /// text in insert mode never expands at all, and literal/code mode's
+    /// `tab_width >= 0` gate skips a negative out-of-range width entirely
+    /// (panel round C — the round-B guard sat at the top of `run_include`
+    /// and reported the overflow ahead of a missing file).
+    ///
+    // oracle (docutils 0.22.4 publish_doctree, scratchpad rc/probe_tw.py;
+    // sphinx-build 9.1.0 prints the same lone CRITICAL for the missing
+    // file and finishes, per the verification record):
+    //   missing.rst + 2147483648 (insert/literal) -> only the path SEVERE
+    //   empty.rst + 2147483648 (insert)   -> no message, nothing inserted
+    //   empty.rst + 2147483648 (literal/code) -> OverflowError: the C-int
+    //     check precedes the string, even an empty one
+    //   a\tb + 2147483648 (insert/literal/code) -> OverflowError
+    //   a\tb + -2147483649 (literal/code) -> no message, tab preserved
+    //   a\tb + -2147483649 (insert)       -> OverflowError (string2lines)
+    //   :start-after: zzz + 2147483648    -> only the start-after SEVERE
+    //   :start-line: 5 (clips to '') + 2147483648 (insert) -> nothing
+    #[test]
+    fn the_tab_width_check_waits_for_the_read_like_expandtabs() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "inc.rst", "a\tb\n");
+        write(tmp.path(), "empty.rst", "");
+        let overflow =
+            "Problem with \"include\" directive:\nPython int too large to convert to C int";
+        let one_severe = |src: &str| -> String {
+            let tree = parse_sphinx(tmp.path(), "main", src);
+            let msgs = messages_of(&tree);
+            assert_eq!(msgs.len(), 1, "{src:?}: {msgs:?}");
+            assert_eq!(msgs[0].0, 4, "SEVERE: {src:?}");
+            msgs[0].3.clone()
+        };
+        // A missing file reports only the read error, in every mode.
+        for mode in ["", "   :literal:\n", "   :code:\n"] {
+            assert_eq!(
+                one_severe(&format!(
+                    ".. include:: missing.rst\n{mode}   :tab-width: 2147483648\n"
+                )),
+                "Problems with \"include\" directive path:\nInputError: [Errno 2] \
+                 No such file or directory: 'missing.rst'."
+            );
+        }
+        // An empty file: insert mode has no line to expand; literal and
+        // code mode call `expandtabs` on the empty string, which still
+        // rejects the width.
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: empty.rst\n   :tab-width: 2147483648\n",
+        );
+        assert!(messages_of(&tree).is_empty(), "{:?}", messages_of(&tree));
+        assert!(paragraphs_of(&tree).is_empty());
+        for mode in ["   :literal:\n", "   :code:\n"] {
+            assert_eq!(
+                one_severe(&format!(
+                    ".. include:: empty.rst\n{mode}   :tab-width: 2147483648\n"
+                )),
+                overflow
+            );
+        }
+        // A file with content: the overflow, in every mode.
+        for mode in ["", "   :literal:\n", "   :code:\n"] {
+            assert_eq!(
+                one_severe(&format!(
+                    ".. include:: inc.rst\n{mode}   :tab-width: 2147483648\n"
+                )),
+                overflow
+            );
+        }
+        // A negative out-of-range width: literal and code mode never reach
+        // `expandtabs` (the tab survives); insert mode always does.
+        for mode in ["   :literal:\n", "   :code:\n"] {
+            let tree = parse_sphinx(
+                tmp.path(),
+                "main",
+                &format!(".. include:: inc.rst\n{mode}   :tab-width: -2147483649\n"),
+            );
+            assert!(messages_of(&tree).is_empty(), "{:?}", messages_of(&tree));
+            assert!(
+                tree.root.pformat().contains("a\tb"),
+                "{}",
+                tree.root.pformat()
+            );
+        }
+        assert_eq!(
+            one_severe(".. include:: inc.rst\n   :tab-width: -2147483649\n"),
+            overflow
+        );
+        // A failing clip wins over the width ...
+        assert_eq!(
+            one_severe(".. include:: inc.rst\n   :start-after: zzz\n   :tab-width: 2147483648\n"),
+            "Problem with \"start-after\" option of \"include\" directive:\nText not found."
+        );
+        // ... and a clip that leaves nothing behind leaves nothing to expand.
+        let tree = parse_sphinx(
+            tmp.path(),
+            "main",
+            ".. include:: inc.rst\n   :start-line: 5\n   :tab-width: 2147483648\n",
+        );
+        assert!(messages_of(&tree).is_empty(), "{:?}", messages_of(&tree));
+    }
+
     /// End to end: the file OPENED is the one sphinx's `.resolve()`
     /// names. `link` points outside the srcdir, so `link/../shared.txt`
     /// is the link target's neighbour, not the srcdir's.
@@ -16731,6 +16954,70 @@ mod include_tests {
             tree.root.pformat().contains("OUTSIDE"),
             "{}",
             tree.root.pformat()
+        );
+
+        // The bookkeeping records follow the RESOLVED path as well:
+        // `note_included` and docutils' `record_dependencies` both see the
+        // `.resolve()`d absolute, so they can name a different docname
+        // than the lexical spelling — or none (panel round C, sweep [8]).
+        //
+        // oracle (sphinx 9.1.0 `-b dummy`, scratchpad rc/probe_symlink.py):
+        //   s1 `link -> BASE/ext/inner`, `.. include:: link/../part.rst`
+        //      with BASE/src/part.rst a real sibling: env.included maps
+        //      index to '<B>/ext/part' — an absolute "docname" nothing
+        //      matches, so `part.rst` still gets `document isn't included
+        //      in any toctree`; env.dependencies = {'<B>/src/../ext/part.rst'}
+        //   s2 `link -> src/a/b`, `link/../c.rst` (src/c.rst AND src/a/c.rst
+        //      exist): paragraphs 'Deep para.'; included 'a/c' (not 'c');
+        //      dependency '<B>/src/a/c.rst'; `c.rst` is the orphan
+        //   s3 `alias.rst -> real.rst`: included 'real'; dependency
+        //      '<B>/src/real.rst'; `alias.rst` is the orphan
+        //   s5 literalinclude through s1's link: dependency
+        //      '<B>/src/../ext/part.txt'
+        // (`path2doc` returns None for the outside landing — same orphan
+        // outcome, and no absolute path in `env.included`.)
+        std::fs::write(base.join("ext/part.rst"), "OUTSIDE PART\n").unwrap();
+        write(&srcdir, "part.rst", "Part\n====\n\nINSIDE PART\n");
+        let output = parse_sphinx_full(&srcdir, "main", ".. include:: link/../part.rst\n");
+        assert_eq!(
+            paragraphs_of(&output.doctree),
+            vec!["OUTSIDE PART".to_string()]
+        );
+        assert!(
+            output.registry.included.is_empty(),
+            "an outside landing marks no document included: {:?}",
+            output.registry.included
+        );
+        assert_eq!(
+            output.registry.dependencies,
+            vec!["../ext/part.rst".to_string()],
+            "the dependency is the file actually read, srcdir-relative"
+        );
+        let output = parse_sphinx_full(&srcdir, "main", ".. literalinclude:: link/../shared.txt\n");
+        assert_eq!(
+            output.registry.dependencies,
+            vec!["../ext/shared.txt".to_string()]
+        );
+        // s2: a link INSIDE the tree lands on another docname.
+        std::fs::create_dir_all(srcdir.join("a/b")).unwrap();
+        write(&srcdir, "a/c.rst", "DEEP\n");
+        write(&srcdir, "c.rst", "SHALLOW\n");
+        std::os::unix::fs::symlink(srcdir.join("a/b"), srcdir.join("inlink")).unwrap();
+        let output = parse_sphinx_full(&srcdir, "main", ".. include:: inlink/../c.rst\n");
+        assert_eq!(paragraphs_of(&output.doctree), vec!["DEEP".to_string()]);
+        assert_eq!(output.registry.included, vec!["a/c".to_string()]);
+        assert_eq!(output.registry.dependencies, vec!["a/c.rst".to_string()]);
+        // s3: a symlinked FILE records its target's docname; the display
+        // surfaces keep the lexical spelling (§Scope-8).
+        std::os::unix::fs::symlink(srcdir.join("c.rst"), srcdir.join("alias.rst")).unwrap();
+        let output = parse_sphinx_full(&srcdir, "main", ".. include:: alias.rst\n");
+        assert_eq!(paragraphs_of(&output.doctree), vec!["SHALLOW".to_string()]);
+        assert_eq!(output.registry.included, vec!["c".to_string()]);
+        assert_eq!(output.registry.dependencies, vec!["c.rst".to_string()]);
+        assert!(
+            output.doctree.sources.contains(&"alias.rst".to_string()),
+            "{:?}",
+            output.doctree.sources
         );
     }
 
@@ -17506,9 +17793,10 @@ mod include_tests {
         assert!(pf.contains("2 \n        L4"), "{pf}");
     }
 
-    /// The `:number-lines:` column is sized from docutils' `include_lines`
-    /// (`string2lines`), not from the rendered `split('\n')` lines. On an
-    /// EMPTY file the two disagree — `''.splitlines()` is zero lines,
+    /// The `:number-lines:` column is sized from docutils'
+    /// `len(text.splitlines())` on the suffix-stripped expanded text
+    /// (`misc.py:174-176`), not from the rendered `split('\n')` lines. On
+    /// an EMPTY file the two disagree — `''.splitlines()` is zero lines,
     /// `''.split('\n')` is one — and a split-based count padded the single
     /// rendered number to width 2. docutils 0.22.4 renders exactly
     /// `<inline classes="ln">` / `1 ` (probe: empty.txt + `:literal:` +
@@ -17760,22 +18048,6 @@ mod include_tests {
     }
 
     // ---- rows 8-9: the sphinx record layer ---------------------------
-
-    fn parse_sphinx_full(srcdir: &Path, docname: &str, main: &str) -> crate::rst::ParseOutput {
-        crate::rst::parse_rst_full(
-            main,
-            &ParseOptions {
-                source_path: srcdir.join(format!("{docname}.rst")).display().to_string(),
-                sphinx: true,
-                docname: docname.to_string(),
-                found_docs: None,
-                exclude_patterns: Vec::new(),
-                py: Default::default(),
-                srcdir: Some(srcdir.to_path_buf()),
-                ..Default::default()
-            },
-        )
-    }
 
     /// Row 8: dependency for every successfully opened project file
     /// (non-doc files included), `included` only for docname-mapping

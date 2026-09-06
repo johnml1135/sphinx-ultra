@@ -1981,6 +1981,36 @@
       "rst": "See :token:`a  b` and :option:`-x  y`.\n"
     },
     {
+      "family": "sx_roles",
+      "name": "sx_roles.xref_target_python_whitespace_collapsed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"a b\" reftype=\"doc\" refwarn=\"1\">\n            <inline classes=\"xref std std-doc\">\n                a\u001fb\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"x y\" reftype=\"term\" refwarn=\"1\">\n            <inline classes=\"xref std std-term\">\n                x\u001fy\n         here.\n",
+      "rst": "See :doc:`a\u001fb` and :term:`x\u001fy` here.\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.xref_explicit_target_padding_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"1\" reftarget=\" foo bar \" reftype=\"term\" refwarn=\"1\">\n            <inline classes=\"xref std std-term\">\n                x\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"1\" reftarget=\" a b \" reftype=\"doc\" refwarn=\"1\">\n            <inline classes=\"xref std std-doc\">\n                t\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"\" refexplicit=\"1\" reftarget=\" p q \" reftype=\"any\" refwarn=\"1\">\n            <literal classes=\"xref any\">\n                x\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"1\" reftarget=\" l \" reftype=\"ref\" refwarn=\"1\">\n            <inline classes=\"xref std std-ref\">\n                r\n         here.\n",
+      "rst": "See :term:`x < foo   bar >` and :doc:`t < a  b >` and :any:`x < p  q >` and :ref:`r < l >` here.\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.xref_ref_target_lowercased_but_not_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"1\" reftarget=\" l abc \" reftype=\"ref\" refwarn=\"1\">\n            <inline classes=\"xref std std-ref\">\n                r\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"1\" reftarget=\" x y \" reftype=\"numref\" refwarn=\"1\">\n            <literal classes=\"xref std std-numref\">\n                n\n         here.\n",
+      "rst": "See :ref:`r < L abc >` and :numref:`n < X  y >` here.\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.xref_explicit_target_padding_kept_py",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref py:class=\"True\" py:module=\"True\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"1\" reftarget=\" f() \" reftype=\"func\" refwarn=\"0\">\n            <literal classes=\"xref py py-func\">\n                x\n         and \n        <pending_xref py:class=\"True\" py:module=\"True\" refdoc=\"index\" refdomain=\"py\" refexplicit=\"1\" reftarget=\"g\" reftype=\"func\" refwarn=\"0\">\n            <literal classes=\"xref py py-func\">\n                y\n         here.\n",
+      "rst": "See :py:func:`x < f() >` and :func:`y\u001f<g>` here.\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.eq_role_is_the_math_domains",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"math\" refexplicit=\"0\" reftarget=\"euler\" reftype=\"eq\" refwarn=\"1\">\n            <literal classes=\"xref eq\">\n                euler\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"math\" refexplicit=\"1\" reftarget=\"euler\" reftype=\"eq\" refwarn=\"1\">\n            <literal classes=\"xref eq\">\n                the one\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"math\" refexplicit=\"0\" reftarget=\"a b\" reftype=\"eq\" refwarn=\"1\">\n            <literal classes=\"xref eq\">\n                a  b\n         here.\n",
+      "rst": "See :eq:`euler` and :eq:`the one <euler>` and :eq:`a  b` here.\n"
+    },
+    {
       "family": "sx_std",
       "name": "sx_std.envvar_param_field",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'environment\\ variable;\\ SIMPLE',\\ 'envvar-SIMPLE',\\ '',\\ None)\">\n    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-SIMPLE\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                SIMPLE\n        <desc_content>\n            <field_list>\n                <field>\n                    <field_name>\n                        Param x\n                    <field_body>\n                        <paragraph>\n                            thing\n",

@@ -1092,6 +1092,24 @@ fn only_oracle_only_highlight_stamps_are_dropped() {
         drop_unstamped_highlight_attrs(oracle, &ours_wrong_text),
         ours_wrong_text
     );
+
+    // A `linenos="1"` is never forgiven, even when ours carries no
+    // `linenos` at all: the transform only ever stamps `"0"` in this
+    // corpus, so an oracle `"1"` we fail to emit is a directive-set value
+    // going missing — a real divergence, which the BOUNDARY refusal keeps
+    // (panel round C pin for [21]). `language` still comes off beside it.
+    let oracle_directive_linenos = oracle.replace("linenos=\"0\"", "linenos=\"1\"");
+    let kept = drop_unstamped_highlight_attrs(&oracle_directive_linenos, ours);
+    let block = kept
+        .lines()
+        .find(|line| line.trim_start().starts_with("<literal_block "))
+        .expect("the literal_block line survives");
+    assert!(block.contains(" linenos=\"1\""), "{kept}");
+    assert!(!block.contains(" language="), "{kept}");
+    assert_ne!(
+        kept, ours,
+        "a directive-set `linenos` we do not emit still diverges"
+    );
 }
 
 #[test]

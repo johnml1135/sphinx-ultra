@@ -70,12 +70,16 @@ pub struct InlineResult {
 }
 
 /// `ws_re.sub(' ', target)` — the base `XRefRole.process_link` munging
-/// (`sphinx/roles.py`): every whitespace run becomes one space.
+/// (`sphinx/roles.py`): every whitespace run becomes one space. `ws_re`
+/// is `re.compile(r'\s+')` (`sphinx/util/__init__.py:17`), and Python's
+/// `\s` is `str.isspace` — which admits `\x1c`-`\x1f` where Rust's
+/// `is_whitespace` does not ([`crate::utils::py_isspace`]; probed:
+/// `:doc:`a\x1fb`` reaches sphinx's resolver as `'a b'`).
 fn collapse_whitespace(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_ws = false;
     for c in text.chars() {
-        if c.is_whitespace() {
+        if crate::utils::py_isspace(c) {
             in_ws = true;
         } else {
             if in_ws {
@@ -999,6 +1003,12 @@ impl<'a> Inliner<'a> {
                     // leaves `refdomain=''` — which is what routes the node
                     // into `_resolve_pending_any_xref` instead of a domain.
                     "any" => "",
+                    // `:eq:` is the math domain's, registered domainless
+                    // like `:any:` (`app.add_role('eq',
+                    // MathReferenceRole(warn_dangling=True))`,
+                    // `domains/math.py:163`); `result_nodes` then stamps
+                    // `refdomain = 'math'` onto the node (`:32-44`).
+                    "eq" => "math",
                     _ => "std",
                 };
                 (d.to_string(), lower.to_string())
@@ -1097,11 +1107,19 @@ impl<'a> Inliner<'a> {
     ) {
         let text = unescape(raw, false);
         let (domain, reftype) = (domain.to_string(), reftype.to_string());
-        // `Title <target>` explicit form.
+        // `Title <target>` explicit form — `ReferenceRole.explicit_title_re`
+        // (`util/docutils.py:730`, `^(.+?)\s*(?<!\x00)<(.*?)>$`): the title
+        // loses its trailing `\s*` (Python's set), the target between the
+        // brackets is taken VERBATIM — padding included, `:term:`x < foo
+        // bar >`` carries reftarget `" foo bar "` after the base
+        // `process_link` collapse and `" f() "` keeps its parens through
+        // `update_title_and_target` (both probed against sphinx 9.1.0).
         let (target, display, explicit) = match (text.rfind('<'), text.ends_with('>')) {
             (Some(lt), true) => (
-                text[lt + 1..text.len() - 1].trim().to_string(),
-                text[..lt].trim_end().to_string(),
+                text[lt + 1..text.len() - 1].to_string(),
+                text[..lt]
+                    .trim_end_matches(crate::utils::py_isspace)
+                    .to_string(),
                 true,
             ),
             _ => (text.clone(), text.clone(), false),
@@ -1130,13 +1148,18 @@ impl<'a> Inliner<'a> {
         // title — is lowercased, for `:ref:` *and* `:numref:`
         // (`domains/std/__init__.py:752-760`, both `lowercase=True`).
         // `XRefRole.process_link` then collapses whitespace runs in the
-        // target (`roles.py:165`, `ws_re.sub(' ', target)`), which is what
-        // `fully_normalize_name` does on top of lowercasing — bar the
-        // leading/trailing strip, and docutils cannot produce an
-        // interpreted-text target with either (a space after the opening
-        // backtick is "start-string without end-string", verified against
-        // docutils 0.22.4). py targets drop a leading `~` from the target
-        // while the title keeps only the last dotted segment.
+        // target (`roles.py:165`, `ws_re.sub(' ', target)`). That is NOT
+        // `fully_normalize_name`: docutils' spelling strips the ends as
+        // well (`' '.join(name.lower().split())`), and sphinx never calls
+        // it on an xref target. An IMPLICIT target cannot show the
+        // difference (a space after the opening backtick is "start-string
+        // without end-string", verified against docutils 0.22.4), but an
+        // explicit `Title < target >` can, and EVERY role keeps the
+        // padding — `:ref:`/`:numref:` included, lowercased but not
+        // stripped (probed against sphinx 9.1.0: `:term:`x < foo   bar >``
+        // -> `" foo bar "`, `:ref:`r < L abc >`` -> `" l abc "`,
+        // `:ref:`ABC`` -> `"abc"`). py targets drop a leading `~` from
+        // the target while the title keeps only the last dotted segment.
         //
         // Every OTHER role runs the base `process_link` and so collapses —
         // `:any:` (via `AnyXRefRole`'s `super()` call, `roles.py:183-193`)
@@ -1146,9 +1169,7 @@ impl<'a> Inliner<'a> {
         // naming the opt-outs.
         let any = domain.is_empty() && reftype == "any";
         let (target, display) = match (domain.as_str(), reftype.as_str()) {
-            ("std", "ref" | "numref") => {
-                (crate::doctree::ids::fully_normalize_name(&target), display)
-            }
+            ("std", "ref" | "numref") => (collapse_whitespace(&target.to_lowercase()), display),
             (d, t) if target_collapses_whitespace(d, t) => (collapse_whitespace(&target), display),
             _ => (target, display),
         };
@@ -1280,12 +1301,15 @@ impl<'a> Inliner<'a> {
         // document that used one warn `'kbd' reference target not found`.
         // ... plus `:any:`, constructed `AnyXRefRole(warn_dangling=True)`
         // (`roles.py`, `specific_docroles`).
+        // ... and `:eq:`, `MathReferenceRole(warn_dangling=True)`
+        // (`domains/math.py:163`).
         let warn_dangling = matches!(
             (domain.as_str(), reftype.as_str()),
             (
                 "std",
                 "ref" | "numref" | "doc" | "term" | "keyword" | "option" | "confval"
             ) | ("", "any")
+                | ("math", "eq")
         );
         node.set("refwarn", AttrValue::Int(i64::from(warn_dangling)));
         // `OptionXRefRole.process_link` (`domains/std/__init__.py:351-364`).
@@ -1312,9 +1336,12 @@ impl<'a> Inliner<'a> {
             },
             self.span,
         );
-        // `XRefRole.run` (`roles.py`): a domainless role's inner node gets
-        // `['xref', reftype]` — probe: `:any:` yields `classes="xref any"`.
-        inner.attrs.classes = if domain.is_empty() {
+        // `XRefRole.run` (`roles.py:101-103`): a role REGISTERED without a
+        // domain prefix gets `['xref', reftype]` — probe: `:any:` yields
+        // `classes="xref any"`, and so does `:eq:` (`classes="xref eq"`),
+        // whose `refdomain` is only stamped afterwards by `result_nodes`.
+        let registered_domainless = domain.is_empty() || (domain == "math" && reftype == "eq");
+        inner.attrs.classes = if registered_domainless {
             vec!["xref".to_string(), reftype.clone()]
         } else {
             vec![

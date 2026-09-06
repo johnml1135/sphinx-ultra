@@ -124,6 +124,53 @@ pub fn normalize_dot_segments(relative: &str) -> String {
     segments.join("/")
 }
 
+/// `Path.relative_to(root, walk_up=True)` over two already-resolved
+/// absolute paths — the second half of sphinx's `relfn2path`
+/// (`_relative_path(abs_fn, self.srcdir)`, `util/osutil.py:173-189`):
+/// the srcdir-relative spelling of a file, walking UP with `..` when the
+/// file lies outside the source directory (`srcdir / "../ext/part.rst"`
+/// is exactly what `note_dependency` then stores). Posix-separated.
+///
+/// Both inputs must be resolved ([`resolve_path`]), like sphinx's — a
+/// symlink followed on one side only would make the walk-up lie. Paths on
+/// different roots (Windows drives) have no relative spelling; sphinx
+/// returns the path itself, and so does this.
+pub(crate) fn relative_path_walk_up(path: &Path, root: &Path) -> String {
+    use std::path::Component;
+    let path_parts: Vec<Component<'_>> = path.components().collect();
+    let root_parts: Vec<Component<'_>> = root.components().collect();
+    let anchors_differ = match (path_parts.first(), root_parts.first()) {
+        (Some(Component::Prefix(a)), Some(Component::Prefix(b))) => a != b,
+        (Some(Component::Prefix(_)), _) | (_, Some(Component::Prefix(_))) => true,
+        _ => false,
+    };
+    if anchors_differ {
+        return path.to_string_lossy().replace('\\', "/");
+    }
+    let common = path_parts
+        .iter()
+        .zip(root_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut segments: Vec<String> = vec!["..".to_string(); root_parts.len() - common];
+    segments.extend(
+        path_parts[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    segments.join("/")
+}
+
+/// Python `str.isspace()`, which is also what `re`'s `\s` matches on a
+/// `str` pattern: the Unicode White_Space set ([`char::is_whitespace`])
+/// PLUS the four C0 separators `\x1c`-`\x1f` (bidirectional class B/S,
+/// which Unicode does not call whitespace). `\x1c`-`\x1e` are also
+/// [`py_splitlines`] boundaries; `\x1f` is the one that survives into a
+/// line and shows the difference.
+pub(crate) fn py_isspace(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\x1c'..='\x1f')
+}
+
 /// `Project.path2doc` (`sphinx/project.py:114-128`) against Sphinx's
 /// *default* `source_suffix` — `{'.rst': 'restructuredtext'}`
 /// (`config.py:243`): the docname a source file under `srcdir` maps to, or
@@ -133,6 +180,12 @@ pub fn normalize_dot_segments(relative: &str) -> String {
 /// `.md`/`.txt`): the consumers — `env.included` bookkeeping and the orphan
 /// check behind it — must match what Sphinx records, and Sphinx's default
 /// project never maps a `.txt` include target to a document.
+///
+/// One knowing simplification: for a `.rst` OUTSIDE `srcdir` sphinx's
+/// `relative_to` fails and the absolute path itself becomes the "docname"
+/// (`'/base/ext/part'`, probed) — a name no document can have, so the
+/// orphan check ignores it. `None` here has the same effect, and keeps
+/// `env.included` free of environment-specific absolute paths.
 pub fn path2doc(path: &Path, srcdir: &Path) -> Option<String> {
     let rel = path.strip_prefix(srcdir).ok()?;
     let rel = rel.to_str()?.replace('\\', "/");
@@ -511,6 +564,45 @@ mod path_tests {
         assert_eq!(path2doc(Path::new("/src/data.txt"), srcdir), None);
         assert_eq!(path2doc(Path::new("/src/notes.md"), srcdir), None);
         assert_eq!(path2doc(Path::new("/elsewhere/part.rst"), srcdir), None);
+    }
+
+    /// `_relative_path(abs_fn, srcdir)`: inside the tree it is the plain
+    /// relative spelling; outside it walks up with `..`, which is what
+    /// makes `srcdir / rel` name the file sphinx actually read.
+    ///
+    // oracle (sphinx 9.1.0, probe_symlink.py s1/s5): an include resolving
+    // to BASE/ext/part.rst from srcdir BASE/src records
+    // env.dependencies == {'index': {BASE/'src/../ext/part.rst'}}.
+    #[test]
+    fn relative_path_walk_up_matches_sphinxs_relative_to() {
+        let root = Path::new("/base/src");
+        assert_eq!(
+            relative_path_walk_up(Path::new("/base/src/a/c.rst"), root),
+            "a/c.rst"
+        );
+        assert_eq!(
+            relative_path_walk_up(Path::new("/base/ext/part.rst"), root),
+            "../ext/part.rst"
+        );
+        assert_eq!(
+            relative_path_walk_up(Path::new("/other/x.txt"), root),
+            "../../other/x.txt"
+        );
+        assert_eq!(relative_path_walk_up(Path::new("/base/src"), root), "");
+    }
+
+    /// Python's `isspace` set is Unicode White_Space plus `\x1c`-`\x1f`.
+    #[test]
+    fn py_isspace_is_unicode_whitespace_plus_the_c0_separators() {
+        for c in [
+            ' ', '\t', '\n', '\u{a0}', '\u{3000}', '\x1c', '\x1d', '\x1e', '\x1f',
+        ] {
+            assert!(py_isspace(c), "{c:?}");
+        }
+        for c in ['a', '\x00', '\x1b', '\u{200b}'] {
+            assert!(!py_isspace(c), "{c:?}");
+        }
+        assert!(!'\x1f'.is_whitespace(), "the case Rust's predicate misses");
     }
     /// Sphinx `.resolve()`s the joined path, so `..` walks up from a
     /// symlink's TARGET, not from the link's own parent. The lexical
