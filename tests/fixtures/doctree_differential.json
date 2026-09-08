@@ -4109,6 +4109,204 @@
       "name": "dir_image.target_python_whitespace",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <reference refuri=\"http://xy\">\n        <image uri=\"p.png\">\n",
       "rst": ".. image:: p.png\n   :target: http://x\u001fy\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_second_line_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        : uri\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   : uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_second_line_bare_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        uri\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_third_line_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        more\n    <system_message level=\"2\" line=\"3\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   : uri\n   more\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_malformed_comment_spans_blank",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        x\n        \n        y\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   x\n\n   y\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_wide_marker_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": "..   _name\n x\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_second_line_one_space_indent",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"name\" names=\"name\" refuri=\"uri\">\n",
+      "rst": ".. _name\n : uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_name_split_across_lines",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"a-b\" names=\"a\\ b\" refuri=\"uri\">\n",
+      "rst": ".. _a\n   b: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_three_spaces_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _lbl   :\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _lbl   :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_two_spaces_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _pad  lbl  :\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _pad  lbl  :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_nbsp_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _x :\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _x :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_us_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _x\u001f:\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _x\u001f:\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_us_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _`x\u001f`: uri\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _`x\u001f`: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_nbsp_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _`x `: uri\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _`x `: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_space_before_colon",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"x-y\" names=\"x\\ y\" refuri=\"uri\">\n",
+      "rst": ".. _`x y` : uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_anonymous_space_before_colon",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target anonymous=\"1\" ids=\"id1\">\n",
+      "rst": ".. __ :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_inner_backtick",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"a-b\" names=\"a`b\" refuri=\"uri\">\n",
+      "rst": ".. _`a`b`: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_escaped_space_in_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"xy\" names=\"xy\">\n",
+      "rst": ".. _x\\ y:\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_escaped_space_in_link",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"a b\">\n",
+      "rst": ".. _t: a\\ b\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_indirect_needs_a_simplename",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"a$b_\">\n",
+      "rst": ".. _t: a$b_\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.explicit_nbsp_after_dots_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n         _x:\n",
+      "rst": "..  _x:\n"
+    },
+    {
+      "family": "dir_admonitions",
+      "name": "dir_admonitions.class_option_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <note classes=\"a b\">\n        <paragraph>\n            body\n",
+      "rst": ".. note::\n   :class: a\u001fb\n\n   body\n"
+    },
+    {
+      "family": "dir_image",
+      "name": "dir_image.uri_argument_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <image uri=\"pq.png\">\n",
+      "rst": ".. image:: p\u001fq.png\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_uri_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure>\n        <image uri=\"pq.png\">\n",
+      "rst": ".. figure:: p\u001fq.png\n"
+    },
+    {
+      "family": "dir_body",
+      "name": "dir_body.raw_format_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <raw format=\"ht ml\" xml:space=\"preserve\">\n        <b>x</b>\n",
+      "rst": ".. raw:: ht\u001fml\n\n   <b>x</b>\n"
+    },
+    {
+      "family": "substitutions",
+      "name": "substitutions.unicode_codes_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <substitution_definition names=\"u\">\n        A\n        B\n    <paragraph>\n        <substitution_reference refname=\"u\">\n            u\n         here\n",
+      "rst": ".. |u| unicode:: 0x41\u001f0x42\n\n|u| here\n"
+    },
+    {
+      "family": "dir_tables",
+      "name": "dir_tables.list_table_widths_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table classes=\"colwidths-given\">\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"1\">\n            <colspec colwidth=\"2\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": ".. list-table::\n   :widths: 1\u001f2\n\n   * - a\n     - b\n"
+    },
+    {
+      "family": "dir_tables",
+      "name": "dir_tables.table_widths_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table classes=\"colwidths-given\">\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"1\">\n            <colspec colwidth=\"2\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": ".. table::\n   :widths: 1\u001f2\n\n   === ===\n   a   b\n   === ===\n"
+    },
+    {
+      "family": "dir_core",
+      "name": "dir_core.directive_argument_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <pending>\n        .. internal attributes:\n             .transform: docutils.transforms.misc.ClassAttribute\n             .details:\n               class: ['a', 'b']\n               directive: 'class'\n    <paragraph>\n        para\n",
+      "rst": ".. class:: a\u001fb\n\npara\n"
+    },
+    {
+      "family": "dir_image",
+      "name": "dir_image.align_choice_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <image align=\"left\" uri=\"p.png\">\n",
+      "rst": ".. image:: p.png\n   :align: \u001fleft\n"
+    },
+    {
+      "family": "tables_simple",
+      "name": "tables_simple.cell_trailing_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": "=== ===\na\u001f  b\n=== ===\n"
+    },
+    {
+      "family": "tables_grid",
+      "name": "tables_grid.cell_trailing_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": "+---+---+\n| a\u001f| b |\n+---+---+\n"
+    },
+    {
+      "family": "substitutions",
+      "name": "substitutions.marker_us_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        |ab\u001f| replace:: q\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed substitution definition.\n",
+      "rst": ".. |ab\u001f| replace:: q\n"
+    },
+    {
+      "family": "substitutions",
+      "name": "substitutions.marker_nbsp_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        |ab | replace:: q\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed substitution definition.\n",
+      "rst": ".. |ab | replace:: q\n"
     }
   ],
   "docutils_version": "0.22.4",

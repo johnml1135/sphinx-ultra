@@ -2065,10 +2065,64 @@
       "rst": ".. envvar:: SM\n\n   :param x: text\n     bad\n       indent\n"
     },
     {
+      "family": "sx_std",
+      "name": "sx_std.option_name_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'git\\ command\\ line\\ option;\\ -x',\\ 'cmdoption-git-x',\\ '',\\ None)\">\n    <desc classes=\"std option\" desctype=\"option\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"option\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" allnames=\"-x\" classes=\"sig sig-object\" ids=\"cmdoption-git-x\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                -x\n            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                \u001fy\n        <desc_content>\n            <paragraph>\n                Body.\n",
+      "rst": ".. program:: git\n\n.. option:: -x\u001fy\n\n   Body.\n"
+    },
+    {
+      "family": "sx_std",
+      "name": "sx_std.envvar_field_name_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'environment\\ variable;\\ WS',\\ 'envvar-WS',\\ '',\\ None)\">\n    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-WS\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                WS\n        <desc_content>\n            <field_list>\n                <field>\n                    <field_name>\n                        Param x\n                    <field_body>\n                        <paragraph>\n                            thing\n",
+      "rst": ".. envvar:: WS\n\n   :param\u001fx: thing\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_entry_repr_escapes_control_char",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a\\\\x1fb',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: single: a\u001fb\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_entry_repr_escapes_nbsp",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a\\\\xa0b',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: single: a b\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_entry_repr_escapes_del",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a\\\\x7fb',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: single: ab\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_index_entry_repr_escapes_control_char",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term-one\">\n                    term\u001fone\n                    <index entries=\"('single',\\ 'term\\\\x1fone',\\ 'term-term-one',\\ 'main',\\ None)\">\n                <definition>\n                    <paragraph>\n                        definition\n",
+      "rst": ".. glossary::\n\n   term\u001fone\n      definition\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.versionadded_argument_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <versionmodified type=\"versionadded\" version=\"1.0\">\n        <paragraph translatable=\"0\">\n            <inline classes=\"versionmodified added\">\n                Added in version 1.0: \n            a b\n",
+      "rst": ".. versionadded:: 1.0\u001fa b\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.deprecated_argument_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <versionmodified type=\"deprecated\" version=\"2.0\">\n        <paragraph translatable=\"0\">\n            <inline classes=\"versionmodified deprecated\">\n                Deprecated since version 2.0: \n            x y\n",
+      "rst": ".. deprecated:: 2.0\u001fx y\n"
+    },
+    {
       "family": "py",
       "name": "py.function_plain_args",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'built-in\\ function;\\ func()',\\ 'func',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"func()\" _toc_parts=\"('func',)\" class=\"\" classes=\"sig sig-object\" fullname=\"func\" ids=\"func\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                func\n            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                <desc_parameter xml:space=\"preserve\">\n                    <desc_sig_name classes=\"n\">\n                        a\n                <desc_parameter xml:space=\"preserve\">\n                    <desc_sig_name classes=\"n\">\n                        b\n        <desc_content>\n            <paragraph>\n                Body.\n",
       "rst": ".. py:function:: func(a, b)\n\n   Body.\n"
+    },
+    {
+      "family": "py",
+      "name": "py.param_type_name_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                f\n            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                <desc_parameter xml:space=\"preserve\">\n                    <desc_sig_name classes=\"n\">\n                        x\n        <desc_content>\n            <field_list>\n                <field>\n                    <field_name>\n                        Parameters\n                    <field_body>\n                        <paragraph>\n                            <literal_strong>\n                                x\n                             (\n                            <pending_xref py:class=\"True\" py:module=\"True\" refdomain=\"py\" refexplicit=\"0\" refspecific=\"1\" reftarget=\"int\" reftype=\"class\">\n                                <literal_emphasis>\n                                    int\n                            )\n                             -- \n                            the thing\n",
+      "rst": ".. py:function:: f(x)\n\n   :param int\u001fx: the thing\n"
     },
     {
       "family": "py",

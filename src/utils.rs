@@ -171,6 +171,15 @@ pub(crate) fn py_isspace(c: char) -> bool {
     c.is_whitespace() || matches!(c, '\x1c'..='\x1f')
 }
 
+/// Python `str.split()` with no separator: split on runs of [`py_isspace`],
+/// dropping the empty leading/trailing/interior fields. Rust's
+/// `str::split_whitespace` is the same shape over a NARROWER set (it misses
+/// the C0 separators `\x1c`-`\x1f`), so every port of a docutils/Sphinx
+/// `.split()` must come through here.
+pub(crate) fn py_split(s: &str) -> impl Iterator<Item = &str> {
+    s.split(py_isspace).filter(|w| !w.is_empty())
+}
+
 /// `Project.path2doc` (`sphinx/project.py:114-128`) against Sphinx's
 /// *default* `source_suffix` — `{'.rst': 'restructuredtext'}`
 /// (`config.py:243`): the docname a source file under `srcdir` maps to, or

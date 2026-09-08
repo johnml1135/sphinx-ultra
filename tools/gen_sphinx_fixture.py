@@ -707,10 +707,31 @@ CASES = [
     # two-child one is not expressible through parseable rst: block-level
     # errors land inside field_body, as here.)
     ('sx_std', 'envvar_field_body_system_message', '.. envvar:: SM\n\n   :param x: text\n     bad\n       indent\n'),
+    # ----- round E: the remaining Python-`str.split()` sites -----
+    # `option_desc_re = r'((?:/|--|-|\+)?[^\s=]+)(=?\s*.*)'` — Python `\s`,
+    # so \x1f ENDS the option name and `y` becomes its argument.
+    ('sx_std', 'option_name_python_whitespace', '.. program:: git\n\n.. option:: -x\x1fy\n\n   Body.\n'),
+    # `field_name.astext().split(None, maxsplit=1)` (docfields.py:384-389)
+    # and `fieldarg.rsplit(None, 1)` (:448-455) split the same way.
+    ('sx_std', 'envvar_field_name_python_whitespace', '.. envvar:: WS\n\n   :param\x1fx: thing\n'),
+    # `Element.starttag` renders a list item as `'%s' % (v,)` — the tuple's
+    # `repr`, which escapes every non-`str.isprintable()` character.
+    ('sx_directives', 'index_entry_repr_escapes_control_char', '.. index:: single: a\x1fb\n'),
+    ('sx_directives', 'index_entry_repr_escapes_nbsp', '.. index:: single: a\xa0b\n'),
+    ('sx_directives', 'index_entry_repr_escapes_del', '.. index:: single: a\x7fb\n'),
+    ('sx_directives', 'glossary_index_entry_repr_escapes_control_char', '.. glossary::\n\n   term\x1fone\n      definition\n'),
+    # `parse_directive_arguments` re-splits with `arg_text.split(None,
+    # required + optional - 1)` when there are too many words — Python
+    # whitespace both times, so \x1f ends the version argument.
+    ('sx_directives', 'versionadded_argument_python_whitespace', '.. versionadded:: 1.0\x1fa b\n'),
+    ('sx_directives', 'deprecated_argument_python_whitespace', '.. deprecated:: 2.0\x1fx y\n'),
     # ----- wave-4.5 task 8: py-domain object directives ([PY §1.6/1.7]) -----
     # Propagation-visible module shapes and known-divergence signatures are
     # in EXCLUDED above, each with its reason.
     ('py', 'function_plain_args', '.. py:function:: func(a, b)\n\n   Body.\n'),
+    # round E: `:param type name:` splits with `rsplit(None, 1)` — Python
+    # whitespace, so \x1f separates the type from the name.
+    ('py', 'param_type_name_python_whitespace', '.. py:function:: f(x)\n\n   :param int\x1fx: the thing\n'),
     ('py', 'function_full_markers', '.. py:function:: mymod.func(a, b=1, *args, c: int = 2, **kwargs) -> str\n'),
     ('py', 'function_posonly', '.. py:function:: func(a, /, b, *, c)\n'),
     ('py', 'function_posonly_trailing', '.. py:function:: func(a, /)\n'),

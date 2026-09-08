@@ -876,10 +876,80 @@ CASES = [
     # (the `image` `:target:` twin lives in the `dir_image` family below
     # the scope guard — same `parse_target` URI path.)
     ("dir_image", "target_python_whitespace", ".. image:: p.png\n   :target: http://x\x1fy\n"),
-    # HELD OUT (known divergence, wave-5 backlog): `.. _name\n   : uri` is
-    # malformed, and docutils' fallback comment starts on the SECOND line
-    # (`: uri`, warning at line 2) because `hyperlink_target` had already
-    # advanced the state machine; this crate rewinds to the first line.
+    # ----- round_e: the hyperlink-target grammar, ported whole -----
+    # `hyperlink_target` (states.py:2055-2078) joins the block ONE LINE AT A
+    # TIME with no separator, keeping each continuation line's indentation,
+    # and retries the target pattern after each. Both of these therefore end
+    # in `malformed hyperlink target.` — and the fallback `Body.comment` runs
+    # with the state machine ALREADY on the block's last line, so the comment
+    # holds only that line (sliced at the `\.\.( +|$)` transition's end) and
+    # the warning is attributed to it. (Round D held the first of these out
+    # with the wrong stated behaviour; both are now oracle-pinned.)
+    ("round_e", "target_second_line_colon_malformed", ".. _name\n   : uri\n"),
+    ("round_e", "target_second_line_bare_malformed", ".. _name\n   uri\n"),
+    ("round_e", "target_third_line_malformed", ".. _name\n   : uri\n   more\n"),
+    ("round_e", "target_malformed_comment_spans_blank", ".. _name\n   x\n\n   y\n"),
+    ("round_e", "target_wide_marker_malformed", "..   _name\n x\n"),
+    # … while a ONE-space continuation indent completes the marker instead.
+    ("round_e", "target_second_line_one_space_indent", ".. _name\n : uri\n"),
+    ("round_e", "target_name_split_across_lines", ".. _a\n   b: uri\n"),
+    # The tail is `(?<![\s\x00])[ ]?:([ ]+|$)` with
+    # `non_whitespace_escape_before = r'(?<![\s\x00])'` (states.py:780 — NOT
+    # `(?<![ \n\x00])`): at most ONE space before the colon, and a name may
+    # not end in Python whitespace (which includes NBSP and \x1f).
+    ("round_e", "target_three_spaces_before_colon_malformed", ".. _lbl   :\n"),
+    ("round_e", "target_two_spaces_before_colon_malformed", ".. _pad  lbl  :\n"),
+    ("round_e", "target_nbsp_before_colon_malformed", ".. _x\u00a0:\n"),
+    ("round_e", "target_us_before_colon_malformed", ".. _x\x1f:\n"),
+    ("round_e", "target_quoted_us_before_close_malformed", ".. _`x\x1f`: uri\n"),
+    ("round_e", "target_quoted_nbsp_before_close_malformed", ".. _`x\u00a0`: uri\n"),
+    # The same `[ ]?` makes these two WELL-formed, where the pre-round parser
+    # called them malformed.
+    ("round_e", "target_quoted_space_before_colon", ".. _`x y` : uri\n"),
+    ("round_e", "target_anonymous_space_before_colon", ".. __ :\n"),
+    # Non-greedy `.+?`: the first closing backtick whose tail matches wins.
+    ("round_e", "target_quoted_inner_backtick", ".. _`a`b`: uri\n"),
+    # `add_target` normalizes `unescape(name)`, and `unescape` drops the
+    # WHOLE `\x00 ` pair — an escaped space vanishes from the name …
+    ("round_e", "target_escaped_space_in_name", ".. _x\\ y:\n"),
+    # … while in the LINK it splits `split_escaped_whitespace` parts, which
+    # rejoin with a real space.
+    ("round_e", "target_escaped_space_in_link", ".. _t: a\\ b\n"),
+    # `is_reference` needs a whole `simplename` before the `_`, so a `$` in
+    # the body makes this a URI, not an indirect reference.
+    ("round_e", "target_indirect_needs_a_simplename", ".. _t: a$b_\n"),
+    # Every explicit-markup construct opens `\.\.[ ]+` — LITERAL spaces. A
+    # NBSP after the dots is a comment, not a target.
+    ("round_e", "explicit_nbsp_after_dots_is_comment", ".. \u00a0_x:\n"),
+    # ----- round_e: the remaining Python-`str.split()` sites -----
+    # `class_option` splits with `str.split()` (directives/__init__.py:316),
+    # so \x1f makes TWO class names instead of one hyphenated id.
+    ("dir_admonitions", "class_option_python_whitespace", ".. note::\n   :class: a\x1fb\n\n   body\n"),
+    # `directives.uri` (:209-221) removes unescaped Python whitespace.
+    ("dir_image", "uri_argument_python_whitespace", ".. image:: p\x1fq.png\n"),
+    ("dir_media", "figure_uri_python_whitespace", ".. figure:: p\x1fq.png\n"),
+    # `' '.join(self.arguments[0].lower().split())` (misc.py:296).
+    ("dir_body", "raw_format_python_whitespace", ".. raw:: ht\x1fml\n\n   <b>x</b>\n"),
+    # `...split(self.arguments[0])[0].split()` (misc.py:422) — two codes.
+    ("substitutions", "unicode_codes_python_whitespace", ".. |u| unicode:: 0x41\x1f0x42\n\n|u| here\n"),
+    # `positive_int_list` (:392-403) — pre-round this raised an ERROR.
+    ("dir_tables", "list_table_widths_python_whitespace", ".. list-table::\n   :widths: 1\x1f2\n\n   * - a\n     - b\n"),
+    ("dir_tables", "table_widths_python_whitespace", ".. table::\n   :widths: 1\x1f2\n\n   === ===\n   a   b\n   === ===\n"),
+    # `parse_directive_arguments` splits with `str.split()` too
+    # (states.py:2365-2380); `final_argument_whitespace` then re-joins.
+    ("dir_core", "directive_argument_python_whitespace", ".. class:: a\x1fb\n\npara\n"),
+    # `choice` is `argument.lower().strip()` (directives/__init__.py:322-331).
+    ("dir_image", "align_choice_python_whitespace", ".. image:: p.png\n   :align: \x1fleft\n"),
+    # `Text.paragraph` is `'\n'.join(lines).rstrip()` — the document's own
+    # lines are rstripped by `string2lines`, but a table cell's are not.
+    ("tables_simple", "cell_trailing_python_whitespace", "=== ===\na\x1f  b\n=== ===\n"),
+    ("tables_grid", "cell_trailing_python_whitespace", "+---+---+\n| a\x1f| b |\n+---+---+\n"),
+    # The substitution marker's closing lookbehind is the same
+    # `non_whitespace_escape_before` (states.py:1992-2001), so a name may not
+    # end in Python whitespace. (EOF forms only: the malformed fallback's
+    # comment extent is a separate, ledgered gap — see IMPLEMENTATION_STATUS.)
+    ("substitutions", "marker_us_before_close_malformed", ".. |ab\x1f| replace:: q\n"),
+    ("substitutions", "marker_nbsp_before_close_malformed", ".. |ab | replace:: q\n"),
 ]
 
 

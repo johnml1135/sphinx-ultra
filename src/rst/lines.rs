@@ -114,7 +114,9 @@ fn process_line(raw: &str, out: &mut String) {
             }
         }
     }
-    out.truncate(base + out[base..].trim_end().len());
+    // Python `str.rstrip()` — [`crate::utils::py_isspace`], so a trailing
+    // \x1f (which `splitlines` does NOT eat) goes too.
+    out.truncate(base + out[base..].trim_end_matches(crate::utils::py_isspace).len());
 }
 
 impl Lines {

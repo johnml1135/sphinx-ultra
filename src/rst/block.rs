@@ -481,7 +481,9 @@ impl BlockParser {
         let arguments: Vec<String> = if is_admonition {
             Vec::new()
         } else {
-            marker_text.split_whitespace().map(str::to_string).collect()
+            crate::utils::py_split(marker_text)
+                .map(str::to_string)
+                .collect()
         };
         self.directive_records.push(super::DirectiveRecord {
             source: first_line.source,
@@ -1336,8 +1338,13 @@ impl BlockParser {
         while end < lines.len() && !lines[end].is_blank() && lines[end].indent() == 0 {
             end += 1;
         }
+        // `Text.paragraph`: `data = '\n'.join(lines).rstrip()` — Python's
+        // rstrip, BEFORE the `::` test. `string2lines` has already rstripped
+        // the document's own lines, but synthesized ones (table cells) reach
+        // here with their trailing whitespace intact.
         let joined = self.join_lines(&lines[start..end]);
-        let (text, expect_literal) = strip_literal_colons(&joined);
+        let joined = joined.trim_end_matches(crate::utils::py_isspace);
+        let (text, expect_literal) = strip_literal_colons(joined);
         let span = self.span_of(lines, start, end.saturating_sub(1));
         if !text.is_empty() {
             let result = self.inline(&text, span, lines[start].lineno);
@@ -1980,11 +1987,21 @@ impl BlockParser {
         let line_text = line.slice(&src);
         // docutils consumes ALL whitespace after `..` (fixture-verified for
         // multi-space forms).
+        // The explicit-markup transition is `\.\.( +|$)` (states.py,
+        // `Body.patterns.explicit_markup`) and every construct pattern opens
+        // `\.\.[ ]+` — LITERAL spaces, not Python's `\s`. `.. \xa0_x:` is
+        // therefore a plain comment, not a target (fixture
+        // round_e.explicit_nbsp_after_dots_is_comment).
         let rest = if line_text == ".." {
             ""
         } else {
-            line_text[2..].trim_start()
+            line_text[2..].trim_start_matches(' ')
         };
+        // `match.end()` of that transition, in CHARACTERS (`..` plus the
+        // literal spaces are ASCII): `Body.comment` slices the comment's
+        // first line at this offset, and on the malformed-target path that
+        // line is NOT the marker line.
+        let dots_end = line_text.len() - rest.len();
 
         if rest.starts_with('[') {
             if let Some(next_pos) = self.try_footnote_def(lines, pos, rest, out) {
@@ -1997,6 +2014,9 @@ impl BlockParser {
         // MarkupError queues a WARNING and falls through to the comment
         // path, which re-absorbs the whole block (through internal blanks).
         let mut construct_error: Option<Node> = None;
+        // Set only by the malformed-hyperlink-target path: the comment's
+        // first line, which is then NOT the explicit-markup marker line.
+        let mut comment_first: Option<String> = None;
         // The hyperlink-target construct is `\.\.[ ]+_(?![ ]|$)`
         // (states.py:2464-2469): the character after `_` on the FIRST line
         // must exist and must not be a space, or the whole block is a plain
@@ -2005,8 +2025,12 @@ impl BlockParser {
         // comments, and so is `.. _\tx:` once `expandtabs` has run
         // (fixture round_d.target_*_is_comment, docutils 0.22.4).
         if rest.starts_with('_') && !matches!(rest[1..].chars().next(), None | Some(' ')) {
-            // Target attempt: the marker (name + link) may span ADJACENT
-            // indented continuation lines; parse the joined form.
+            // `Body.hyperlink_target` (states.py:2055-2078): gather the block
+            // with `get_first_known_indented(match.end(), until_blank=True,
+            // strip_indent=False)` — block[0] is the first line PAST the `_`
+            // and every continuation line keeps its FULL indentation — then
+            // concatenate one line at a time (NO separator) until the target
+            // pattern matches, or raise `malformed hyperlink target.`.
             let start = *pos;
             let lineno = line.lineno;
             let mut consumed = 0usize;
@@ -2017,46 +2041,63 @@ impl BlockParser {
             {
                 consumed += 1;
             }
-            let cont: Vec<&str> = lines[start + 1..start + 1 + consumed]
-                .iter()
-                .map(|l| self.sources.line_text(*l).trim())
-                .collect();
-            let joined = if cont.is_empty() {
-                rest.to_string()
-            } else {
-                format!("{}\n{}", rest, cont.join("\n"))
+            let mut block: Vec<Vec<char>> = Vec::with_capacity(consumed + 1);
+            block.push(escape2null_chars(&rest[1..]));
+            for l in &lines[start + 1..start + 1 + consumed] {
+                block.push(escape2null_chars(self.sources.line_text(*l)));
+            }
+            let mut escaped: Vec<char> = block[0].clone();
+            let mut blockindex = 0usize;
+            let hit = loop {
+                if let Some(m) = match_target_pattern(&escaped) {
+                    break Some(m);
+                }
+                blockindex += 1;
+                match block.get(blockindex) {
+                    Some(next) => escaped.extend_from_slice(next),
+                    None => break None,
+                }
             };
-            *pos = start + 1 + consumed;
-            let span = self.span_of(lines, start, start + consumed);
-            match parse_target_marker(&joined) {
-                Some(marker) => {
+            match hit {
+                Some((name, end)) => {
+                    *pos = start + 1 + consumed;
+                    let span = self.span_of(lines, start, start + consumed);
+                    // `block[0] = (block[0] + ' ')[targetmatch.end()
+                    // - len(escaped) - 1:].strip()` — a NEGATIVE slice, so it
+                    // keeps the unmatched tail of the line the match ended on.
+                    let keep = escaped.len() - end + 1;
+                    let mut with_space = block[blockindex].clone();
+                    with_space.push(' ');
+                    let tail: String = with_space[with_space.len().saturating_sub(keep)..]
+                        .iter()
+                        .collect();
+                    let mut link_block: Vec<Vec<char>> = vec![py_strip(&tail).chars().collect()];
+                    for l in &block[blockindex + 1..] {
+                        link_block.push(l.clone());
+                    }
                     let mut target = Node::elem(kinds::TARGET, span);
                     let mut internal = false;
                     let mut refuri_val: Option<String> = None;
-                    if marker.anonymous {
-                        target.set("anonymous", AttrValue::Int(1));
-                    } else {
-                        target
+                    let anonymous = name.is_none();
+                    match &name {
+                        // `add_target`: `normalize_name(unescape(targetname))`.
+                        Some(n) => target
                             .attrs
                             .names
-                            .push(ids::fully_normalize_name(&marker.name));
+                            .push(ids::fully_normalize_name(&unescape_nulls(n))),
+                        None => target.set("anonymous", AttrValue::Int(1)),
                     }
-                    if marker.link.is_empty() {
-                        internal = true;
-                    } else if let Some(refname) = reference_name_from_link(&marker.link) {
-                        target.set("refname", AttrValue::Str(refname));
-                    } else {
-                        // `''.join(unescape(part).split())` — Python's
-                        // `str.split()`, so `\x1f` vanishes from a URI too.
-                        let uri: String = marker
-                            .link
-                            .chars()
-                            .filter(|c| !crate::utils::py_isspace(*c) && *c != '\\')
-                            .collect();
-                        refuri_val = Some(uri.clone());
-                        target.set("refuri", AttrValue::Str(uri));
+                    match parse_target_block(&link_block) {
+                        TargetRef::RefName(data) => {
+                            target.set("refname", AttrValue::Str(ids::fully_normalize_name(&data)));
+                        }
+                        TargetRef::RefUri(uri) if uri.is_empty() => internal = true,
+                        TargetRef::RefUri(uri) => {
+                            refuri_val = Some(uri.clone());
+                            target.set("refuri", AttrValue::Str(uri));
+                        }
                     }
-                    let msg = if marker.anonymous {
+                    let msg = if anonymous {
                         self.registry.set_id_anonymous(&mut target);
                         None
                     } else {
@@ -2075,15 +2116,22 @@ impl BlockParser {
                     out.push(target);
                 }
                 None => {
-                    // Malformed target: queue the WARNING and fall through
-                    // to the comment path below (fixture-verified: the
-                    // comment re-absorbs the block through blank lines).
-                    *pos = start;
+                    // Malformed. `explicit_construct` queues the WARNING at
+                    // `abs_line_number()` — which `hyperlink_target` has
+                    // already advanced to the LAST line of the block — and
+                    // falls through to `Body.comment(match)`, so the comment
+                    // starts on that same line, sliced at the TRANSITION
+                    // match's end (`dots_end`), not at the marker line.
+                    let last = start + consumed;
+                    let last_line = lines[last];
+                    comment_first =
+                        Some(char_suffix(self.sources.line_text(last_line), dots_end).to_string());
+                    *pos = last;
                     construct_error = Some(self.msg(
                         messages::WARNING,
                         "malformed hyperlink target.",
-                        line.source,
-                        lineno,
+                        last_line.source,
+                        last_line.lineno,
                     ));
                 }
             }
@@ -2136,6 +2184,12 @@ impl BlockParser {
         // is ADJACENT (`..` + blank + indent leaves an empty comment and a
         // block quote).
         let start = *pos;
+        // On the malformed-target path the comment opens on the block's LAST
+        // line, whose text past `dots_end` replaces the marker remainder.
+        let rest: &str = match comment_first {
+            Some(ref s) => s.as_str(),
+            None => rest,
+        };
         let adjacent_body = lines
             .get(start + 1)
             .map(|l| !l.is_blank() && l.indent() > 0)
@@ -6014,7 +6068,9 @@ impl BlockParser {
         }
         let arg = &input.arguments[0];
         let codes_text = &arg[..unicode_comment_cut(arg)];
-        for code in codes_text.split_whitespace() {
+        // `self.comment_pattern.split(...)[0].split()` (misc.py:422) —
+        // Python's `str.split()`, so `0x41\x1f0x42` is TWO codes.
+        for code in crate::utils::py_split(codes_text) {
             match unicode_code(code) {
                 Ok(s) => out.push(Node::text_node(s, input.span)),
                 Err(detail) => {
@@ -7416,9 +7472,8 @@ impl BlockParser {
             ));
             return;
         }
-        let format = input.arguments[0]
-            .to_lowercase()
-            .split_whitespace()
+        // `' '.join(self.arguments[0].lower().split())` (misc.py:296).
+        let format = crate::utils::py_split(&input.arguments[0].to_lowercase())
             .collect::<Vec<_>>()
             .join(" ");
         let mut node = Node::elem("raw", input.span);
@@ -7786,14 +7841,19 @@ impl BlockParser {
         let mut target = Node::elem(kinds::TARGET, span);
         target.set("anonymous", AttrValue::Int(1));
         if !link.is_empty() {
-            if let Some(refname) = reference_name_from_link(&link) {
-                target.set("refname", AttrValue::Str(refname));
-            } else {
-                let uri: String = link
-                    .chars()
-                    .filter(|c| !crate::utils::py_isspace(*c) && *c != '\\')
-                    .collect();
-                target.set("refuri", AttrValue::Str(uri));
+            // `anonymous_target` (states.py:2530-2537) hands the escaped
+            // block straight to `make_target(..., '')`.
+            let block: Vec<Vec<char>> = crate::utils::py_splitlines(&link)
+                .into_iter()
+                .map(escape2null_chars)
+                .collect();
+            match parse_target_block(&block) {
+                TargetRef::RefName(data) => {
+                    target.set("refname", AttrValue::Str(ids::fully_normalize_name(&data)));
+                }
+                TargetRef::RefUri(uri) => {
+                    target.set("refuri", AttrValue::Str(uri));
+                }
             }
         }
         self.registry.set_id_anonymous(&mut target);
@@ -9227,9 +9287,9 @@ fn is_single_field_paragraph(field_body: &Node) -> bool {
 /// all-whitespace remainder is the `ValueError` path — the ORIGINAL text
 /// comes back whole with an empty argument (`docfields.py:384-389`).
 fn split_field_name(text: &str) -> (String, String) {
-    let trimmed = text.trim_start();
-    if let Some(i) = trimmed.find(char::is_whitespace) {
-        let rest = trimmed[i..].trim_start();
+    let trimmed = text.trim_start_matches(crate::utils::py_isspace);
+    if let Some(i) = trimmed.find(crate::utils::py_isspace) {
+        let rest = trimmed[i..].trim_start_matches(crate::utils::py_isspace);
         if !rest.is_empty() {
             return (trimmed[..i].to_string(), rest.to_string());
         }
@@ -9240,12 +9300,12 @@ fn split_field_name(text: &str) -> (String, String) {
 /// Python `fieldarg.rsplit(None, 1)` for the `:param type name:` syntax
 /// (`docfields.py:448-455`): `None` is the single-token `ValueError` path.
 fn rsplit_field_arg(arg: &str) -> Option<(String, String)> {
-    let trimmed = arg.trim_end();
+    let trimmed = arg.trim_end_matches(crate::utils::py_isspace);
     let (i, ws) = trimmed
         .char_indices()
         .rev()
-        .find(|(_, c)| c.is_whitespace())?;
-    let head = trimmed[..i].trim_end();
+        .find(|(_, c)| crate::utils::py_isspace(*c))?;
+    let head = trimmed[..i].trim_end_matches(crate::utils::py_isspace);
     if head.is_empty() {
         return None;
     }
@@ -9858,7 +9918,7 @@ fn option_desc_match(s: &str) -> Option<(String, String)> {
         // `[^\s=]+`, greedy and at least one character long.
         let taken: usize = s[prefix..]
             .chars()
-            .take_while(|c| !c.is_whitespace() && *c != '=')
+            .take_while(|c| !crate::utils::py_isspace(*c) && *c != '=')
             .map(char::len_utf8)
             .sum();
         if taken > 0 {
@@ -11891,7 +11951,7 @@ fn quote_class_spec(class: &'static str) -> DirectiveSpec {
 fn parse_directive_arguments(arg_text: &str, spec: &DirectiveSpec) -> Result<Vec<String>, String> {
     let required = spec.required_arguments;
     let optional = spec.optional_arguments;
-    let words: Vec<&str> = arg_text.split_whitespace().collect();
+    let words: Vec<&str> = crate::utils::py_split(arg_text).collect();
     if words.len() < required {
         return Err(format!(
             "{} argument(s) required, {} supplied",
@@ -11916,15 +11976,15 @@ fn parse_directive_arguments(arg_text: &str, spec: &DirectiveSpec) -> Result<Vec
 /// `maxsplit` tokens; the remainder keeps internal whitespace verbatim.
 fn py_split_max(text: &str, maxsplit: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let mut rest = text.trim_start();
+    let mut rest = text.trim_start_matches(crate::utils::py_isspace);
     for _ in 0..maxsplit {
         if rest.is_empty() {
             return out;
         }
-        match rest.find(char::is_whitespace) {
+        match rest.find(crate::utils::py_isspace) {
             Some(i) => {
                 out.push(rest[..i].to_string());
-                rest = rest[i..].trim_start();
+                rest = rest[i..].trim_start_matches(crate::utils::py_isspace);
             }
             None => {
                 out.push(rest.to_string());
@@ -11977,7 +12037,7 @@ fn parse_extension_options(
         for c in conts {
             body_lines.push(&sources.line_text(*c)[min_indent.min(c.indent())..]);
         }
-        if raw_name.split_whitespace().count() != 1 {
+        if crate::utils::py_split(&raw_name).count() != 1 {
             return Err(
                 "invalid option data: extension option field name may not contain multiple words"
                     .to_string(),
@@ -12096,7 +12156,7 @@ fn convert_option(conv: Conv, value: Option<&str>) -> Result<OptVal, String> {
             let parts: Vec<&str> = if v.contains(',') {
                 v.split(',').collect()
             } else {
-                v.split_whitespace().collect()
+                crate::utils::py_split(v).collect()
             };
             let mut list = Vec::new();
             for p in parts {
@@ -12205,7 +12265,8 @@ fn convert_option(conv: Conv, value: Option<&str>) -> Result<OptVal, String> {
                 return Err("argument required but none supplied".to_string());
             };
             let mut names = Vec::new();
-            for word in v.split_whitespace() {
+            // `argument.split()` (directives/__init__.py:316).
+            for word in crate::utils::py_split(v) {
                 let id = ids::make_id(word);
                 if id.is_empty() {
                     return Err(format!("cannot make \"{word}\" into a class name"));
@@ -12221,7 +12282,8 @@ fn convert_option(conv: Conv, value: Option<&str>) -> Result<OptVal, String> {
                     format_choice_values(values)
                 ));
             };
-            let lowered = v.trim().to_lowercase();
+            // `choice`: `argument.lower().strip()` (directives/__init__.py).
+            let lowered = v.trim_matches(crate::utils::py_isspace).to_lowercase();
             if values.contains(&lowered.as_str()) {
                 Ok(OptVal::Str(lowered))
             } else {
@@ -12317,6 +12379,10 @@ fn nonnegative_int(s: &str) -> Result<OptVal, String> {
 /// whitespace ignored. Returns (negative, digits-without-sign, canonical
 /// leading-zero-stripped ASCII string WITH sign).
 fn py_int_canonical(s: &str) -> Option<(bool, String)> {
+    // `int()` strips Unicode White_Space ONLY — probed over all 0x110000
+    // codepoints against CPython 3.12: it REJECTS the four C0 separators
+    // `\x1c`-`\x1f` that `str.isspace` admits, so Rust's `trim()` is the
+    // exactly-right predicate here and `py_isspace` would be wrong.
     let t = s.trim();
     let (neg, body) = match t.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -12385,6 +12451,25 @@ pub(crate) fn py_repr(value: Option<&str>) -> String {
                     c if c == quote => {
                         out.push('\\');
                         out.push(c);
+                    }
+                    // CPython `unicode_repr` escapes every character
+                    // `str.isprintable()` rejects — categories Cc, Cf, Cs,
+                    // Co, Cn, Zl, Zp, Zs, minus ASCII space. `is_control()`
+                    // is exactly Cc and `is_whitespace()` is exactly
+                    // Zs|Zl|Zp plus Cc members, so the union below is those
+                    // five categories precisely; Cs cannot exist in a Rust
+                    // `char`. Cf/Co/Cn are the LEDGERED gap (no Unicode
+                    // general-category table in-tree) — see
+                    // docs/IMPLEMENTATION_STATUS.md.
+                    c if c != ' ' && (c.is_control() || c.is_whitespace()) => {
+                        let n = c as u32;
+                        if n <= 0xff {
+                            out.push_str(&format!("\\x{n:02x}"));
+                        } else if n <= 0xffff {
+                            out.push_str(&format!("\\u{n:04x}"));
+                        } else {
+                            out.push_str(&format!("\\U{n:08x}"));
+                        }
                     }
                     c => out.push(c),
                 }
@@ -12467,11 +12552,7 @@ fn uri_from_argument(argument: &str) -> String {
     }
     parts
         .iter()
-        .map(|p| {
-            super::inline::unescape(p, false)
-                .split_whitespace()
-                .collect::<String>()
-        })
+        .map(|p| crate::utils::py_split(&super::inline::unescape(p, false)).collect::<String>())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -12485,25 +12566,21 @@ enum ImageTarget {
 }
 
 fn parse_image_target(target: &str) -> ImageTarget {
-    let lines: Vec<&str> = target.lines().collect();
-    let ends_underscore = lines
-        .iter()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(|l| l.trim().ends_with('_'))
-        .unwrap_or(false);
-    if ends_underscore {
-        let joined = lines.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" ");
-        if let Some(data) = reference_data_from_link(&joined) {
-            return ImageTarget::Refname {
-                name: ids::whitespace_normalize_name(&data),
-                refname: ids::fully_normalize_name(&data),
-            };
-        }
+    // `states.escape2null(self.options['target']).splitlines()` then
+    // `self.state.parse_target(block, ...)` (images.py) — the same
+    // `parse_target` the `.. _name:` construct runs, so an escaped space in
+    // the URI survives as a real one.
+    let block: Vec<Vec<char>> = crate::utils::py_splitlines(target)
+        .into_iter()
+        .map(escape2null_chars)
+        .collect();
+    match parse_target_block(&block) {
+        TargetRef::RefName(data) => ImageTarget::Refname {
+            name: ids::whitespace_normalize_name(&data),
+            refname: ids::fully_normalize_name(&data),
+        },
+        TargetRef::RefUri(uri) => ImageTarget::Refuri(uri),
     }
-    // `''.join(unescape(part).split())`: Python's `str.split()` drops
-    // `\x1c`-`\x1f` along with the Unicode whitespace.
-    ImageTarget::Refuri(target.split(crate::utils::py_isspace).collect::<String>())
 }
 
 /// `|name|` marker in a (possibly line-joined) substitution-def head:
@@ -12521,7 +12598,8 @@ fn match_substitution_marker(acc: &str) -> Option<SubstMarker> {
         return None;
     }
     for k in 2..cs.len() {
-        if cs[k].1 != '|' || cs[k - 1].1.is_whitespace() {
+        // `(?<![\s\x00])\|` — Python `\s` before the closing marker.
+        if cs[k].1 != '|' || crate::utils::py_isspace(cs[k - 1].1) {
             continue;
         }
         let name = acc[cs[1].0..cs[k].0].to_string();
@@ -12663,33 +12741,15 @@ fn dupname_subst_defs(node: &mut Node, name: &str, remaining: &mut usize) {
     }
 }
 
-/// Like [`reference_name_from_link`] but returns the reference TEXT
-/// (simple name or phrase) before normalization — docutils is_reference().
-fn reference_data_from_link(link: &str) -> Option<String> {
-    let joined = ids::whitespace_normalize_name(link);
-    let body = joined.strip_suffix('_')?;
-    if body.ends_with('\\') {
-        return None;
+/// The suffix of `s` past `skip` CHARACTERS (Python slicing), or `""` when
+/// the string is shorter.
+fn char_suffix(s: &str, skip: usize) -> &str {
+    match s.char_indices().nth(skip) {
+        Some((i, _)) => &s[i..],
+        None => "",
     }
-    if let Some(phrase) = body.strip_prefix('`').and_then(|b| b.strip_suffix('`')) {
-        if phrase.is_empty() {
-            return None;
-        }
-        return Some(phrase.to_string());
-    }
-    if !body.is_empty()
-        && !body.ends_with('_')
-        && !body.contains(crate::utils::py_isspace)
-        && !body.contains('`')
-        && !body.contains('\\')
-    {
-        return Some(body.to_string());
-    }
-    None
 }
 
-/// docutils `simplename` over a char slice (see rst::inline for the
-/// pattern description).
 fn match_simplename_chars(chars: &[char], at: usize) -> Option<usize> {
     let n = chars.len();
     let mut i = at;
@@ -13075,108 +13135,193 @@ fn parse_enumerator(text: &str) -> Option<Enumerator> {
 // targets
 // ----------------------------------------------------------------------
 
-struct TargetMarker {
-    name: String,
-    anonymous: bool,
-    link: String,
+/// docutils `escape2null` (utils/__init__.py:657-668): a backslash becomes
+/// `\x00` and the character after it is kept verbatim (a trailing backslash
+/// leaves a lone `\x00`). Char vector, because every index in the target
+/// grammar below is a Python character index.
+fn escape2null_chars(s: &str) -> Vec<char> {
+    let mut out = Vec::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            out.push('\u{0}');
+            if let Some(n) = it.next() {
+                out.push(n);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
-/// Parse `_name: link`, ``_`name`: link``, `__: link` forms from the
-/// (possibly multi-line, newline-joined) text after `..`. Returns None for
-/// MALFORMED targets (the caller emits a comment + "malformed hyperlink
-/// target." warning): missing colon, colon not followed by space/EOL,
-/// empty or unclosed backtick phrase, a backtick phrase opening with a
-/// space or closing after one (`(?![ `])` … `(?<![ \n\x00])(?P=quote)`,
-/// states.py:1959-1975), empty plain name, bare `__`.
-///
-/// Precondition (the caller's): the character after `_` exists and is not
-/// a space — otherwise the block is a comment, not a target at all.
-fn parse_target_marker(rest: &str) -> Option<TargetMarker> {
-    let after = rest.strip_prefix('_')?;
-    if let Some(a) = after.strip_prefix('_') {
-        // `.. __:` / `.. __: uri` anonymous form; bare `.. __` is malformed.
-        let link = a.strip_prefix(':')?;
-        if !(link.is_empty() || link.starts_with(' ') || link.starts_with('\n')) {
-            return None;
-        }
-        return Some(TargetMarker {
-            name: String::new(),
-            anonymous: true,
-            link: link.trim().to_string(),
-        });
+/// docutils `nodes.unescape(text)` (nodes.py:2925-2939) with
+/// `restore_backslashes=False`: drop `\x00 ` and `\x00\n` WHOLE (an escaped
+/// space disappears, taking the space with it), then drop bare `\x00`.
+fn unescape_nulls(s: &str) -> String {
+    let mut t = s.to_string();
+    for sep in ["\u{0} ", "\u{0}\n", "\u{0}"] {
+        t = t.split(sep).collect::<String>();
     }
-    if let Some(quoted) = after.strip_prefix('`') {
-        let close = quoted.find('`')?;
-        let name = &quoted[..close];
-        // `(?![ `])` after the open quote and `(?<![ \n\x00])` before the
-        // close quote: `` .. _` x`: `` and `` .. _`x `: `` are malformed
-        // (probed; fixture round_d.target_quoted_*_space_malformed).
-        if name.is_empty() || name.starts_with(' ') || name.ends_with([' ', '\n']) {
-            return None;
-        }
-        let link = quoted[close + 1..].strip_prefix(':')?;
-        if !(link.is_empty() || link.starts_with(' ') || link.starts_with('\n')) {
-            return None;
-        }
-        return Some(TargetMarker {
-            name: name.to_string(),
-            anonymous: false,
-            link: link.trim().to_string(),
-        });
+    t
+}
+
+/// Python `str.strip()` — [`crate::utils::py_isspace`], not Rust's set.
+fn py_strip(s: &str) -> &str {
+    s.trim_matches(crate::utils::py_isspace)
+}
+
+/// `''.join(text.split())` — every Python-whitespace run removed.
+fn py_split_concat(s: &str) -> String {
+    s.split(crate::utils::py_isspace).collect()
+}
+
+/// docutils `split_escaped_whitespace` (utils/__init__.py:671-679).
+fn split_escaped_whitespace(text: &str) -> Vec<String> {
+    text.split("\u{0} ")
+        .flat_map(|part| part.split("\u{0}\n"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The tail shared by both branches of the `target` pattern
+/// (states.py:1972-1977), starting at char index `p`:
+/// `(?<!(?<!\x00):)(?<![\s\x00])[ ]?:([ ]+|$)`. Returns the match end.
+fn target_pattern_tail(e: &[char], p: usize) -> Option<usize> {
+    // `(?<!(?<!\x00):)` — no UNESCAPED colon at the end of the name.
+    if p >= 1 && e[p - 1] == ':' && !(p >= 2 && e[p - 2] == '\u{0}') {
+        return None;
     }
-    // Plain name: scan to the first unescaped ':', which must be followed by
-    // space, newline, or end of input.
-    let mut name = String::new();
-    let mut chars = after.char_indices();
-    while let Some((i, c)) = chars.next() {
-        match c {
-            '\\' => {
-                if let Some((_, esc)) = chars.next() {
-                    name.push(esc);
-                }
+    // `non_whitespace_escape_before` = `(?<![\s\x00])` (states.py:780): the
+    // name may end neither in Python whitespace nor in an escape null.
+    if p >= 1 && (crate::utils::py_isspace(e[p - 1]) || e[p - 1] == '\u{0}') {
+        return None;
+    }
+    // `[ ]?` is greedy: try the one optional space first, then none.
+    for skip in [1usize, 0usize] {
+        if skip == 1 && e.get(p) != Some(&' ') {
+            continue;
+        }
+        let colon = p + skip;
+        if e.get(colon) != Some(&':') {
+            continue;
+        }
+        let mut c = colon + 1;
+        if c < e.len() && e[c] == ' ' {
+            while c < e.len() && e[c] == ' ' {
+                c += 1;
             }
-            ':' => {
-                if name.is_empty() {
-                    return None;
-                }
-                let link = &after[i + 1..];
-                if !(link.is_empty() || link.starts_with(' ') || link.starts_with('\n')) {
-                    return None;
-                }
-                return Some(TargetMarker {
-                    name,
-                    anonymous: false,
-                    link: link.trim().to_string(),
-                });
-            }
-            _ => name.push(c),
+            return Some(c);
+        }
+        if c == e.len() {
+            return Some(c);
         }
     }
     None
 }
 
-/// `name_` or `` `phrase`_ `` → normalized reference name (indirect
-/// target). The check runs on the whitespace-joined link block; an escaped
-/// trailing underscore (`uri\_`) is NOT a reference (fixture-verified).
-fn reference_name_from_link(link: &str) -> Option<String> {
-    let joined = ids::whitespace_normalize_name(link);
-    let body = joined.strip_suffix('_')?;
-    if body.ends_with('\\') {
+/// `explicit.patterns.target` (states.py:1959-1978), run by hand because the
+/// pattern needs variable-order backtracking and two lookbehinds:
+///
+/// ```text
+/// ( _ | (?!_)(?P<quote>`?)(?![ `])(?P<name>.+?)(?<![\s\x00])(?P=quote) )
+/// (?<!(?<!\x00):)(?<![\s\x00])[ ]?:([ ]+|$)
+/// ```
+///
+/// Input is the escape2null'd text AFTER the construct's `_`. Returns the
+/// `name` group (`None` = the anonymous `_` branch) and the char index the
+/// match ends at. Alternation order — anonymous first, then the greedy
+/// quote, then the non-greedy name shortest-first — is the engine's, and it
+/// decides which name wins (`` _`a`b`: `` → ``a`b``).
+fn match_target_pattern(e: &[char]) -> Option<(Option<String>, usize)> {
+    if e.first() == Some(&'_') {
+        // The anonymous branch consumes exactly one `_`; `(?!_)` then bars
+        // the named branch, so a failed tail means no match at all.
+        return target_pattern_tail(e, 1).map(|end| (None, end));
+    }
+    if e.is_empty() {
         return None;
     }
-    if let Some(phrase) = body.strip_prefix('`').and_then(|b| b.strip_suffix('`')) {
-        if phrase.is_empty() {
-            return None;
+    let quote_lens: &[usize] = if e[0] == '`' { &[1, 0] } else { &[0] };
+    for &q in quote_lens {
+        // `(?![ `])`
+        match e.get(q) {
+            Some(&c) if c != ' ' && c != '`' => {}
+            _ => continue,
         }
-        return Some(ids::fully_normalize_name(phrase));
+        // `(?P<name>.+?)` — at least one char, shortest first. `.` never
+        // matches a newline, and the joined block never holds one.
+        for n in q + 1..=e.len() {
+            let prev = e[n - 1];
+            if crate::utils::py_isspace(prev) || prev == '\u{0}' {
+                continue; // `(?<![\s\x00])`
+            }
+            if q == 1 && e.get(n) != Some(&'`') {
+                continue; // `(?P=quote)`
+            }
+            if let Some(end) = target_pattern_tail(e, n + q) {
+                return Some((Some(e[q..n].iter().collect()), end));
+            }
+        }
     }
-    if !body.is_empty()
-        && !body.ends_with('_')
-        && !body.contains(crate::utils::py_isspace)
-        && !body.contains('`')
-        && !body.contains('\\')
+    None
+}
+
+/// What `Body.parse_target` returns (states.py:2095-2113).
+enum TargetRef {
+    RefName(String),
+    RefUri(String),
+}
+
+/// docutils `Body.parse_target` over the escaped link block.
+fn parse_target_block(block: &[Vec<char>]) -> TargetRef {
+    let stripped: Vec<String> = block
+        .iter()
+        .map(|l| {
+            let s: String = l.iter().collect();
+            py_strip(&s).to_string()
+        })
+        .collect();
+    if stripped.last().is_some_and(|l| l.ends_with('_')) {
+        if let Some(data) = is_reference(&stripped.join(" ")) {
+            // The RAW `data`; `make_target` normalizes, and the `image`
+            // `:target:` caller needs both normalizations of it.
+            return TargetRef::RefName(data);
+        }
+    }
+    let joined: Vec<String> = block.iter().map(|l| l.iter().collect()).collect();
+    let parts = split_escaped_whitespace(&joined.join(" "));
+    let reference: Vec<String> = parts
+        .iter()
+        .map(|p| py_split_concat(&unescape_nulls(p)))
+        .collect();
+    TargetRef::RefUri(reference.join(" "))
+}
+
+/// docutils `Body.is_reference` (states.py:2115-2120) plus
+/// `explicit.patterns.reference` (states.py:1980-1994):
+/// `((?P<simple>simplename)_|`(?![ ])(?P<phrase>.+?)(?<![\s\x00])`_)$`
+/// against the whitespace-normalized (still escaped) reference.
+fn is_reference(reference: &str) -> Option<String> {
+    let chars: Vec<char> = ids::whitespace_normalize_name(reference).chars().collect();
+    let n = chars.len();
+    if n < 2 || chars[n - 1] != '_' {
+        return None;
+    }
+    // `simplename_$`: the `$` pins the name to exactly `chars[..n-1]`, and a
+    // greedy scan that covers the whole prefix is the only parse that can.
+    if match_simplename_chars(&chars[..n - 1], 0) == Some(n - 1) {
+        return Some(unescape_nulls(&chars[..n - 1].iter().collect::<String>()));
+    }
+    // `` `phrase`_$ `` — `$` pins the phrase to `chars[1..n-2]` too.
+    if n >= 4
+        && chars[0] == '`'
+        && chars[n - 2] == '`'
+        && chars[1] != ' '
+        && !crate::utils::py_isspace(chars[n - 3])
+        && chars[n - 3] != '\u{0}'
     {
-        return Some(ids::fully_normalize_name(body));
+        return Some(unescape_nulls(&chars[1..n - 2].iter().collect::<String>()));
     }
     None
 }
@@ -13209,23 +13354,48 @@ mod tests {
         assert_eq!(ws_collapse("plain", " "), "plain");
     }
 
+    /// Run `explicit.patterns.target` over the text after the construct's
+    /// `_`, the way `hyperlink_target` does.
+    fn target_of(after_underscore: &str) -> Option<(Option<String>, usize)> {
+        match_target_pattern(&escape2null_chars(after_underscore))
+    }
+
     /// docutils' hyperlink-target construct is `\.\.[ ]+_(?![ ]|$)`: a
     /// space or end-of-line after `_` makes the block a comment, never a
     /// malformed target; inside a backtick phrase a leading space, or a
     /// space/newline before the closing quote, IS malformed
-    /// (`(?![ `])` … `(?<![ \n\x00])(?P=quote)`). docutils 0.22.4 bytes:
-    /// fixture family `round_d` (panel fix round D).
+    /// (`(?![ `])` … `(?<![\s\x00])(?P=quote)`, states.py:780 — Python's
+    /// `\s`, so a NBSP or `\x1f` there is malformed too). docutils 0.22.4
+    /// bytes: fixture families `round_d`/`round_e`.
     #[test]
     fn target_marker_rejects_quoted_names_padded_with_spaces() {
-        assert!(parse_target_marker("_` x`: https://x/").is_none());
-        assert!(parse_target_marker("_`x `: https://x/").is_none());
-        assert!(parse_target_marker("_`x\n`: https://x/").is_none());
-        let ok = parse_target_marker("_`x y`: https://x/").expect("well-formed");
-        assert_eq!(ok.name, "x y");
-        // The plain form keeps its space before the colon (probed: a target).
-        let ok = parse_target_marker("_pad  lbl :").expect("well-formed");
-        assert_eq!(ok.name, "pad  lbl ");
-        assert!(ok.link.is_empty());
+        assert!(target_of("` x`: https://x/").is_none());
+        assert!(target_of("`x `: https://x/").is_none());
+        assert!(target_of("`x\u{a0}`: https://x/").is_none());
+        assert!(target_of("`x\u{1f}`: https://x/").is_none());
+        let (name, _) = target_of("`x y`: https://x/").expect("well-formed");
+        assert_eq!(name.as_deref(), Some("x y"));
+        // Non-greedy `.+?`: the FIRST closing backtick that lets the tail
+        // match wins, so an inner backtick can land inside the name.
+        let (name, _) = target_of("`a`b`: https://x/").expect("well-formed");
+        assert_eq!(name.as_deref(), Some("a`b"));
+    }
+
+    /// The tail is `(?<![\s\x00])[ ]?:([ ]+|$)`: at most ONE space before
+    /// the colon, and the name may not end in Python whitespace.
+    #[test]
+    fn target_pattern_tail_allows_exactly_one_space_before_the_colon() {
+        let (name, end) = target_of("pad  lbl :").expect("one space is fine");
+        assert_eq!(name.as_deref(), Some("pad  lbl"));
+        assert_eq!(end, 10);
+        assert!(target_of("pad  lbl  :").is_none(), "two spaces: malformed");
+        assert!(target_of("lbl   :").is_none());
+        assert!(target_of("x\u{a0}:").is_none(), "NBSP is Python whitespace");
+        assert!(target_of("x\u{1f}:").is_none(), "and so is \\x1f");
+        // The anonymous branch takes the same tail.
+        let (name, _) = target_of("_ :").expect("`.. __ :` is anonymous");
+        assert!(name.is_none());
+        assert!(target_of("_  :").is_none());
     }
 
     #[test]

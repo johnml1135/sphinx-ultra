@@ -129,7 +129,9 @@ fn is_start_prefix_ok(prev: Option<char>) -> bool {
     match prev {
         None => true,
         Some(c) => {
-            c.is_whitespace()
+            // `\s` in a Python `str` pattern is `str.isspace`, which admits
+            // the C0 separators `\x1c`-`\x1f` (see `crate::utils::py_isspace`).
+            crate::utils::py_isspace(c)
                 || punctuation::OPENERS.contains(&c)
                 || punctuation::DELIMITERS.contains(&c)
         }
@@ -140,7 +142,7 @@ fn is_end_suffix_ok(next: Option<char>) -> bool {
     match next {
         None => true,
         Some(c) => {
-            c.is_whitespace()
+            crate::utils::py_isspace(c)
                 || c == NULL
                 || punctuation::CLOSING_DELIMITERS.contains(&c)
                 || punctuation::DELIMITERS.contains(&c)
@@ -356,7 +358,7 @@ impl<'a> Inliner<'a> {
         }
         // non_whitespace_after: the char following the start-string.
         match self.chars.get(at + len) {
-            Some(c) if c.is_whitespace() => false,
+            Some(c) if crate::utils::py_isspace(*c) => false,
             _ => !self.quoted_start(at, len),
         }
     }
@@ -386,9 +388,9 @@ impl<'a> Inliner<'a> {
             if self.chars[i..i + len] == *end_str {
                 let prev = self.chars[i - 1];
                 let ok_behind = if allow_null_before {
-                    !prev.is_whitespace()
+                    !crate::utils::py_isspace(prev)
                 } else {
-                    !prev.is_whitespace() && prev != NULL
+                    !crate::utils::py_isspace(prev) && prev != NULL
                 };
                 let ok_ahead = is_end_suffix_ok(self.chars.get(i + len).copied());
                 if ok_behind && ok_ahead {
@@ -622,7 +624,7 @@ impl<'a> Inliner<'a> {
         while i < n {
             if self.chars[i] == end_char {
                 let prev = self.chars[i - 1];
-                if !prev.is_whitespace() && prev != NULL {
+                if !crate::utils::py_isspace(prev) && prev != NULL {
                     let mut after = i + 1;
                     let mut u = 0usize;
                     while u < max_underscores && self.chars.get(after) == Some(&'_') {
@@ -668,7 +670,11 @@ impl<'a> Inliner<'a> {
                 end + 1
             }
             None => {
-                self.emit_problematic("_`", "internal target");
+                // `'Inline %s start-string without end-string.' %
+                // nodeclass.__name__` (states.py:839) — the class is
+                // `nodes.target`, so the word is "target", not
+                // "internal target" (probed against docutils 0.22.4).
+                self.emit_problematic("_`", "target");
                 i + 2
             }
         }
@@ -1838,8 +1844,10 @@ fn find_embedded_link(raw: &str) -> Option<(String, String)> {
     }
     let chars: Vec<char> = raw.chars().collect();
     let n = chars.len();
-    // The closing '>' must be unescaped.
-    if n >= 2 && chars[n - 2] == NULL {
+    // `%(non_whitespace_escape_before)s>` — the closing '>' must be
+    // preceded by neither an escape null nor Python whitespace
+    // (`(?<![\s\x00])`, states.py:780).
+    if n >= 2 && (chars[n - 2] == NULL || crate::utils::py_isspace(chars[n - 2])) {
         return None;
     }
     // find matching unescaped '<' scanning backward
@@ -1866,18 +1874,27 @@ fn find_embedded_link(raw: &str) -> Option<(String, String)> {
         m += 1;
     }
     if open > 0 {
-        // must be preceded by whitespace
+        // `(?:[ \n]+|^)` — LITERAL space or newline, not `\s`.
         let before = chars[open - 1];
-        if !(before.is_whitespace() || (before == '\n')) {
+        if !(before == ' ' || before == '\n') {
             return None;
         }
+    }
+    // `<%(non_whitespace_after)s` — `(?!\s)` after the open bracket.
+    if chars
+        .get(open + 1)
+        .is_some_and(|c| crate::utils::py_isspace(*c))
+    {
+        return None;
     }
     let link: String = chars[open + 1..n - 1].iter().collect();
     if link.is_empty() {
         return None;
     }
+    // `escaped[:match.start(0)]`, and the match starts at the leftmost of
+    // the `[ \n]+` run.
     let text: String = chars[..open].iter().collect();
-    Some((text.trim_end().to_string(), link))
+    Some((text.trim_end_matches([' ', '\n']).to_string(), link))
 }
 
 /// Standalone URI or email starting at `at`. Returns (consumed_len,
