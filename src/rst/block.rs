@@ -1997,7 +1997,14 @@ impl BlockParser {
         // MarkupError queues a WARNING and falls through to the comment
         // path, which re-absorbs the whole block (through internal blanks).
         let mut construct_error: Option<Node> = None;
-        if rest.starts_with('_') {
+        // The hyperlink-target construct is `\.\.[ ]+_(?![ ]|$)`
+        // (states.py:2464-2469): the character after `_` on the FIRST line
+        // must exist and must not be a space, or the whole block is a plain
+        // comment — never a malformed target. `.. _ x:` and a bare `.. _`
+        // (even with an indented continuation carrying `name: uri`) are
+        // comments, and so is `.. _\tx:` once `expandtabs` has run
+        // (fixture round_d.target_*_is_comment, docutils 0.22.4).
+        if rest.starts_with('_') && !matches!(rest[1..].chars().next(), None | Some(' ')) {
             // Target attempt: the marker (name + link) may span ADJACENT
             // indented continuation lines; parse the joined form.
             let start = *pos;
@@ -2039,10 +2046,12 @@ impl BlockParser {
                     } else if let Some(refname) = reference_name_from_link(&marker.link) {
                         target.set("refname", AttrValue::Str(refname));
                     } else {
+                        // `''.join(unescape(part).split())` — Python's
+                        // `str.split()`, so `\x1f` vanishes from a URI too.
                         let uri: String = marker
                             .link
                             .chars()
-                            .filter(|c| !c.is_whitespace() && *c != '\\')
+                            .filter(|c| !crate::utils::py_isspace(*c) && *c != '\\')
                             .collect();
                         refuri_val = Some(uri.clone());
                         target.set("refuri", AttrValue::Str(uri));
@@ -7782,7 +7791,7 @@ impl BlockParser {
             } else {
                 let uri: String = link
                     .chars()
-                    .filter(|c| !c.is_whitespace() && *c != '\\')
+                    .filter(|c| !crate::utils::py_isspace(*c) && *c != '\\')
                     .collect();
                 target.set("refuri", AttrValue::Str(uri));
             }
@@ -8757,11 +8766,15 @@ fn object_desc_spec(kind: ObjectDescKind) -> DirectiveSpec {
 }
 
 /// sphinx `ws_re.sub(repl, s)` (`util/__init__.py`, `ws_re = re.compile(r'\s+')`).
+/// Python's `\s` is `str.isspace` — `\x1c`-`\x1f` included, which Rust's
+/// `char::is_whitespace` leaves out ([`crate::utils::py_isspace`]; probed:
+/// `.. envvar:: FOO\x1fBAR` indexes `environment variable; FOO BAR`,
+/// `.. program:: git\x1fadd` scopes its options under `git-add`).
 fn ws_collapse(s: &str, repl: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_ws = false;
     for c in s.chars() {
-        if c.is_whitespace() {
+        if crate::utils::py_isspace(c) {
             if !in_ws {
                 out.push_str(repl);
                 in_ws = true;
@@ -12488,7 +12501,9 @@ fn parse_image_target(target: &str) -> ImageTarget {
             };
         }
     }
-    ImageTarget::Refuri(target.split_whitespace().collect::<String>())
+    // `''.join(unescape(part).split())`: Python's `str.split()` drops
+    // `\x1c`-`\x1f` along with the Unicode whitespace.
+    ImageTarget::Refuri(target.split(crate::utils::py_isspace).collect::<String>())
 }
 
 /// `|name|` marker in a (possibly line-joined) substitution-def head:
@@ -12664,7 +12679,7 @@ fn reference_data_from_link(link: &str) -> Option<String> {
     }
     if !body.is_empty()
         && !body.ends_with('_')
-        && !body.contains(char::is_whitespace)
+        && !body.contains(crate::utils::py_isspace)
         && !body.contains('`')
         && !body.contains('\\')
     {
@@ -13070,7 +13085,12 @@ struct TargetMarker {
 /// (possibly multi-line, newline-joined) text after `..`. Returns None for
 /// MALFORMED targets (the caller emits a comment + "malformed hyperlink
 /// target." warning): missing colon, colon not followed by space/EOL,
-/// empty or unclosed backtick phrase, empty plain name, bare `__`.
+/// empty or unclosed backtick phrase, a backtick phrase opening with a
+/// space or closing after one (`(?![ `])` … `(?<![ \n\x00])(?P=quote)`,
+/// states.py:1959-1975), empty plain name, bare `__`.
+///
+/// Precondition (the caller's): the character after `_` exists and is not
+/// a space — otherwise the block is a comment, not a target at all.
 fn parse_target_marker(rest: &str) -> Option<TargetMarker> {
     let after = rest.strip_prefix('_')?;
     if let Some(a) = after.strip_prefix('_') {
@@ -13088,7 +13108,10 @@ fn parse_target_marker(rest: &str) -> Option<TargetMarker> {
     if let Some(quoted) = after.strip_prefix('`') {
         let close = quoted.find('`')?;
         let name = &quoted[..close];
-        if name.is_empty() {
+        // `(?![ `])` after the open quote and `(?<![ \n\x00])` before the
+        // close quote: `` .. _` x`: `` and `` .. _`x `: `` are malformed
+        // (probed; fixture round_d.target_quoted_*_space_malformed).
+        if name.is_empty() || name.starts_with(' ') || name.ends_with([' ', '\n']) {
             return None;
         }
         let link = quoted[close + 1..].strip_prefix(':')?;
@@ -13149,7 +13172,7 @@ fn reference_name_from_link(link: &str) -> Option<String> {
     }
     if !body.is_empty()
         && !body.ends_with('_')
-        && !body.contains(char::is_whitespace)
+        && !body.contains(crate::utils::py_isspace)
         && !body.contains('`')
         && !body.contains('\\')
     {
@@ -13171,6 +13194,38 @@ mod tests {
     /// The `(source, lineno)` sequence of a line stream.
     fn stream_of(lines: &[LineRec]) -> Vec<(u16, u32)> {
         lines.iter().map(|l| (l.source, l.lineno)).collect()
+    }
+
+    /// sphinx's `ws_re` (`\s+`) is Python's `str.isspace`: the C0
+    /// separator `\x1f` collapses like a space in the std-domain names
+    /// (`.. envvar::`/`.. confval::` to `' '`, `.. program::` to `'-'`).
+    /// Sphinx 9.1.0 bytes: oracle cases `sx_std.*_python_whitespace_name`
+    /// (panel fix round D).
+    #[test]
+    fn ws_collapse_treats_python_whitespace_as_a_run() {
+        assert_eq!(ws_collapse("FOO\x1fBAR", " "), "FOO BAR");
+        assert_eq!(ws_collapse("git\x1fadd", "-"), "git-add");
+        assert_eq!(ws_collapse("a \x1f\t b", "-"), "a-b");
+        assert_eq!(ws_collapse("plain", " "), "plain");
+    }
+
+    /// docutils' hyperlink-target construct is `\.\.[ ]+_(?![ ]|$)`: a
+    /// space or end-of-line after `_` makes the block a comment, never a
+    /// malformed target; inside a backtick phrase a leading space, or a
+    /// space/newline before the closing quote, IS malformed
+    /// (`(?![ `])` … `(?<![ \n\x00])(?P=quote)`). docutils 0.22.4 bytes:
+    /// fixture family `round_d` (panel fix round D).
+    #[test]
+    fn target_marker_rejects_quoted_names_padded_with_spaces() {
+        assert!(parse_target_marker("_` x`: https://x/").is_none());
+        assert!(parse_target_marker("_`x `: https://x/").is_none());
+        assert!(parse_target_marker("_`x\n`: https://x/").is_none());
+        let ok = parse_target_marker("_`x y`: https://x/").expect("well-formed");
+        assert_eq!(ok.name, "x y");
+        // The plain form keeps its space before the colon (probed: a target).
+        let ok = parse_target_marker("_pad  lbl :").expect("well-formed");
+        assert_eq!(ok.name, "pad  lbl ");
+        assert!(ok.link.is_empty());
     }
 
     #[test]

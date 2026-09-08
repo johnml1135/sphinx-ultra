@@ -6000,6 +6000,255 @@
         "index": "Index\n=====\n\n.. literalinclude:: example.py\n   :language: python\n   :linenos:\n   :lines: 1-3\n\n.. literalinclude:: example.py\n   :language: text\n   :lineno-start: 5\n   :force:\n   :lines: 4-5\n\n.. code-block:: python\n   :linenos:\n\n   x = 1\n"
       },
       "name": "inc_highlight"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {},
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "-x",
+                "subitems": [
+                  {
+                    "name": "git-add command line option",
+                    "targets": [
+                      [
+                        "",
+                        "#cmdoption-git-add-x"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "Symbols"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "environment variable",
+                "subitems": [
+                  {
+                    "name": "FOO BAR",
+                    "targets": [
+                      [
+                        "",
+                        "#envvar-FOO-BAR"
+                      ],
+                      [
+                        "",
+                        "#index-0"
+                      ],
+                      [
+                        "",
+                        "#index-1"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "E"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "FOO BAR",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#index-0"
+                  ],
+                  [
+                    "",
+                    "#index-1"
+                  ]
+                ]
+              }
+            ],
+            "group": "F"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "git-add command line option",
+                "subitems": [
+                  {
+                    "name": "-x",
+                    "targets": [
+                      [
+                        "",
+                        "#cmdoption-git-add-x"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "G"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "index": [
+            [
+              "single",
+              "FOO BAR",
+              "index-0",
+              "",
+              null
+            ],
+            [
+              "single",
+              "environment variable; FOO BAR",
+              "index-0",
+              "",
+              null
+            ],
+            [
+              "single",
+              "FOO BAR",
+              "index-1",
+              "",
+              null
+            ],
+            [
+              "single",
+              "environment variable; FOO BAR",
+              "index-1",
+              "",
+              null
+            ],
+            [
+              "single",
+              "environment variable; FOO BAR",
+              "envvar-FOO-BAR",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "git-add command line option; -x",
+              "cmdoption-git-add-x",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "index": [
+            null,
+            null,
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"round-d-names\" names=\"round\\ d\\ names\">\n        <title>\n            Round D names\n        <paragraph>\n            Labels: \n            <reference internal=\"1\" refid=\"pad-lbl\">\n                <inline classes=\"std std-ref\">\n                    Pad\n            , \n            <reference internal=\"1\" refid=\"a-b\">\n                <inline classes=\"std std-ref\">\n                    AB\n             and \n            <reference internal=\"1\" refid=\"a-b\">\n                <inline classes=\"std std-ref\">\n                    AB2\n            .\n        <paragraph>\n            Dangling: \n            <inline classes=\"xref std std-ref\">\n                X\n             and \n            <inline classes=\"xref std std-ref\">\n                only comment\n            .\n        <paragraph>\n            Environment: \n            <index entries=\"('single',\\ 'FOO\\ BAR',\\ 'index-0',\\ '',\\ None) ('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'index-0',\\ '',\\ None)\">\n            <target ids=\"index-0\">\n            <reference internal=\"1\" refid=\"envvar-FOO-BAR\">\n                <literal classes=\"xref std std-envvar\">\n                    FOO BAR\n             and \n            <index entries=\"('single',\\ 'FOO\\ BAR',\\ 'index-1',\\ '',\\ None) ('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'index-1',\\ '',\\ None)\">\n            <target ids=\"index-1\">\n            <reference internal=\"1\" refid=\"envvar-FOO-BAR\">\n                <literal classes=\"xref std std-envvar\">\n                    FOO\u001fBAR\n            .\n        <paragraph>\n            Option: \n            <reference internal=\"1\" refid=\"cmdoption-git-add-x\">\n                <literal classes=\"xref std std-option\">\n                    git\u001fadd -x\n             and \n            <reference internal=\"1\" refid=\"cmdoption-git-add-x\">\n                <literal classes=\"xref std std-option\">\n                    git-add -x\n            .\n        <index entries=\"('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'envvar-FOO-BAR',\\ '',\\ None)\">\n        <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n            <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object std\" ids=\"envvar-FOO-BAR\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    FOO\u001fBAR\n            <desc_content>\n                <paragraph>\n                    Variable.\n        <index entries=\"('pair',\\ 'git-add\\ command\\ line\\ option;\\ -x',\\ 'cmdoption-git-add-x',\\ '',\\ None)\">\n        <desc classes=\"std option\" desctype=\"option\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"option\">\n            <desc_signature _toc_name=\"\" _toc_parts=\"()\" allnames=\"-x\" classes=\"sig sig-object std\" ids=\"cmdoption-git-add-x\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    -x\n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n            <desc_content>\n                <paragraph>\n                    Option.\n        <target ids=\"pad-lbl\" names=\"pad\\ lbl\">\n        <comment xml:space=\"preserve\">\n            _ pad  lbl :\n        <target ids=\"a-b\" names=\"a\\ b\">\n        <comment xml:space=\"preserve\">\n            _ a b :\n        <comment xml:space=\"preserve\">\n            _ only comment :\n"
+        },
+        "std": {
+          "anonlabels": {
+            "a b": [
+              "index",
+              "a-b"
+            ],
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "pad lbl": [
+              "index",
+              "pad-lbl"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [
+            {
+              "docname": "index",
+              "labelid": "envvar-FOO-BAR",
+              "name": "FOO BAR",
+              "objtype": "envvar"
+            }
+          ],
+          "progoptions": [
+            {
+              "docname": "index",
+              "labelid": "cmdoption-git-add-x",
+              "name": "-x",
+              "program": "git-add"
+            }
+          ],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Round D names\n"
+        },
+        "toctree_includes": {},
+        "warnings": [
+          "<project>/index.rst:6: WARNING: undefined label: 'only comment' [ref.ref]",
+          "<project>/index.rst:6: WARNING: undefined label: 'only comment' [ref.ref]"
+        ]
+      },
+      "files": {
+        "index": "Round D names\n=============\n\nLabels: :ref:`Pad <pad lbl>`, :ref:`AB <a b>` and :ref:`AB2 <a\u001fb>`.\n\nDangling: :ref:`X <only comment>` and :ref:`only comment`.\n\nEnvironment: :envvar:`FOO BAR` and :envvar:`FOO\u001fBAR`.\n\nOption: :option:`git\u001fadd -x` and :option:`git-add -x`.\n\n.. envvar:: FOO\u001fBAR\n\n   Variable.\n\n.. program:: git\u001fadd\n\n.. option:: -x\n\n   Option.\n\n.. _pad  lbl:\n.. _ pad  lbl :\n\n.. _a\u001fb:\n.. _ a b :\n\n.. _ only comment :\n"
+      },
+      "name": "names_round_d"
     }
   ],
   "sphinx_version": "9.1.0"

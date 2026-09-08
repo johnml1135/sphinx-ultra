@@ -675,6 +675,22 @@ CASES = [
     # (`app.add_role('eq', MathReferenceRole(warn_dangling=True))`):
     # refdomain="math", classes "xref eq", refwarn=1.
     ('sx_roles', 'eq_role_is_the_math_domains', 'See :eq:`euler` and :eq:`the one <euler>` and :eq:`a  b` here.\n'),
+    # panel fix round D: the std-domain NAME sites run the same `ws_re`
+    # (`ws_re.sub(' ', sig)` for envvar/confval, `ws_re.sub('-', …)` for
+    # program), so \x1f collapses in the index entry, `fullname`/toc name
+    # and the option's program scope.
+    ('sx_std', 'envvar_python_whitespace_name', '.. envvar:: FOO\x1fBAR\n\n   Body.\n'),
+    ('sx_std', 'confval_python_whitespace_name', '.. confval:: FOO\x1fBAR\n\n   Body.\n'),
+    ('sx_std', 'program_python_whitespace_name', '.. program:: git\x1fadd\n\n.. option:: -x\n\n   Body.\n'),
+    # ... and on the docutils side a label NAME is `' '.join(name.split())`,
+    # Python's `str.split()`: `.. _a\x1fb:` is the label `a b`, which both
+    # spellings of the `:ref:` reach. Each bare target is followed by a
+    # comment so `PropagateTargets` has nothing to donate to.
+    ('sx_roles', 'ref_label_python_whitespace_name', 'See :ref:`a\x1fb` and :ref:`A <a b>` here.\n\n.. _a\x1fb:\n.. _ a b :\n'),
+    # ... `.. _ pad  lbl :` (space after `_`) is a COMMENT under docutils'
+    # `\.\.[ ]+_(?![ ]|$)`, so beside the real label there is no
+    # `Duplicate explicit target name` message and no second name.
+    ('sx_roles', 'target_leading_space_is_a_comment', 'See :ref:`P <pad lbl>` here.\n\n.. _pad  lbl:\n.. _ pad  lbl :\n'),
     # ----- wave-4.5 task 8: std-desc doc fields (T7 fix round 1) -----
     # DocFieldTransformer runs for EVERY object description; std kinds use
     # the empty typemap, so every field takes the unknown branch (renamed,

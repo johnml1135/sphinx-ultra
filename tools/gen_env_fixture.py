@@ -1378,6 +1378,61 @@ Index
             "example.py": EXAMPLE_PY,
         },
     },
+    # -----------------------------------------------------------------------
+    # Panel fix round D: the docutils target-marker name rule and Python's
+    # `\s` in every name/target normalizer, at environment level. Single
+    # document, no toctree. Every bare target is followed by a comment, so
+    # `PropagateTargets` donates nothing and the resolved doctree compares
+    # at full strength. What it pins:
+    #   - `.. _ pad  lbl :` / `.. _ a b :` / `.. _ only comment :` are
+    #     COMMENTS (`\.\.[ ]+_(?![ ]|$)`): no duplicate-target message
+    #     beside the real `.. _pad  lbl:`, and `only comment` registers
+    #     nothing, so both `:ref:` spellings of it warn `undefined label`.
+    #   - `.. _a\x1fb:` is the label `a b` (docutils `str.split()`), reached
+    #     by `:ref:`AB <a b>`` and by `:ref:`AB2 <a\x1fb>`` (sphinx `ws_re`).
+    #   - `.. envvar:: FOO\x1fBAR` registers `FOO BAR` (`ws_re.sub(' ', sig)`),
+    #     reached by both `:envvar:` spellings.
+    #   - `.. program:: git\x1fadd` scopes `-x` under `git-add`
+    #     (`ws_re.sub('-', …)`); `:option:`git\x1fadd -x`` folds the
+    #     subcommand off on the \x1f (`ws_re.split(target, maxsplit=1)`) and
+    #     resolves, as does the spelled-out `:option:`git-add -x``.
+    # -----------------------------------------------------------------------
+    {
+        "name": "names_round_d",
+        "conf": {},
+        "files": {
+            "index": """\
+Round D names
+=============
+
+Labels: :ref:`Pad <pad lbl>`, :ref:`AB <a b>` and :ref:`AB2 <a\x1fb>`.
+
+Dangling: :ref:`X <only comment>` and :ref:`only comment`.
+
+Environment: :envvar:`FOO BAR` and :envvar:`FOO\x1fBAR`.
+
+Option: :option:`git\x1fadd -x` and :option:`git-add -x`.
+
+.. envvar:: FOO\x1fBAR
+
+   Variable.
+
+.. program:: git\x1fadd
+
+.. option:: -x
+
+   Option.
+
+.. _pad  lbl:
+.. _ pad  lbl :
+
+.. _a\x1fb:
+.. _ a b :
+
+.. _ only comment :
+""",
+        },
+    },
 ]
 
 

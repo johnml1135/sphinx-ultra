@@ -2012,6 +2012,36 @@
     },
     {
       "family": "sx_std",
+      "name": "sx_std.envvar_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'envvar-FOO-BAR',\\ '',\\ None)\">\n    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-FOO-BAR\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                FOO\u001fBAR\n        <desc_content>\n            <paragraph>\n                Body.\n",
+      "rst": ".. envvar:: FOO\u001fBAR\n\n   Body.\n"
+    },
+    {
+      "family": "sx_std",
+      "name": "sx_std.confval_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'FOO\\ BAR;\\ configuration\\ value',\\ 'confval-FOO-BAR',\\ '',\\ None)\">\n    <desc classes=\"std confval\" desctype=\"confval\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"confval\">\n        <desc_signature _toc_name=\"FOO BAR\" _toc_parts=\"('FOO BAR',)\" classes=\"sig sig-object\" fullname=\"FOO BAR\" ids=\"confval-FOO-BAR\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                FOO\u001fBAR\n        <desc_content>\n            <paragraph>\n                Body.\n",
+      "rst": ".. confval:: FOO\u001fBAR\n\n   Body.\n"
+    },
+    {
+      "family": "sx_std",
+      "name": "sx_std.program_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'git-add\\ command\\ line\\ option;\\ -x',\\ 'cmdoption-git-add-x',\\ '',\\ None)\">\n    <desc classes=\"std option\" desctype=\"option\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"option\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" allnames=\"-x\" classes=\"sig sig-object\" ids=\"cmdoption-git-add-x\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                -x\n            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n        <desc_content>\n            <paragraph>\n                Body.\n",
+      "rst": ".. program:: git\u001fadd\n\n.. option:: -x\n\n   Body.\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.ref_label_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"0\" reftarget=\"a b\" reftype=\"ref\" refwarn=\"1\">\n            <inline classes=\"xref std std-ref\">\n                a\u001fb\n         and \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"1\" reftarget=\"a b\" reftype=\"ref\" refwarn=\"1\">\n            <inline classes=\"xref std std-ref\">\n                A\n         here.\n    <target ids=\"a-b\" names=\"a\\ b\">\n    <comment xml:space=\"preserve\">\n        _ a b :\n",
+      "rst": "See :ref:`a\u001fb` and :ref:`A <a b>` here.\n\n.. _a\u001fb:\n.. _ a b :\n"
+    },
+    {
+      "family": "sx_roles",
+      "name": "sx_roles.target_leading_space_is_a_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <pending_xref refdoc=\"index\" refdomain=\"std\" refexplicit=\"1\" reftarget=\"pad lbl\" reftype=\"ref\" refwarn=\"1\">\n            <inline classes=\"xref std std-ref\">\n                P\n         here.\n    <target ids=\"pad-lbl\" names=\"pad\\ lbl\">\n    <comment xml:space=\"preserve\">\n        _ pad  lbl :\n",
+      "rst": "See :ref:`P <pad lbl>` here.\n\n.. _pad  lbl:\n.. _ pad  lbl :\n"
+    },
+    {
+      "family": "sx_std",
       "name": "sx_std.envvar_param_field",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'environment\\ variable;\\ SIMPLE',\\ 'envvar-SIMPLE',\\ '',\\ None)\">\n    <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object\" ids=\"envvar-SIMPLE\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                SIMPLE\n        <desc_content>\n            <field_list>\n                <field>\n                    <field_name>\n                        Param x\n                    <field_body>\n                        <paragraph>\n                            thing\n",
       "rst": ".. envvar:: SIMPLE\n\n   :param x: thing\n"

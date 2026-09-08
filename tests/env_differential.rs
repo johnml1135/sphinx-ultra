@@ -1717,13 +1717,13 @@ fn resolved_doctrees_match_oracle() {
 /// fixture document (or project) exactly once and that the two document
 /// tables are disjoint — so the table lengths ARE the exemption counts.
 /// Update the seven constants and the doc sites together.
-const DOCUMENTED_PROJECTS: usize = 28;
-const DOCUMENTED_DOCUMENTS: usize = 83;
+const DOCUMENTED_PROJECTS: usize = 29;
+const DOCUMENTED_DOCUMENTS: usize = 84;
 const DOCUMENTED_WHOLESALE_EXEMPT_DOCUMENTS: usize = 43;
 const DOCUMENTED_STAMP_EXEMPT_DOCUMENTS: usize = 6;
-const DOCUMENTED_BYTE_EXACT_DOCUMENTS: usize = 34;
+const DOCUMENTED_BYTE_EXACT_DOCUMENTS: usize = 35;
 const DOCUMENTED_WARNING_EXEMPT_PROJECTS: usize = 5;
-const DOCUMENTED_BYTE_EXACT_WARNING_PROJECTS: usize = 23;
+const DOCUMENTED_BYTE_EXACT_WARNING_PROJECTS: usize = 24;
 
 #[test]
 fn exemption_arithmetic_matches_the_documented_numbers() {

@@ -4007,6 +4007,108 @@
       "name": "mixtures.everything_adjacent",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"head\" names=\"head\">\n        <title>\n            Head\n        <definition_list>\n            <definition_list_item>\n                <term>\n                    term\n                <definition>\n                    <paragraph>\n                        def\n        <bullet_list bullet=\"-\">\n            <list_item>\n                <paragraph>\n                    a\n            <list_item>\n                <paragraph>\n                    b\n        <enumerated_list enumtype=\"arabic\" prefix=\"\" suffix=\".\">\n            <list_item>\n                <paragraph>\n                    one\n            <list_item>\n                <paragraph>\n                    two\n        <literal_block xml:space=\"preserve\">\n            lit\n        <comment xml:space=\"preserve\">\n            done\n",
       "rst": "Head\n====\n\nterm\n    def\n\n- a\n- b\n\n1. one\n2. two\n\n::\n\n    lit\n\n.. done\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_leading_space_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _ pad  lbl :\n    <paragraph>\n        See \n        <reference name=\"pad lbl\" refname=\"pad lbl\">\n            pad lbl\n        .\n",
+      "rst": ".. _ pad  lbl :\n\nSee `pad lbl`_.\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_leading_space_comment_absorbs_block",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _ x:\n        cont\n    <paragraph>\n        para\n",
+      "rst": ".. _ x:\n   cont\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_bare_underscore_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _\n    <paragraph>\n        para\n",
+      "rst": ".. _\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_bare_underscore_with_block_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _\n        name: uri\n    <paragraph>\n        para\n",
+      "rst": ".. _\n   name: uri\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_tab_after_underscore_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _    x:\n    <paragraph>\n        para\n",
+      "rst": ".. _\tx:\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_beside_leading_space_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"pad-lbl\" names=\"pad\\ lbl\">\n    <comment xml:space=\"preserve\">\n        _ pad  lbl :\n    <paragraph>\n        para\n",
+      "rst": ".. _pad  lbl:\n.. _ pad  lbl :\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_space_before_colon",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"pad-lbl\" names=\"pad\\ lbl\">\n    <paragraph>\n        para\n",
+      "rst": ".. _pad  lbl :\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_quoted_leading_space_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _` x`: https://x/\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _` x`: https://x/\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_quoted_trailing_space_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _`x `: https://x/\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _`x `: https://x/\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"a-b\" names=\"a\\ b\">\n    <paragraph>\n        para\n",
+      "rst": ".. _a\u001fb:\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.section_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"sec-c\" names=\"sec\\ c\">\n        <title>\n            Sec\u001fC\n        <paragraph>\n            body\n",
+      "rst": "Sec\u001fC\n=====\n\nbody\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.reference_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <reference name=\"a b\" refname=\"a b\">\n            a\u001fb\n         here.\n",
+      "rst": "See `a\u001fb`_ here.\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_python_whitespace_refuri",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"http://xy\">\n",
+      "rst": ".. _t: http://x\u001fy\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_python_whitespace_indirect_is_a_uri",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"ab_\">\n",
+      "rst": ".. _t: a\u001fb_\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.anonymous_target_python_whitespace_refuri",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target anonymous=\"1\" ids=\"id1\" refuri=\"http://xy\">\n",
+      "rst": "__ http://x\u001fy\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.embedded_uri_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <reference name=\"text\" refuri=\"http://xy\">\n            text\n        <target ids=\"text\" names=\"text\" refuri=\"http://xy\">\n         here.\n",
+      "rst": "See `text <http://x\u001fy>`_ here.\n"
+    },
+    {
+      "family": "dir_image",
+      "name": "dir_image.target_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <reference refuri=\"http://xy\">\n        <image uri=\"p.png\">\n",
+      "rst": ".. image:: p.png\n   :target: http://x\u001fy\n"
     }
   ],
   "docutils_version": "0.22.4",

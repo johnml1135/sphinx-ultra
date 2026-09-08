@@ -1789,13 +1789,14 @@ impl<'a> Inliner<'a> {
 }
 
 /// Remove whitespace per line from a URI (escaped whitespace survives as
-/// literal after unescape).
+/// literal after unescape). docutils' `''.join(unescape(part).split())` is
+/// Python's `str.split()`, so `\x1f` goes too ([`crate::utils::py_isspace`]).
 fn clean_uri(link: &str) -> String {
     let joined: String = link
         .split('\n')
         .map(|part| {
             part.chars()
-                .filter(|c| !c.is_whitespace())
+                .filter(|c| !crate::utils::py_isspace(*c))
                 .collect::<String>()
         })
         .collect();

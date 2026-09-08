@@ -709,11 +709,13 @@ fn format_old_style(title: &str, fignum: &str) -> Result<String, TypeError> {
 }
 
 /// `ws_re.split(target, maxsplit=1)`: the first whitespace run splits the
-/// leading word off.
+/// leading word off. `ws_re` is `\s+`, Python's `str.isspace` — so a
+/// `\x1f` (which `OptionXRefRole` keeps in the reftarget) splits a
+/// subcommand off exactly as a space would ([`crate::utils::py_isspace`]).
 fn split_once_whitespace(target: &str) -> Option<(&str, &str)> {
-    let start = target.find(char::is_whitespace)?;
+    let start = target.find(crate::utils::py_isspace)?;
     let end = target[start..]
-        .find(|c: char| !c.is_whitespace())
+        .find(|c: char| !crate::utils::py_isspace(c))
         .map(|offset| start + offset)
         .unwrap_or(target.len());
     Some((&target[..start], &target[end..]))
@@ -1729,6 +1731,25 @@ mod intersphinx_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ws_re.split(target, maxsplit=1)` — `\s+` is Python's `str.isspace`,
+    /// so the `\x1f` an `OptionXRefRole` keeps in its reftarget folds a
+    /// subcommand off exactly as a space does: `:option:`git\x1fadd -x``
+    /// reaches `(git-add, -x)` under sphinx 9.1.0 (env oracle project
+    /// `names_round_d`, panel fix round D).
+    #[test]
+    fn subcommand_folding_splits_on_python_whitespace() {
+        assert_eq!(
+            split_once_whitespace("git\x1fadd -x"),
+            Some(("git", "add -x"))
+        );
+        assert_eq!(split_once_whitespace("add -x"), Some(("add", "-x")));
+        assert_eq!(
+            split_once_whitespace("git \x1f\t add"),
+            Some(("git", "add"))
+        );
+        assert_eq!(split_once_whitespace("-x"), None);
+    }
 
     /// No `intersphinx_mapping`: every hook is a no-op, which is the state
     /// every one of these tests (and every environment-oracle project) is

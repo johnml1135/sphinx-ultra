@@ -845,6 +845,41 @@ CASES = [
     ("review", "quoted_literal_then_indent", "intro::\n\n> line one\n  indented\n"),
     ("review", "established_styles_overunder", "=====\nA\n=====\n\nB\n-\n\n=====\nC\n=====\n\nD\n~\n\nbody\n"),
     ("mixtures", "everything_adjacent", "Head\n====\n\nterm\n    def\n\n- a\n- b\n\n1. one\n2. two\n\n::\n\n    lit\n\n.. done\n"),
+    # ----- panel fix round D: target-marker name rule + Python `\s` -----
+    # The hyperlink-target construct is `\.\.[ ]+_(?![ ]|$)` (states.py
+    # 2464-2469): a space or EOL after `_` on the first line makes the block
+    # a plain comment (no "malformed hyperlink target." message, nothing
+    # registered), so a reference to the would-be name stays a dangling
+    # refname. Tabs expand before the match, so `_\tx:` is a comment too.
+    ("round_d", "target_leading_space_is_comment", ".. _ pad  lbl :\n\nSee `pad lbl`_.\n"),
+    ("round_d", "target_leading_space_comment_absorbs_block", ".. _ x:\n   cont\n\npara\n"),
+    ("round_d", "target_bare_underscore_is_comment", ".. _\n\npara\n"),
+    ("round_d", "target_bare_underscore_with_block_is_comment", ".. _\n   name: uri\n\npara\n"),
+    ("round_d", "target_tab_after_underscore_is_comment", ".. _\tx:\n\npara\n"),
+    ("round_d", "target_beside_leading_space_comment", ".. _pad  lbl:\n.. _ pad  lbl :\n\npara\n"),
+    # The plain form keeps a space before its colon (still a target) …
+    ("round_d", "target_space_before_colon", ".. _pad  lbl :\n\npara\n"),
+    # … but a backtick phrase may neither open with a space nor close after
+    # one: `(?![ `])` / `(?<![ \n\x00])(?P=quote)` in the target pattern.
+    ("round_d", "target_quoted_leading_space_malformed", ".. _` x`: https://x/\n"),
+    ("round_d", "target_quoted_trailing_space_malformed", ".. _`x `: https://x/\n"),
+    # Python's `str.split()` (every name normalizer, `make_id`, and the
+    # URI cleanup `''.join(part.split())`) splits on `str.isspace`, which
+    # admits \x1c-\x1f; \x1f is the one `splitlines` does not eat first.
+    ("round_d", "target_python_whitespace_name", ".. _a\x1fb:\n\npara\n"),
+    ("round_d", "section_python_whitespace_name", "Sec\x1fC\n=====\n\nbody\n"),
+    ("round_d", "reference_python_whitespace_name", "See `a\x1fb`_ here.\n"),
+    ("round_d", "target_python_whitespace_refuri", ".. _t: http://x\x1fy\n"),
+    ("round_d", "target_python_whitespace_indirect_is_a_uri", ".. _t: a\x1fb_\n"),
+    ("round_d", "anonymous_target_python_whitespace_refuri", "__ http://x\x1fy\n"),
+    ("round_d", "embedded_uri_python_whitespace", "See `text <http://x\x1fy>`_ here.\n"),
+    # (the `image` `:target:` twin lives in the `dir_image` family below
+    # the scope guard — same `parse_target` URI path.)
+    ("dir_image", "target_python_whitespace", ".. image:: p.png\n   :target: http://x\x1fy\n"),
+    # HELD OUT (known divergence, wave-5 backlog): `.. _name\n   : uri` is
+    # malformed, and docutils' fallback comment starts on the SECOND line
+    # (`: uri`, warning at line 2) because `hyperlink_target` had already
+    # advanced the state machine; this crate rewinds to the first line.
 ]
 
 
