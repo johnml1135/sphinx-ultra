@@ -69,8 +69,8 @@ everything forward is [ROADMAP.md](ROADMAP.md).
     broken include path drops its content **silently**, and `-W` stays
     green where `sphinx-build` fails. The glossary diagnostics above take
     the same channel.
-  Evidence: the environment oracle grew to 28 projects / 83 documents and
-  the read-phase doctree oracle to 458 cases, both at zero divergence
+  Evidence: the environment oracle grew to 29 projects / 84 documents and
+  the read-phase doctree oracle to 463 cases, both at zero divergence
   against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
   against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
   mismatches).
@@ -315,6 +315,30 @@ surface. The binary's CLI is unaffected.
 
 ### Fixed
 
+- **`.. _ name:` was parsed as a hyperlink target (M2 wave 4.5, panel fix
+  round D).** docutils' target construct is `\.\.[ ]+_(?![ ]|$)`: a space or
+  end-of-line right after the `_` makes the whole block a plain comment. This
+  crate read `.. _ pad  lbl :` as a target whose stripped name collided with
+  a real `.. _pad  lbl:` — a spurious `Duplicate explicit target name`
+  message, and on its own a label Sphinx never has, so a `:ref:` to it
+  resolved here and warned `undefined label` there. It is a comment now, as
+  are a bare `.. _` (with or without an indented continuation) and
+  `.. _\tx:` (tabs expand before the match); a backtick phrase that opens
+  with a space or closes after one is `malformed hyperlink target.`, as
+  docutils' target pattern says. The plain form keeps a space before its
+  colon — probed, still a target.
+- **Names, labels and URIs now split on Python's whitespace (M2 wave 4.5,
+  panel fix round D).** Round C fixed the cross-reference targets; the same
+  `\x1c`-`\x1f` gap was still in every docutils name normalizer
+  (`fully_normalize_name`, `whitespace_normalize_name`, both `make_id`s), the
+  target/anonymous/image/embedded URI cleanups, the indirect-reference check,
+  the std domain's `ws_re` port for `envvar`/`confval`/`program`, and the
+  `:option:` subcommand fold. `.. _a\x1fb:` is the label `a b` (both `:ref:`
+  spellings reach it), `.. envvar:: FOO\x1fBAR` indexes `environment
+  variable; FOO BAR`, `.. program:: git\x1fadd` scopes its options under
+  `git-add`, and `:option:`git\x1fadd -x`` resolves — all as under Sphinx
+  9.1.0. Pinned by 17 docutils cases, 5 sphinx cases and the `names_round_d`
+  env-oracle project, compared at full strength.
 - **A huge `:tab-width:` on an `include` reported the wrong error first (M2
   wave 4.5, panel fix round C).** The C-int range check that keeps an
   out-of-range `:tab-width:` from hanging the parser ran before the file
@@ -337,8 +361,14 @@ surface. The binary's CLI is unaffected.
   prints for `part.rst`, and watched a file whose changes could not affect
   the build. Both records now follow the resolved path, spelled relative to
   the resolved source directory (`../ext/part.rst` for a file the link led
-  out of the tree) — the same `env.included` / `env.dependencies` a real
-  `sphinx-build` ends with.
+  out of the tree) — the same `env.dependencies` a real `sphinx-build` ends
+  with, and the same `env.included` for every file *inside* the source
+  directory. One knowing simplification remains for a `.rst` the link leads
+  *outside* it: Sphinx's `path2doc` then records the absolute path itself as
+  a pseudo-docname in `env.included`, this crate records nothing. The entry
+  is output-inert (its only reader is the orphan check, which a `/`-rooted
+  name can never satisfy) and is listed under the known divergences in
+  `docs/IMPLEMENTATION_STATUS.md`.
 - **Cross-reference targets now collapse Python's whitespace, and an
   explicit `Title <target>` keeps its padding (M2 wave 4.5, panel fix round
   C).** Sphinx's `ws_re` is Python's `\s`, which admits `\x1c`-`\x1f`;

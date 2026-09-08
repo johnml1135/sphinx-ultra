@@ -309,8 +309,8 @@ and the ten-key object-signature config family; `py-modindex` data; and
 images-only limitation on incremental rebuilds. The consequences this amendment
 listed are gone: the nitpicky skip notice no longer covers Python references (it
 survives only for the `c`/`cpp`/`js`/`rst` domains M5 adds), and file dependencies
-now include every included file. Evidence: the environment oracle at 28 projects /
-83 documents and the read-phase doctree oracle at 458 cases, both zero divergence.
+now include every included file. Evidence: the environment oracle at 29 projects /
+84 documents and the read-phase doctree oracle at 463 cases, both zero divergence.
 
 **Acceptance:** a golden-corpus differential harness (§10) builds a set of real-world
 Sphinx projects with both `sphinx-build` and `sphinx-ultra` and diffs normalized
