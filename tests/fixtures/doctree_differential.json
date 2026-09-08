@@ -4255,6 +4255,18 @@
       "rst": ".. raw:: ht\u001fml\n\n   <b>x</b>\n"
     },
     {
+      "family": "dir_body",
+      "name": "dir_body.line_block_directive_leading_nbsp_is_indent",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <line_block>\n        <line_block>\n            <line>\n                x\n        <line>\n            y\n",
+      "rst": ".. line-block::\n\n    x\n   y\n"
+    },
+    {
+      "family": "dir_body",
+      "name": "dir_body.line_block_directive_leading_us_is_indent",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <line_block>\n        <line_block>\n            <line>\n                x\n        <line>\n            y\n",
+      "rst": ".. line-block::\n\n   \u001fx\n   y\n"
+    },
+    {
       "family": "substitutions",
       "name": "substitutions.unicode_codes_python_whitespace",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <substitution_definition names=\"u\">\n        A\n        B\n    <paragraph>\n        <substitution_reference refname=\"u\">\n            u\n         here\n",
@@ -4307,6 +4319,96 @@
       "name": "substitutions.marker_nbsp_before_close_malformed",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        |ab | replace:: q\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed substitution definition.\n",
       "rst": ".. |ab | replace:: q\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_nbsp_before_classifier",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                cls\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term  : cls\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_us_before_classifier",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                cls\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term\u001f : cls\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_us_before_two_classifiers",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                a\n            <classifier>\n                b\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term\u001f : a : b\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_ideographic_space_before_classifier",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                cls\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term　 : cls\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.field_body_leading_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <field_list>\n        <field>\n            <field_name>\n                a\n            <field_body>\n                <paragraph>\n                     b\n",
+      "rst": ":a:  b\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.field_body_leading_nbsp_kept_multiline",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <field_list>\n        <field>\n            <field_name>\n                a\n            <field_body>\n                <paragraph>\n                     b\n                    c\n",
+      "rst": ":a:   b\n   c\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.option_desc_leading_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <option_list>\n        <option_list_item>\n            <option_group>\n                <option>\n                    <option_string>\n                        -a\n            <description>\n                <paragraph>\n                     desc\n",
+      "rst": "-a   desc\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.option_desc_three_spaces_then_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <option_list>\n        <option_list_item>\n            <option_group>\n                <option>\n                    <option_string>\n                        -a\n            <description>\n                <paragraph>\n                     desc\n",
+      "rst": "-a    desc\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.literal_marker_us_before_space_rstripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        abc\n    <literal_block xml:space=\"preserve\">\n        lit\n",
+      "rst": "abc\u001f ::\n\n   lit\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.title_overline_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"t\" names=\"t\">\n        <title>\n            T\n",
+      "rst": "=====\n\u001fT\n=====\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.title_underline_leading_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"t\" names=\"t\">\n        <title>\n             T\n",
+      "rst": " T\n===\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.enum_next_line_leading_us_is_indented",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <enumerated_list enumtype=\"arabic\" prefix=\"\" suffix=\".\">\n        <list_item>\n            <paragraph>\n                a\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            Enumerated list ends without a blank line; unexpected unindent.\n    <paragraph>\n        \u001fb\n",
+      "rst": "1. a\n\u001fb\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.enum_next_line_leading_nbsp_is_indented",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <enumerated_list enumtype=\"arabic\" prefix=\"\" suffix=\".\">\n        <list_item>\n            <paragraph>\n                a\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            Enumerated list ends without a blank line; unexpected unindent.\n    <paragraph>\n         b\n",
+      "rst": "1. a\n b\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.simple_table_margin_us_is_blank",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": "=== ===\na  \u001fb\n=== ===\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.simple_table_first_column_us_is_continuation",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n                            c\n",
+      "rst": "=== ===\na   b\n\u001f   c\n=== ===\n"
     }
   ],
   "docutils_version": "0.22.4",

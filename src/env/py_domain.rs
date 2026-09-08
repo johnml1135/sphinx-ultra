@@ -428,7 +428,7 @@ pub fn resolve_xref<'a>(
         } else {
             warning = Some(format!(
                 "more than one target found for cross-reference {}: {}",
-                crate::env::toctree::py_repr_str(target),
+                crate::utils::py_repr_str(target),
                 matches
                     .iter()
                     .map(|(name, _)| name.as_str())

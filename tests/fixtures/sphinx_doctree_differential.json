@@ -2102,6 +2102,96 @@
     },
     {
       "family": "sx_directives",
+      "name": "sx_directives.glossary_term_nbsp_before_classifier_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term\">\n                    term \n                    <index entries=\"('single',\\ 'term\\\\xa0',\\ 'term-term',\\ 'main',\\ 'cls')\">\n                <definition>\n                    <paragraph>\n                        def\n",
+      "rst": ".. glossary::\n\n   term  : cls\n      def\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_term_us_before_classifier_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term\">\n                    term\u001f\n                    <index entries=\"('single',\\ 'term\\\\x1f',\\ 'term-term',\\ 'main',\\ 'cls')\">\n                <definition>\n                    <paragraph>\n                        def\n",
+      "rst": ".. glossary::\n\n   term\u001f : cls\n      def\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_wide_classifier_delimiter",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term\">\n                    term\n                    <index entries=\"('single',\\ 'term',\\ 'term-term',\\ 'main',\\ 'cls')\">\n                <definition>\n                    <paragraph>\n                        def\n",
+      "rst": ".. glossary::\n\n   term  :  cls\n      def\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_classifier_leading_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term\">\n                    term\n                    <index entries=\"('single',\\ 'term',\\ 'term-term',\\ 'main',\\ '\\\\xa0cls')\">\n                <definition>\n                    <paragraph>\n                        def\n",
+      "rst": ".. glossary::\n\n   term :  cls\n      def\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.glossary_second_classifier_ignored_first_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <glossary sorted=\"0\">\n        <definition_list classes=\"glossary\">\n            <definition_list_item>\n                <term ids=\"term-term\">\n                    term\n                    <index entries=\"('single',\\ 'term',\\ 'term-term',\\ 'main',\\ 'a')\">\n                <definition>\n                    <paragraph>\n                        def\n",
+      "rst": ".. glossary::\n\n   term : a : b\n      def\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_bang_then_us_lstripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a',\\ 'index-0',\\ 'main',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: !\u001fa\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_single_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: single: \u001fa\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_single_bang_after_type_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ '!\\\\x1fa',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: single: !\u001fa\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_comma_value_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a',\\ 'index-0',\\ '',\\ None) ('single',\\ 'b',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: a,\u001fb\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_comma_bang_then_us_lstripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a',\\ 'index-0',\\ '',\\ None) ('single',\\ 'b',\\ 'index-0',\\ 'main',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: a, !\u001fb\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_pair_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'a;\\ b',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: pair: \u001fa; b\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.index_value_trailing_us_before_comma_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('single',\\ 'a',\\ 'index-0',\\ '',\\ None) ('single',\\ 'b',\\ 'index-0',\\ '',\\ None)\" inline=\"0\">\n    <target ids=\"index-0\">\n",
+      "rst": ".. index:: a\u001f, b\n"
+    },
+    {
+      "family": "sx_std",
+      "name": "sx_std.option_second_synonym_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'git\\ command\\ line\\ option;\\ -x',\\ 'cmdoption-git-x',\\ '',\\ None) ('pair',\\ 'git\\ command\\ line\\ option;\\ -y',\\ 'cmdoption-git-x',\\ '',\\ None)\">\n    <desc classes=\"std option\" desctype=\"option\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"option\">\n        <desc_signature _toc_name=\"\" _toc_parts=\"()\" allnames=\"-x -y\" classes=\"sig sig-object\" ids=\"cmdoption-git-x cmdoption-git-y\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                -x\n            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                , \n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                -y\n            <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n        <desc_content>\n            <paragraph>\n                Body.\n",
+      "rst": ".. program:: git\n\n.. option:: -x, \u001f-y\n\n   Body.\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.code_block_emphasize_lines_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <literal_block force=\"0\" highlight_args=\"{'hl_lines': [1]}\" language=\"python\" xml:space=\"preserve\">\n        x = 1\n",
+      "rst": ".. code-block:: python\n   :emphasize-lines: \u001f1\n\n   x = 1\n"
+    },
+    {
+      "family": "sx_directives",
+      "name": "sx_directives.code_block_emphasize_lines_part_trailing_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <literal_block force=\"0\" highlight_args=\"{'hl_lines': [1, 2]}\" language=\"python\" xml:space=\"preserve\">\n        x = 1\n        y = 2\n",
+      "rst": ".. code-block:: python\n   :emphasize-lines: 1\u001f,2\n\n   x = 1\n   y = 2\n"
+    },
+    {
+      "family": "sx_directives",
       "name": "sx_directives.versionadded_argument_python_whitespace",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <versionmodified type=\"versionadded\" version=\"1.0\">\n        <paragraph translatable=\"0\">\n            <inline classes=\"versionmodified added\">\n                Added in version 1.0: \n            a b\n",
       "rst": ".. versionadded:: 1.0\u001fa b\n"
@@ -2189,6 +2279,18 @@
       "name": "py.function_multi_sig",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None) ('pair',\\ 'built-in\\ function;\\ g()',\\ 'g',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                f\n            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                <desc_parameter xml:space=\"preserve\">\n                    <desc_sig_name classes=\"n\">\n                        x\n        <desc_signature _toc_name=\"g()\" _toc_parts=\"('g',)\" class=\"\" classes=\"sig sig-object\" fullname=\"g\" ids=\"g\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                g\n            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                <desc_parameter xml:space=\"preserve\">\n                    <desc_sig_name classes=\"n\">\n                        y\n        <desc_content>\n            <paragraph>\n                Shared body.\n",
       "rst": ".. py:function:: f(x)\n                  g(y)\n\n   Shared body.\n"
+    },
+    {
+      "family": "py",
+      "name": "py.function_second_signature_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None) ('pair',\\ 'built-in\\ function;\\ g()',\\ 'g',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                f\n            <desc_parameterlist xml:space=\"preserve\">\n        <desc_signature _toc_name=\"g()\" _toc_parts=\"('g',)\" class=\"\" classes=\"sig sig-object\" fullname=\"g\" ids=\"g\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                g\n            <desc_parameterlist xml:space=\"preserve\">\n        <desc_content>\n",
+      "rst": ".. py:function:: f()\n                  \u001fg()\n"
+    },
+    {
+      "family": "py",
+      "name": "py.function_meta_field_leading_us_filtered",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object\" fullname=\"f\" ids=\"f\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                f\n            <desc_parameterlist xml:space=\"preserve\">\n        <desc_content>\n            <field_list>\n",
+      "rst": ".. py:function:: f()\n\n   :\u001fmeta private:\n"
     },
     {
       "family": "py",

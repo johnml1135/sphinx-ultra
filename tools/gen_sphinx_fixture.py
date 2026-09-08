@@ -720,6 +720,38 @@ CASES = [
     ('sx_directives', 'index_entry_repr_escapes_nbsp', '.. index:: single: a\xa0b\n'),
     ('sx_directives', 'index_entry_repr_escapes_del', '.. index:: single: a\x7fb\n'),
     ('sx_directives', 'glossary_index_entry_repr_escapes_control_char', '.. glossary::\n\n   term\x1fone\n      definition\n'),
+    # ----- round F: the glossary term is NOT rstripped -----
+    # `split_term_classifiers` (domains/std/__init__.py:366-372) splits the
+    # line on ` +: +` and takes `parts[0]` VERBATIM — unlike docutils'
+    # `Text.term`, which rstrips it — so whitespace before the delimiter
+    # stays in the <term>, its index entry and the registered term; the
+    # first classifier (`parts[1]`) is verbatim too, and only the first one
+    # is used.
+    ('sx_directives', 'glossary_term_nbsp_before_classifier_kept', '.. glossary::\n\n   term\xa0 : cls\n      def\n'),
+    ('sx_directives', 'glossary_term_us_before_classifier_kept', '.. glossary::\n\n   term\x1f : cls\n      def\n'),
+    ('sx_directives', 'glossary_wide_classifier_delimiter', '.. glossary::\n\n   term  :  cls\n      def\n'),
+    ('sx_directives', 'glossary_classifier_leading_nbsp_kept', '.. glossary::\n\n   term : \xa0cls\n      def\n'),
+    ('sx_directives', 'glossary_second_classifier_ignored_first_kept', '.. glossary::\n\n   term : a : b\n      def\n'),
+    # round F: `process_index_entry` (util/nodes.py) `strip()`s the entry and
+    # every comma value and `lstrip()`s after a leading `!` — Python's set, so
+    # `\x1f` goes wherever a space would. `!` is recognised only at the very
+    # start of an entry (the `single: !x` form keeps its `!`).
+    ('sx_directives', 'index_bang_then_us_lstripped', '.. index:: !\x1fa\n'),
+    ('sx_directives', 'index_single_leading_us_stripped', '.. index:: single: \x1fa\n'),
+    ('sx_directives', 'index_single_bang_after_type_kept', '.. index:: single: !\x1fa\n'),
+    ('sx_directives', 'index_comma_value_leading_us_stripped', '.. index:: a,\x1fb\n'),
+    ('sx_directives', 'index_comma_bang_then_us_lstripped', '.. index:: a, !\x1fb\n'),
+    ('sx_directives', 'index_pair_leading_us_stripped', '.. index:: pair: \x1fa; b\n'),
+    ('sx_directives', 'index_value_trailing_us_before_comma_stripped', '.. index:: a\x1f, b\n'),
+    # round F: `Cmdoption.handle_signature` `strip()`s every `, `-separated
+    # synonym (Python's set) before `option_desc_re`; `parse_directive_arguments`'
+    # `split(None, 0)` lstrips only the whole argument, so a \x1f opening the
+    # SECOND synonym reaches that strip.
+    ('sx_std', 'option_second_synonym_leading_us_stripped', '.. program:: git\n\n.. option:: -x, \x1f-y\n\n   Body.\n'),
+    # round F: `parselinenos` — `begend = part.strip().split('-')` — strips each
+    # comma part with Python's set BEFORE `int()` (which would reject a \x1f).
+    ('sx_directives', 'code_block_emphasize_lines_leading_us_stripped', '.. code-block:: python\n   :emphasize-lines: \x1f1\n\n   x = 1\n'),
+    ('sx_directives', 'code_block_emphasize_lines_part_trailing_us_stripped', '.. code-block:: python\n   :emphasize-lines: 1\x1f,2\n\n   x = 1\n   y = 2\n'),
     # `parse_directive_arguments` re-splits with `arg_text.split(None,
     # required + optional - 1)` when there are too many words — Python
     # whitespace both times, so \x1f ends the version argument.
@@ -743,6 +775,11 @@ CASES = [
     ('py', 'function_annotation_option', '.. py:function:: f(x)\n   :annotation: something extra\n'),
     ('py', 'function_bad_sig', '.. py:function:: not a signature!\n'),
     ('py', 'function_multi_sig', '.. py:function:: f(x)\n                  g(y)\n\n   Shared body.\n'),
+    # round F: `get_signatures` `strip()`s each signature line (Python's set),
+    # and `_filter_meta_fields` `strip()`s the field name before the `meta`
+    # test — a \x1f opening either is gone.
+    ('py', 'function_second_signature_leading_us_stripped', '.. py:function:: f()\n                  \x1fg()\n'),
+    ('py', 'function_meta_field_leading_us_filtered', '.. py:function:: f()\n\n   :\x1fmeta private:\n'),
     ('py', 'module_deprecated', '.. py:module:: oldmod\n   :deprecated:\n'),
     ('py', 'module_noindex', '.. py:module:: quietmod\n   :no-index:\n'),
     ('py', 'module_noindexentry', '.. py:module:: halfmod\n   :no-index-entry:\n'),

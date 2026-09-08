@@ -171,6 +171,56 @@ pub(crate) fn py_isspace(c: char) -> bool {
     c.is_whitespace() || matches!(c, '\x1c'..='\x1f')
 }
 
+/// `repr()` of a Python `str` (CPython `unicode_repr`): single quotes
+/// unless the text has a `'` and no `"`; `\\`, `\n`, `\r`, `\t` and the
+/// chosen quote backslash-escaped; and every character
+/// `str.isprintable()` rejects rendered as `\xNN` / `\uNNNN` / `\UNNNNNNNN`
+/// (lowercase hex). That set is the categories Cc, Cf, Cs, Co, Cn, Zl, Zp
+/// and Zs minus the ASCII space: `is_control()` is exactly Cc and
+/// `is_whitespace()` is exactly Zs|Zl|Zp plus Cc members, so the predicate
+/// below is those five categories precisely, and Cs cannot exist in a Rust
+/// `char`. **Cf, Co and Cn are the ledgered gap** — matching them needs a
+/// Unicode general-category table this tree does not have — recorded in
+/// docs/IMPLEMENTATION_STATUS.md and nowhere else; this is the ONE
+/// implementation (panel fix round F), behind `src/rst/block.rs`'s
+/// `py_repr` for directive messages and index-entry tuples and behind
+/// every warning-stream `%r` (toctree, resolver, py domain, intersphinx,
+/// builder).
+pub(crate) fn py_repr_str(s: &str) -> String {
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c != ' ' && (c.is_control() || c.is_whitespace()) => {
+                let n = c as u32;
+                if n <= 0xff {
+                    out.push_str(&format!("\\x{n:02x}"));
+                } else if n <= 0xffff {
+                    out.push_str(&format!("\\u{n:04x}"));
+                } else {
+                    out.push_str(&format!("\\U{n:08x}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
 /// Python `str.split()` with no separator: split on runs of [`py_isspace`],
 /// dropping the empty leading/trailing/interior fields. Rust's
 /// `str::split_whitespace` is the same shape over a NARROWER set (it misses
@@ -612,6 +662,28 @@ mod path_tests {
             assert!(!py_isspace(c), "{c:?}");
         }
         assert!(!'\x1f'.is_whitespace(), "the case Rust's predicate misses");
+    }
+
+    /// CPython 3.12 `repr()`: quote choice, the four named escapes, and
+    /// `\xNN`/`\uNNNN` for every non-`str.isprintable()` character —
+    /// probed (`repr('term\xa0')` → `'term\xa0'`, `repr('a\u3000b')` →
+    /// `'a\u3000b'`, `repr('a\x85b')` → `'a\x85b'`; panel fix round F).
+    #[test]
+    fn py_repr_str_quotes_and_escapes_like_cpython() {
+        assert_eq!(py_repr_str("a"), "'a'");
+        assert_eq!(py_repr_str("it's"), "\"it's\"");
+        assert_eq!(py_repr_str("say \"hi\""), "'say \"hi\"'");
+        assert_eq!(py_repr_str("both ' and \""), "'both \\' and \"'");
+        assert_eq!(py_repr_str("a\\b"), "'a\\\\b'");
+        assert_eq!(py_repr_str("a\nb"), "'a\\nb'");
+        assert_eq!(py_repr_str("a\tb\rc"), "'a\\tb\\rc'");
+        assert_eq!(py_repr_str("term\u{a0}"), "'term\\xa0'");
+        assert_eq!(py_repr_str("foo\u{a0}bar"), "'foo\\xa0bar'");
+        assert_eq!(py_repr_str("a\u{3000}b"), "'a\\u3000b'");
+        assert_eq!(py_repr_str("a\u{85}b"), "'a\\x85b'");
+        assert_eq!(py_repr_str("a\x1fb\x7f"), "'a\\x1fb\\x7f'");
+        assert_eq!(py_repr_str("a\u{2028}b"), "'a\\u2028b'");
+        assert_eq!(py_repr_str("é ü"), "'é ü'", "printable non-ASCII stays raw");
     }
     /// Sphinx `.resolve()`s the joined path, so `..` walks up from a
     /// symlink's TARGET, not from the link's own parent. The lexical

@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::doctree::{kinds, AttrValue, Doctree, Node, Span};
 use crate::env::BuildEnvironment;
 use crate::matching;
+use crate::utils::py_repr_str;
 
 /// Sphinx's `StandardDomain._virtual_doc_names` (`domains/std/__init__.py:784-788`):
 /// docnames that resolve even though no source file produces them.
@@ -403,36 +404,6 @@ pub fn docname_join(base_docname: &str, docname: &str) -> String {
         }
     }
     segments.join("/")
-}
-
-/// `repr()` of a Python `str`: single quotes unless that would need
-/// escaping and double quotes wouldn't.
-pub(crate) fn py_repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1747,16 +1718,6 @@ mod tests {
             messages[0].message,
             "document is referenced in multiple toctrees: ['a', 'b'], selecting: b <- c"
         );
-    }
-
-    #[test]
-    fn py_repr_quoting_matches_python() {
-        assert_eq!(py_repr_str("a"), "'a'");
-        assert_eq!(py_repr_str("it's"), "\"it's\"");
-        assert_eq!(py_repr_str("say \"hi\""), "'say \"hi\"'");
-        assert_eq!(py_repr_str("both ' and \""), "'both \\' and \"'");
-        assert_eq!(py_repr_str("a\\b"), "'a\\\\b'");
-        assert_eq!(py_repr_str("a\nb"), "'a\\nb'");
     }
 
     #[test]

@@ -2854,6 +2854,58 @@ fn a_warm_rebuild_reports_the_same_toctree_warnings() {
     assert_eq!(build_once(), cold, "a warm rebuild must warn identically");
 }
 
+/// Sphinx logs the missing entry with `%r` — CPython `repr`, which escapes
+/// every character `str.isprintable()` rejects, an NBSP included. The
+/// expected line is byte-pinned to a sphinx 9.1.0 dummy build of this
+/// project through `tools/gen_env_fixture.py`'s own `build_project`
+/// (panel fix round F; `py_repr_str` had escaped only `< 0x20` and `0x7f`).
+#[test]
+fn a_toctree_warning_reprs_its_target_like_cpython() {
+    let (_, warnings) = resolved_build(
+        &[
+            (
+                "index",
+                "Index\n=====\n\n.. toctree::\n\n   foo\u{a0}bar\n   real\n",
+            ),
+            ("real", "Real\n====\n\nbody\n"),
+        ],
+        &|_, _| {},
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:4: WARNING: toctree contains reference to nonexisting \
+             document 'foo\\xa0bar' [toc.not_readable]"
+        ]
+    );
+}
+
+/// `TocTree.parse_content` reads `self.content` verbatim — no strip — so
+/// an entry indented deeper than the block keeps its extra spaces and names
+/// a document that does not exist. Byte-pinned to a sphinx 9.1.0 dummy build
+/// of this project through `tools/gen_env_fixture.py`'s `build_project`
+/// (panel fix round F; the crate had trimmed the entry and resolved `b`).
+#[test]
+fn a_deeper_indented_toctree_entry_keeps_its_spaces_like_sphinx() {
+    let (_, warnings) = resolved_build(
+        &[
+            ("index", "Index\n=====\n\n.. toctree::\n\n   a\n     b\n"),
+            ("a", "A\n=\n\nbody\n"),
+            ("b", "B\n=\n\nbody\n"),
+        ],
+        &|_, _| {},
+    );
+    assert_eq!(
+        warnings,
+        vec![
+            "<project>/index.rst:4: WARNING: toctree contains reference to nonexisting \
+             document '  b' [toc.not_readable]",
+            "<project>/b.rst: WARNING: document isn't included in any toctree \
+             [toc.not_included]",
+        ]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // py cross-reference resolution: the [PY §3.3]/[PY §3.5] resolve probes as
 // library-level build tests, each expectation byte-pinned to a sphinx 9.1.0

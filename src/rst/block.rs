@@ -1228,7 +1228,13 @@ impl BlockParser {
         let span = self.span_of(lines, *pos, *pos + 2);
         let title_lineno = title_line.lineno;
         let underline_lineno = under.lineno;
-        let title_text = self.sources.line_text(title_line).trim().to_string();
+        // `Line.text`: `title = title.rstrip()` then `section(title.lstrip(),
+        // ...)` — Python's set at both ends (round F, `round_f` pin).
+        let title_text = self
+            .sources
+            .line_text(title_line)
+            .trim_matches(crate::utils::py_isspace)
+            .to_string();
         *pos += 3;
         Some(SectionStart {
             title: title_text,
@@ -1295,7 +1301,14 @@ impl BlockParser {
                         let span = self.span_of(lines, *pos, *pos + 1);
                         let title_lineno = line.lineno;
                         let underline_lineno = next.lineno;
-                        let title = self.sources.line_text(line).trim().to_string();
+                        // `Text.underline`: `title = context[0].rstrip()` —
+                        // rstrip ONLY, so a leading NBSP stays in the title
+                        // (round F, `round_f` pin; `trim()` had eaten it).
+                        let title = self
+                            .sources
+                            .line_text(line)
+                            .trim_end_matches(crate::utils::py_isspace)
+                            .to_string();
                         *pos += 2;
                         return Some(SectionStart {
                             title,
@@ -1699,10 +1712,20 @@ impl BlockParser {
             None => return true,
             Some(n) => n,
         };
-        if next.is_blank() || next.indent() > 0 {
+        // `if not next_line[:1].strip(): return True` — "blank or indented"
+        // is Python's test on the FIRST character, so a line opening with an
+        // NBSP or `\x1f` counts as indented (round F, `round_f` pins).
+        let next_text = self.sources.line_text(*next);
+        if next.is_blank()
+            || next.indent() > 0
+            || next_text
+                .chars()
+                .next()
+                .is_some_and(crate::utils::py_isspace)
+        {
             return true;
         }
-        match parse_enumerator(self.sources.line_text(*next)) {
+        match parse_enumerator(next_text) {
             Some(e)
                 if e.prefix == item.prefix
                     && e.suffix == item.suffix
@@ -1734,7 +1757,20 @@ impl BlockParser {
             let term_span = self.span_of(lines, *pos, *pos);
             let term_ends_in_colons = self.sources.line_text(term_line).ends_with("::");
             let mut parts = split_classifiers(self.sources.line_text(term_line)).into_iter();
+            let has_classifiers = parts.len() > 1;
             let term_text = parts.next().unwrap_or_default();
+            // `text = parts[0].rstrip()` (states.py:3015) — Python's
+            // whitespace set, applied only on the classifier branch: a term
+            // without one is a whole `string2lines` line, rstripped already.
+            // Sphinx's glossary term is the opposite (kept verbatim; see
+            // `run_glossary`). Probe-pinned, panel fix round F (`round_f`).
+            let term_text = if has_classifiers {
+                term_text
+                    .trim_end_matches(crate::utils::py_isspace)
+                    .to_string()
+            } else {
+                term_text
+            };
             let mut term_msgs = Vec::new();
             let inline = self.inline(&term_text, term_span, term_line.lineno);
             let mut term = Node::elem(kinds::TERM, term_span);
@@ -2361,8 +2397,12 @@ impl BlockParser {
             let (name_raw, body_start) = field_marker(line_text).expect("checked by caller");
             let lineno = line.lineno;
             let field_span = self.span_of(lines, *pos, *pos);
-            // body: marker-line remainder + any-indent continuation block
-            let first_rest = line_text[body_start..].trim_start();
+            // body: marker-line remainder + any-indent continuation block.
+            // The remainder is `line[match.end():]` after `field_marker`'s
+            // `( +|$)` (states.py:2960-2965): ASCII spaces only, nothing
+            // lstripped, so an NBSP after the gap is body text (round F,
+            // pinned in `round_f`; `trim_start()` had eaten it).
+            let first_rest = line_text[body_start..].trim_start_matches(' ');
             let rest_offset = (!first_rest.is_empty()).then(|| line_text.len() - first_rest.len());
             let (block, consumed, _i, terminator) = indented_block(lines, *pos + 1);
             let mut body_lines: Vec<LineRec> = Vec::new();
@@ -2751,8 +2791,14 @@ impl BlockParser {
                         self.blank_at(*l)
                     } else {
                         let d = l.dedented(base);
-                        // strip trailing whitespace inside the cell view
-                        let trimmed = self.sources.line_text(d).trim_end().len();
+                        // `get_2D_block` rstrips the cell slice — Python's
+                        // set (round F; every cell consumer rstrips again,
+                        // so no input reaches the old `trim_end()`).
+                        let trimmed = self
+                            .sources
+                            .line_text(d)
+                            .trim_end_matches(crate::utils::py_isspace)
+                            .len();
                         self.rewrap_range(d, 0, trimmed)
                     }
                 })
@@ -2995,7 +3041,9 @@ impl BlockParser {
                 continue;
             }
             let fc_text = display_slice(line, first_col.0, first_col.1);
-            if !fc_text.trim().is_empty() {
+            // `line[:firstend].strip()` (tableparser.py) — Python's set: an
+            // all-`\x1f` first column is a continuation (round F pin).
+            if !fc_text.trim_matches(crate::utils::py_isspace).is_empty() {
                 if let Some(s) = open.take() {
                     rows.push(RawRow {
                         start: s,
@@ -3025,7 +3073,12 @@ impl BlockParser {
                 for w2 in row.cols.windows(2) {
                     let (_, e1) = w2[0];
                     let (s2, _) = w2[1];
-                    if !display_slice(line, e1, s2).trim().is_empty() {
+                    // `check_columns`: `line[end:nextstart].strip()` —
+                    // Python's set (round F pin: a `\x1f` in the margin).
+                    if !display_slice(line, e1, s2)
+                        .trim_matches(crate::utils::py_isspace)
+                        .is_empty()
+                    {
                         out.push(malformed(
                             &format!("Text in column margin in table line {}.", bi + 1),
                             block[bi].lineno,
@@ -3035,7 +3088,7 @@ impl BlockParser {
                 }
                 let row_border_end = row.cols.last().map(|(_, e)| *e).unwrap_or(border_end);
                 let tail = display_slice(line, row_border_end, column_width(line));
-                if !tail.trim().is_empty() {
+                if !tail.trim_matches(crate::utils::py_isspace).is_empty() {
                     let last_start = row.cols.last().map(|(s, _)| *s).unwrap_or(0);
                     let extent = last_start
                         + column_width(
@@ -3097,8 +3150,9 @@ impl BlockParser {
                     let l = block[bi];
                     let text = self.sources.line_text(l);
                     let (s, e) = display_range(text, *cs, ce_eff.min(column_width(text)));
-                    // strip trailing whitespace inside the cell view
-                    let e = s + text[s..e].trim_end().len();
+                    // `get_2D_block` rstrips the cell slice — Python's set
+                    // (round F; see the grid-table cell view).
+                    let e = s + text[s..e].trim_end_matches(crate::utils::py_isspace).len();
                     cell_lines.push(self.rewrap_range(l, s, e));
                 }
                 let base = cell_lines
@@ -4594,15 +4648,19 @@ impl BlockParser {
             let mut item = Node::elem(kinds::DEFINITION_LIST_ITEM, input.span);
             let mut term_messages: Vec<Node> = Vec::new();
             for tl in term_lines {
-                let raw_term = self.sources.line_text(*tl).trim().to_string();
-                let raw_term = raw_term.as_str();
-                // split_term_classifiers: ' +: +' — first classifier is
-                // the index key.
-                let mut parts = raw_term.splitn(2, " : ");
-                let term_text = parts.next().unwrap_or(raw_term).trim_end().to_string();
-                let index_key = parts
-                    .next()
-                    .map(|c| c.split(" : ").next().unwrap_or(c).trim().to_string());
+                // `split_term_classifiers` (`domains/std/__init__.py:366-372`):
+                // `parts = _term_classifiers_re.split(line)` on ` +: +`,
+                // then `term = parts[0]` and `first_classifier = parts[1]`
+                // — both VERBATIM, nothing stripped. Unlike docutils'
+                // `Text.term` (which rstrips the term), `term\xa0 : cls`
+                // keeps its NBSP in the <term>, the index entry and the
+                // registered term, and `term : \xa0cls` keeps it in the
+                // index key. A term line is at content column 0 and
+                // `string2lines`-rstripped, so there is nothing to trim.
+                // Probe-pinned, panel fix round F (gen_sphinx_fixture.py).
+                let mut parts = split_classifiers(self.sources.line_text(*tl)).into_iter();
+                let term_text = parts.next().unwrap_or_default();
+                let index_key = parts.next();
                 // Sphinx's `make_glossary_term` stamps the term node with
                 // the *term line's* own source info, not the directive's
                 // (`domains/std/__init__.py:386-388`), and the index node it
@@ -4922,7 +4980,9 @@ impl BlockParser {
         let mut firstname: Option<String> = None;
         let mut allnames: Vec<String> = Vec::new();
         for potential in sig.split(", ") {
-            let potential = potential.trim();
+            // `potential_option.strip()` (`domains/std/__init__.py`) —
+            // Python's set (round F pin: `-x, \x1f-y` registers both).
+            let potential = potential.trim_matches(crate::utils::py_isspace);
             let Some((optname, args)) = option_desc_match(potential) else {
                 // This diagnostic goes to the logger, not the tree
                 // (`domains/std/__init__.py:237-245`), located on the
@@ -5900,8 +5960,11 @@ impl BlockParser {
             if l.is_blank() {
                 continue;
             }
-            let t = self.sources.line_text(*l).trim().to_string();
-            let t = t.as_str();
+            // `for entry in self.content` (`TocTree.parse_content`) — the
+            // line VERBATIM, nothing stripped: an entry indented deeper than
+            // the block keeps its extra spaces and names a document that does
+            // not exist (round F, env-test pin; `trim()` had resolved it).
+            let t = self.sources.line_text(*l);
             raw_entries.push(t.to_string());
             // sphinx explicit_title_re `^(.+?)\s*<(.*?)>$`: the TITLE part
             // must be nonempty — a bare `<foo>` entry is a literal target
@@ -7508,9 +7571,17 @@ impl BlockParser {
                 resolved.push((prev_depth, Vec::new()));
                 continue;
             }
-            let depth = l.indent();
+            // `LineBlock.run` (misc.py): `inline_text(line_text.strip())`
+            // and `line.indent = len(line_text) - len(line_text.lstrip())`
+            // — Python's set for both, so a leading NBSP or `\x1f` is
+            // INDENT, not text (round F, `dir_body` pins).
+            let raw = self.sources.line_text(*l);
+            let depth = raw
+                .chars()
+                .take_while(|c| crate::utils::py_isspace(*c))
+                .count();
             prev_depth = depth;
-            let text = self.sources.line_text(*l).trim().to_string();
+            let text = raw.trim_matches(crate::utils::py_isspace).to_string();
             let inline = self.inline(&text, input.span, l.lineno);
             lb_messages.extend(inline.messages);
             resolved.push((depth, inline.nodes));
@@ -7946,7 +8017,10 @@ fn option_group_marker(text: &str) -> Option<(Vec<(String, Option<(String, Strin
         k += 1;
     }
     let marker = &text[..marker_end];
-    let desc = text[marker_end..].trim_start();
+    // `option_marker`'s `(  +| ?$)` (states.py:1250) eats spaces only and the
+    // description is `line[match.end():]` (`:1641`), so an NBSP after the gap
+    // is description text (round F, pinned in `round_f`).
+    let desc = text[marker_end..].trim_start_matches(' ');
 
     // split synonyms on ', ' outside <>
     let mut specs = Vec::new();
@@ -8511,7 +8585,11 @@ fn parse_linenos(spec: &str, nlines: i64) -> Result<Vec<i64>, String> {
     let invalid = || format!("invalid line number spec: {}", py_repr(Some(spec)));
     let mut out = Vec::new();
     for part in spec.split(',') {
-        let part = part.trim();
+        // `begend = part.strip().split('-')` — Python's set, BEFORE `int()`
+        // gets to reject a `\x1f` (round F pins: `\x1f1`, `1\x1f,2`). The
+        // inner `a`/`b` trims below stand in for `int()`'s own White_Space
+        // strip, which is exactly Rust's set.
+        let part = part.trim_matches(crate::utils::py_isspace);
         if let Some((a, b)) = part.split_once('-') {
             let (a, b) = (a.trim(), b.trim());
             let start = if a.is_empty() {
@@ -8857,7 +8935,9 @@ fn object_signatures(argument: &str, strip_signature_backslash: bool) -> Vec<Str
         .replace("\\\n", "")
         .split('\n')
         .map(|line| {
-            let line = line.trim();
+            // `get_signatures`: `line.strip()` per line — Python's set
+            // (round F pin: a second signature opening with `\x1f`).
+            let line = line.trim_matches(crate::utils::py_isspace);
             if strip_signature_backslash {
                 strip_backslashes(line)
             } else {
@@ -9260,7 +9340,8 @@ fn filter_meta_fields(content: &mut Node) {
                     return true;
                 }
                 let name = field.children.first().map(Node::astext).unwrap_or_default();
-                let name = name.trim();
+                // `field[0].astext().strip()` — Python's set (round F pin).
+                let name = name.trim_matches(crate::utils::py_isspace);
                 !(name == "meta" || name.starts_with("meta "))
             });
         }
@@ -10028,16 +10109,20 @@ pub(crate) fn index_entry_tuple(
 /// sphinx; here they fall through to the shorthand branch (hardening note —
 /// the oracle corpus avoids them).
 fn process_index_entry(entry: &str, target_id: &str) -> Vec<String> {
+    use crate::utils::py_isspace;
     const TYPES: &[&str] = &["single", "pair", "double", "triple", "see", "seealso"];
-    let oentry = entry.trim();
+    // Every strip here is Python's — `entry.strip()`, `entry[1:].lstrip()`,
+    // `value.strip()` — so `\x1f` goes wherever a space would (round F,
+    // pinned by the `index_*_us_*` sphinx cases; Rust's set had kept it).
+    let oentry = entry.trim_matches(py_isspace);
     let stripped = match oentry.strip_prefix('!') {
-        Some(rest) => rest.trim_start(),
+        Some(rest) => rest.trim_start_matches(py_isspace),
         None => oentry,
     };
     let main = if oentry.starts_with('!') { "main" } else { "" };
     for t in TYPES {
         if let Some(value) = stripped.strip_prefix(&format!("{t}:")) {
-            let value = value.trim();
+            let value = value.trim_matches(py_isspace);
             let ty = if *t == "double" { "pair" } else { t };
             return vec![index_entry_tuple(ty, value, target_id, main, None)];
         }
@@ -10047,9 +10132,9 @@ fn process_index_entry(entry: &str, target_id: &str) -> Vec<String> {
     oentry
         .split(',')
         .filter_map(|value| {
-            let value = value.trim();
+            let value = value.trim_matches(py_isspace);
             let (main, value) = match value.strip_prefix('!') {
-                Some(rest) => ("main", rest.trim_start()),
+                Some(rest) => ("main", rest.trim_start_matches(py_isspace)),
                 None => ("", value),
             };
             if value.is_empty() {
@@ -10521,7 +10606,11 @@ fn c_int_tabsize(tabsize: i64) -> Result<i64, &'static str> {
 
 /// docutils `statemachine.string2lines(text, tab_width,
 /// convert_whitespace=True)` (`DU/statemachine.py:1497-1516`): `\v`/`\f`
-/// to spaces, splitlines, per-line `expandtabs(tab_width)` + `rstrip()`.
+/// to spaces, splitlines, per-line `expandtabs(tab_width)` + `rstrip()` —
+/// Python's `str.rstrip()`, i.e. [`crate::utils::py_isspace`], the same
+/// conversion `src/rst/lines.rs` got in round E. The line-length-limit
+/// check runs on this output, so a trailing `\x1f` the rstrip does not eat
+/// would push a limit-length line over it (probe-pinned, round F).
 ///
 /// `expandtabs` runs per LINE — `[s.expandtabs(tab_width).rstrip() for s
 /// in astring.splitlines()]` — regardless of the width's sign, so an
@@ -10538,7 +10627,9 @@ fn string2lines_tw(text: &str, tab_width: i64) -> Result<Vec<String>, &'static s
         .into_iter()
         .map(|line| {
             let expanded = py_expandtabs(line, tab_width);
-            expanded.trim_end().to_string()
+            expanded
+                .trim_end_matches(crate::utils::py_isspace)
+                .to_string()
         })
         .collect())
 }
@@ -10888,7 +10979,8 @@ fn parse_line_num_spec(spec: &str, total: i64) -> Result<LineSpec, String> {
     let invalid = || format!("invalid line number spec: {}", py_repr(Some(spec)));
     let mut parts = Vec::new();
     for part in spec.split(',') {
-        let stripped = part.trim();
+        // `part.strip().split('-')` — Python's set (round F, unit-test pin).
+        let stripped = part.trim_matches(crate::utils::py_isspace);
         let begend: Vec<&str> = stripped.split('-').collect();
         if begend == [""; 2] {
             return Err(invalid());
@@ -12430,53 +12522,14 @@ fn py_int(s: &str) -> Option<i64> {
     py_int_display(neg, &digits).parse::<i64>().ok()
 }
 
-/// Python repr() for option-value error messages (strings and None).
+/// Python repr() for option-value error messages (strings and None); the
+/// string form is [`crate::utils::py_repr_str`], shared with every
+/// warning-stream `%r` site (panel fix round F: `src/env/toctree.rs` had
+/// carried a second copy that escaped only `< 0x20` and `0x7f`).
 pub(crate) fn py_repr(value: Option<&str>) -> String {
     match value {
         None => "None".to_string(),
-        Some(s) => {
-            let quote = if s.contains('\'') && !s.contains('"') {
-                '"'
-            } else {
-                '\''
-            };
-            let mut out = String::new();
-            out.push(quote);
-            for c in s.chars() {
-                match c {
-                    '\\' => out.push_str("\\\\"),
-                    '\n' => out.push_str("\\n"),
-                    '\r' => out.push_str("\\r"),
-                    '\t' => out.push_str("\\t"),
-                    c if c == quote => {
-                        out.push('\\');
-                        out.push(c);
-                    }
-                    // CPython `unicode_repr` escapes every character
-                    // `str.isprintable()` rejects — categories Cc, Cf, Cs,
-                    // Co, Cn, Zl, Zp, Zs, minus ASCII space. `is_control()`
-                    // is exactly Cc and `is_whitespace()` is exactly
-                    // Zs|Zl|Zp plus Cc members, so the union below is those
-                    // five categories precisely; Cs cannot exist in a Rust
-                    // `char`. Cf/Co/Cn are the LEDGERED gap (no Unicode
-                    // general-category table in-tree) — see
-                    // docs/IMPLEMENTATION_STATUS.md.
-                    c if c != ' ' && (c.is_control() || c.is_whitespace()) => {
-                        let n = c as u32;
-                        if n <= 0xff {
-                            out.push_str(&format!("\\x{n:02x}"));
-                        } else if n <= 0xffff {
-                            out.push_str(&format!("\\u{n:04x}"));
-                        } else {
-                            out.push_str(&format!("\\U{n:08x}"));
-                        }
-                    }
-                    c => out.push(c),
-                }
-            }
-            out.push(quote);
-            out
-        }
+        Some(s) => crate::utils::py_repr_str(s),
     }
 }
 
@@ -12833,7 +12886,12 @@ fn strip_literal_colons(text: &str) -> (String, bool) {
         }
         let last = head.chars().last().unwrap();
         if last == ' ' || last == '\n' {
-            return (head.trim_end().to_string(), true);
+            // `data[:-3].rstrip()` (states.py:2733-2736) — Python's set, so
+            // `abc\x1f ::` yields `abc` (round F, pinned in `round_f`).
+            return (
+                head.trim_end_matches(crate::utils::py_isspace).to_string(),
+                true,
+            );
         }
         return (text[..text.len() - 1].to_string(), true);
     }
@@ -17890,6 +17948,25 @@ mod include_tests {
         );
     }
 
+    /// `string2lines` rstrips each line with Python's `str.rstrip()`
+    /// (`DU/statemachine.py:1516`) and the line-length-limit check runs on
+    /// that OUTPUT (`misc.py:245-250`): a member line of 10 000 characters
+    /// plus a trailing `\x1f` is 10 001 characters raw and exactly the limit
+    /// once rstripped, so docutils parses it as a paragraph (probe-pinned,
+    /// panel fix round F; Rust's `trim_end()` had kept the `\x1f`).
+    #[test]
+    fn an_included_line_at_the_limit_plus_a_trailing_us_is_not_over_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "long_us.rst",
+            &format!("{}\x1f\n", "a".repeat(10_000)),
+        );
+        let tree = parse_sphinx(tmp.path(), "main", ".. include:: long_us.rst\n");
+        assert!(messages_of(&tree).is_empty(), "{}", tree.root.pformat());
+        assert_eq!(paragraphs_of(&tree), vec!["a".repeat(10_000)]);
+    }
+
     #[test]
     fn insert_mode_expands_tabs_at_the_given_tab_width() {
         let tmp = tempfile::tempdir().unwrap();
@@ -19311,6 +19388,30 @@ mod literalinclude_tests {
                 ..Default::default()
             },
         )
+    }
+
+    /// `parse_line_num_spec` (`SP/util/_lines.py`) `strip()`s each part with
+    /// Python's set before `int()` sees it, so a spec opening with `\x1f`
+    /// selects the same lines as one without: sphinx 9.1.0 renders
+    /// `:lines: \x1f1` and `:lines: 1` identically (probe-pinned, panel fix
+    /// round F; Rust's `trim()` had left the `\x1f` for `int()` to reject).
+    #[test]
+    fn a_line_spec_opening_with_a_c0_separator_is_stripped_like_python() {
+        let tmp = tempfile::tempdir().unwrap();
+        let control = parse(tmp.path(), ".. literalinclude:: example.py\n   :lines: 1\n");
+        let with_us = parse(
+            tmp.path(),
+            ".. literalinclude:: example.py\n   :lines: \x1f1\n",
+        );
+        assert!(
+            messages_of(&with_us).is_empty(),
+            "{}",
+            with_us.doctree.root.pformat()
+        );
+        assert_eq!(
+            with_us.doctree.root.pformat(),
+            control.doctree.root.pformat()
+        );
     }
 
     fn messages_of(output: &ParseOutput) -> Vec<(i64, i64, String, String)> {

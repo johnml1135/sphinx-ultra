@@ -16,10 +16,11 @@ use std::path::{Path, PathBuf};
 use crate::doctree::{kinds, AttrValue, Doctree, Node};
 use crate::env::numbers::clean_astext;
 use crate::env::std_domain::{DocumentIds, PropagatedIds};
-use crate::env::toctree::{docname_join, py_repr_str};
+use crate::env::toctree::docname_join;
 use crate::env::BuildEnvironment;
 use crate::error::{BuildWarning, WarningType};
 use crate::intersphinx::{self, Diagnostic, HookOutcome, Intersphinx, XrefQuery};
+use crate::utils::py_repr_str;
 
 /// One `pending_xref` to resolve — the attributes Sphinx's resolvers read
 /// off the node.

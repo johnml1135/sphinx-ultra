@@ -20,7 +20,7 @@ use crate::env::py_domain as env_py_domain;
 use crate::env::resolve as env_resolve;
 use crate::env::std_domain as env_std;
 use crate::env::toctree as env_toctree;
-use crate::env::toctree::{py_repr_str, ConsistencyLevel, ToctreeWarningKind};
+use crate::env::toctree::{ConsistencyLevel, ToctreeWarningKind};
 use crate::env::BuildEnvironment;
 use crate::error::{BuildErrorReport, BuildWarning, ErrorType, WarningType};
 use crate::extensions::{ExtensionLoader, SphinxApp};
@@ -28,6 +28,7 @@ use crate::intersphinx::{self, HttpConfig, Intersphinx, LoadRequest, UreqFetcher
 use crate::matching;
 use crate::parser::Parser;
 use crate::utils;
+use crate::utils::py_repr_str;
 
 /// Subdirectory of the cache dir holding one bincode doctree per document.
 /// It lives inside the `.config-fingerprint`-governed cache directory, so a

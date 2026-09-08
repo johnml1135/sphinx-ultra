@@ -930,6 +930,11 @@ CASES = [
     ("dir_media", "figure_uri_python_whitespace", ".. figure:: p\x1fq.png\n"),
     # `' '.join(self.arguments[0].lower().split())` (misc.py:296).
     ("dir_body", "raw_format_python_whitespace", ".. raw:: ht\x1fml\n\n   <b>x</b>\n"),
+    # round F: `LineBlock.run` (misc.py) parses `line_text.strip()` and sets
+    # `line.indent = len(line_text) - len(line_text.lstrip())` — Python's set,
+    # so a leading NBSP/\x1f is one column of INDENT (a nested line_block).
+    ("dir_body", "line_block_directive_leading_nbsp_is_indent", ".. line-block::\n\n   \xa0x\n   y\n"),
+    ("dir_body", "line_block_directive_leading_us_is_indent", ".. line-block::\n\n   \x1fx\n   y\n"),
     # `...split(self.arguments[0])[0].split()` (misc.py:422) — two codes.
     ("substitutions", "unicode_codes_python_whitespace", ".. |u| unicode:: 0x41\x1f0x42\n\n|u| here\n"),
     # `positive_int_list` (:392-403) — pre-round this raised an ERROR.
@@ -950,6 +955,43 @@ CASES = [
     # comment extent is a separate, ledgered gap — see IMPLEMENTATION_STATUS.)
     ("substitutions", "marker_us_before_close_malformed", ".. |ab\x1f| replace:: q\n"),
     ("substitutions", "marker_nbsp_before_close_malformed", ".. |ab | replace:: q\n"),
+    # ----- round_f: the definition-list term IS rstripped -----
+    # `Text.term` splits each Text node on ` +: +` and then rstrips the term
+    # part — `text = parts[0].rstrip()` (states.py:3015), Python's whitespace
+    # set — so whatever precedes the classifier delimiter never reaches the
+    # <term>. (Sphinx's glossary term is the opposite: verbatim — see
+    # gen_sphinx_fixture.py's round-F cases.)
+    ("round_f", "dl_term_nbsp_before_classifier", "term\xa0 : cls\n   def\n"),
+    ("round_f", "dl_term_us_before_classifier", "term\x1f : cls\n   def\n"),
+    ("round_f", "dl_term_us_before_two_classifiers", "term\x1f : a : b\n   def\n"),
+    ("round_f", "dl_term_ideographic_space_before_classifier", "term\u3000 : cls\n   def\n"),
+    # The field body's first line is `line[match.end():]` after `field_marker`'s
+    # `( +|$)` (states.py:2960-2965) — ASCII spaces only, nothing lstripped —
+    # and the option description likewise follows `option_marker`'s `(  +| ?$)`
+    # (states.py:1250, 1641): an NBSP right after the gap is body text.
+    ("round_f", "field_body_leading_nbsp_kept", ":a: \xa0b\n"),
+    ("round_f", "field_body_leading_nbsp_kept_multiline", ":a:  \xa0b\n   c\n"),
+    ("round_f", "option_desc_leading_nbsp_kept", "-a  \xa0desc\n"),
+    ("round_f", "option_desc_three_spaces_then_nbsp_kept", "-a   \xa0desc\n"),
+    # `Text.paragraph`: when `data[-3] in ' \n'` the text is `data[:-3].rstrip()`
+    # (states.py:2733-2736) — Python's set, so a `\x1f` before the ` ::` goes.
+    ("round_f", "literal_marker_us_before_space_rstripped", "abc\x1f ::\n\n   lit\n"),
+    # `Line.text` (over+underline) strips the title at BOTH ends — `title.rstrip()`,
+    # `section(title.lstrip(), ...)` — while `Text.underline` only `rstrip()`s
+    # (`title = context[0].rstrip()`): a leading NBSP survives an underline-only
+    # title and a leading \x1f does not survive an overlined one.
+    ("round_f", "title_overline_leading_us_stripped", "=====\n\x1fT\n=====\n"),
+    ("round_f", "title_underline_leading_nbsp_kept", "\xa0T\n===\n"),
+    # `is_enumerated_list_item`: `if not next_line[:1].strip()` — a next line
+    # opening with an NBSP/\x1f is "blank or indented", so the item IS a list
+    # item (and then ends "without a blank line").
+    ("round_f", "enum_next_line_leading_us_is_indented", "1. a\n\x1fb\n"),
+    ("round_f", "enum_next_line_leading_nbsp_is_indented", "1. a\n\xa0b\n"),
+    # SimpleTableParser: `line[:firstend].strip()` decides row vs continuation
+    # and `check_columns`' `line[end:nextstart].strip()` guards the margin —
+    # Python's set, so a lone \x1f is blank in both places.
+    ("round_f", "simple_table_margin_us_is_blank", "=== ===\na  \x1fb\n=== ===\n"),
+    ("round_f", "simple_table_first_column_us_is_continuation", "=== ===\na   b\n\x1f   c\n=== ===\n"),
 ]
 
 
