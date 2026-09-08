@@ -70,7 +70,7 @@ everything forward is [ROADMAP.md](ROADMAP.md).
     green where `sphinx-build` fails. The glossary diagnostics above take
     the same channel.
   Evidence: the environment oracle grew to 29 projects / 84 documents and
-  the read-phase doctree oracle to 463 cases, both at zero divergence
+  the read-phase doctree oracle to 472 cases, both at zero divergence
   against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
   against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
   mismatches).

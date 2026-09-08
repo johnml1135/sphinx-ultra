@@ -30,7 +30,7 @@ The plan to move everything to ✅ is [ROADMAP.md](../ROADMAP.md).
 | Parallel orchestration | ✅ | rayon pool sized by `-j`/config. Per-file failures become `BuildErrorReport`s and the build continues (2026-08). |
 | Incremental cache | ✅ | Fixed 2026-08: warm-cache rebuilds no longer deadlock (DashMap guard held across `alter` — found by the new E2E suite); hits write the rendered page; `--clean --incremental` produces a full tree (clean clears the cache); `max_cache_size_mb`/`cache_expiration_hours` plumbed; config changes invalidate via blake3 fingerprint; eviction honestly named least-accessed (LFU-style). M2 wave 4: staleness is now Sphinx's env-level computation, not mtime alone (below). |
 | Dependency graph / outdated computation | ✅ (M2 wave 4) | `build_dependency_graph`'s empty-vec TODO is gone. `BuildEnvironment::get_outdated_files` (`src/env/mod.rs`) is a port of Sphinx's: added ∪ changed ∪ removed documents, where "changed" consults `env.dependencies[docname]` — a dependency that is missing or newer than the document's read time makes the document outdated. `src/env/dependencies.rs` ports `note_dependency` and `relfn2path`. **M2 wave 4.5 ended the images-only limitation**: `include` and `literalinclude` call `note_dependency` on every member file they read, and `env.included` records the inclusion graph, so touching an included fragment re-reads the documents that include it. `docutils.conf` and gettext catalogs are still unmodelled. One deliberate non-dependency: a docutils **standard include** (`.. include:: <isonum.txt>`) records nothing, because sphinx's `Include.run` bypasses the path rewrite entirely for `<…>` targets (`other.py:410-412`) — the files are vendored, so there is nothing on disk to watch. That is unit-tested; the env oracle cannot reach it. Fixture `tests/fixtures/deps_image/` + `tests/e2e_cli.rs` cover the touch-an-image-and-rebuild path. Config-class (`rebuild='env'`) narrowing is deliberately not done: the whole-config `.config-fingerprint` wipes the cache on *any* config change, a strict superset that cannot under-rebuild. |
-| RST parsing | ✅ (docutils-fidelity, wired) | **M2 wave 3 (2026-08-13): the binary runs the new parser** — `Parser::parse` → `src/rst/parse_rst_full` (sphinx mode); the M1 line-scanner is deleted. `src/doctree/` generic-node IR with byte-parity `pformat`; `src/rst/` block + inline grammar (waves 1–2) plus docutils-exact directive machinery (typed option converters with docutils-verbatim error texts, options-before-arguments evaluation order, rawsource literals, as-written names), the docutils built-in directive set (admonitions/topic/sidebar/rubric/quote-family/compound/container/parsed-literal/image/figure/code/math/raw/line-block/class/table/csv-table/list-table) and substitution definitions (replace/unicode/date, embedded directives, duplicate dupname semantics). Zero divergence on a committed 685-case fixture vs docutils 0.22.4 parse layer (`tests/doctree_differential.rs`). Sphinx-mode set (toctree, versionmodified family, seealso, code-block/sourcecode + highlight state, only, rst-class, math + equation targets, index, hlist, glossary, xref pending_xref anatomy, pep/rfc/cve/cwe) verified against a real sphinx-build 9.1.0 read-phase oracle (`tests/sphinx_doctree_differential.rs`). Document now derives title/toc (docutils `make_id` anchors)/labels/toctree entries/directive+role records from the doctree; the three builder raw-source re-scanners are gone. **M2 wave 4** added generic object-description anatomy (`desc`/`desc_signature`/`desc_name`/`desc_addname`/`desc_annotation`/`desc_content`, the `:no-index:`/`:no-index-entry:`/`:no-contents-entry:`/`:no-typesetting:` family, the `PropagateDescDomain` transform) and the std-domain directives on top of it — `program`, `option` (incl. `[=value]` and comma-separated multi-name forms), `envvar`, `confval` with `:type:`/`:default:`, `describe`/`object`, `default-domain`; plus glossary terms taking their ids from Sphinx's `make_id` (not docutils') and index entries following `process_index_entry` onto a list-valued attribute. **M2 wave 4.5** added the py domain's fourteen directives on that anatomy, the `include`/`literalinclude` family (see their own rows below), and a faithful port of `Glossary.run`'s line state machine — which fixed the entry split (terms separated by a blank line share one `definition_list_item`; a `.. ` comment does not split a multi-term entry) and made its three misformat diagnostics appear in the doctree (not yet printed — the reporter channel is wave-5 work). The sphinx oracle now stands at **463 cases, zero divergence**. Remaining deferrals: ifconfig, meta, rst_prolog/epilog/default_role (all three wanted the per-line provenance layer wave 4.5 built, so they are now unblocked). Known gap recorded in-tree (`tools/gen_sphinx_fixture.py` header): `ObjectDescription`'s `allow_section_headings=True` is not modelled — this crate's nested parse is `match_titles=False` throughout, so a section title (or a `topic`/`sidebar`) inside a description body is rejected with `Unexpected section title.` where Sphinx accepts it. Threading a real `match_titles` through the section machinery is its own change; the two probe cases are held out of the corpus rather than committed knowingly-red. |
+| RST parsing | ✅ (docutils-fidelity, wired) | **M2 wave 3 (2026-08-13): the binary runs the new parser** — `Parser::parse` → `src/rst/parse_rst_full` (sphinx mode); the M1 line-scanner is deleted. `src/doctree/` generic-node IR with byte-parity `pformat`; `src/rst/` block + inline grammar (waves 1–2) plus docutils-exact directive machinery (typed option converters with docutils-verbatim error texts, options-before-arguments evaluation order, rawsource literals, as-written names), the docutils built-in directive set (admonitions/topic/sidebar/rubric/quote-family/compound/container/parsed-literal/image/figure/code/math/raw/line-block/class/table/csv-table/list-table) and substitution definitions (replace/unicode/date, embedded directives, duplicate dupname semantics). Zero divergence on a committed 718-case fixture vs docutils 0.22.4 parse layer (`tests/doctree_differential.rs`). Sphinx-mode set (toctree, versionmodified family, seealso, code-block/sourcecode + highlight state, only, rst-class, math + equation targets, index, hlist, glossary, xref pending_xref anatomy, pep/rfc/cve/cwe) verified against a real sphinx-build 9.1.0 read-phase oracle (`tests/sphinx_doctree_differential.rs`). Document now derives title/toc (docutils `make_id` anchors)/labels/toctree entries/directive+role records from the doctree; the three builder raw-source re-scanners are gone. **M2 wave 4** added generic object-description anatomy (`desc`/`desc_signature`/`desc_name`/`desc_addname`/`desc_annotation`/`desc_content`, the `:no-index:`/`:no-index-entry:`/`:no-contents-entry:`/`:no-typesetting:` family, the `PropagateDescDomain` transform) and the std-domain directives on top of it — `program`, `option` (incl. `[=value]` and comma-separated multi-name forms), `envvar`, `confval` with `:type:`/`:default:`, `describe`/`object`, `default-domain`; plus glossary terms taking their ids from Sphinx's `make_id` (not docutils') and index entries following `process_index_entry` onto a list-valued attribute. **M2 wave 4.5** added the py domain's fourteen directives on that anatomy, the `include`/`literalinclude` family (see their own rows below), and a faithful port of `Glossary.run`'s line state machine — which fixed the entry split (terms separated by a blank line share one `definition_list_item`; a `.. ` comment does not split a multi-term entry) and made its three misformat diagnostics appear in the doctree (not yet printed — the reporter channel is wave-5 work). The sphinx oracle now stands at **472 cases, zero divergence**. Remaining deferrals: ifconfig, meta, rst_prolog/epilog/default_role (all three wanted the per-line provenance layer wave 4.5 built, so they are now unblocked). Known gap recorded in-tree (`tools/gen_sphinx_fixture.py` header): `ObjectDescription`'s `allow_section_headings=True` is not modelled — this crate's nested parse is `match_titles=False` throughout, so a section title (or a `topic`/`sidebar`) inside a description body is rejected with `Unexpected section title.` where Sphinx accepts it. Threading a real `match_titles` through the section machinery is its own change; the two probe cases are held out of the corpus rather than committed knowingly-red. |
 | Python domain (directives, registration, resolution) | ✅ (M2 wave 4.5) | All fourteen `py:*` directives (`module`, `currentmodule`, `function`, `class`, `exception`, `method`, `classmethod`, `staticmethod`, `attribute`, `property`, `data`, `decorator`, `decoratormethod`, `type`) on wave 4's object-description anatomy, with a real signature grammar: `src/py/expr.rs` is a Python expression parser plus an `ast.unparse` port (CPython 3.12 `_Unparser`'s precedence table and paren placement) for annotations (parameter defaults go through a port of `sphinx.pycode.ast.unparse` instead, which keeps a literal's source text — `0x10` stays `0x10` — a split `src/py/arglist.rs`'s header calls a trap), `src/py/arglist.rs` ports `_parse_arglist` / `_parse_type_list` / `pseudo_parse_arglist` (PEP 695 type-parameter lists included), and `src/py/annotations.rs` ports `_parse_annotation` / `type_to_xref` / `parse_reftarget`. Registration into `domaindata['py']` (`src/env/py_domain.rs`): insertion-ordered objects and modules, aliased entries, `duplicate object description of %s, other instance in %s, use :no-index: for one of them`, `more than one target found for cross-reference %r: %s`, and the `any`-role variant. Resolution (`src/env/resolve.rs`) covers `:py:func:`/`:py:class:`/`:py:meth:`/`:py:mod:`/`:py:attr:`/`:py:data:`/`:py:exc:`/`:py:obj:`/`:py:const:`/`:py:deco:` with sphinx's `refspecific` search order, the `builtin_resolver` fallback at priority 900, and `:any:` as the domainless role it actually is. Evidence: the sphinx doctree oracle's `py`/`pysig`/`pyconf` families (119 cases) and the env oracle's py projects, both zero divergence. |
 | Object-signature config family | ✅ (M2 wave 4.5) | Nine keys, plumbed from `conf.py`/YAML/`-D` into the parser as `PySigConfig` (`src/py/mod.rs`): `maximum_signature_line_length`, `python_maximum_signature_line_length`, `python_trailing_comma_in_multi_line_signatures`, `python_display_short_literal_types`, `python_use_unqualified_type_names`, `toc_object_entries`, `toc_object_entries_show_parents`, `add_function_parentheses`, `add_module_names` (plus `strip_signature_backslash`). Pinned by 33 `pyconf` oracle cases carrying per-case `confoverrides`, and by `toc_object_entries_match_the_probe_for_all_five_config_variants` in the env suite. One deliberate divergence: an out-of-enum `toc_object_entries_show_parents` is accepted with a warning whose candidate list is in registration order, because sphinx's own list comes out of a hash-ordered set and is therefore not byte-reproducible. Panel fix round B added the `check_confval_types` check for the two `int \| None` keys (`maximum_signature_line_length`, `python_maximum_signature_line_length`): a `-D …=20` — a *string* under Sphinx, because `convert_overrides` never coerces a `None`-default key — or a mistyped `conf.py` literal warns ``The config value `…' has type `str'; expected `NoneType' or `int'.`` byte-exactly, in Sphinx's registration order, and leaves the key unset; Sphinx warns identically and then crashes on the first signature. |
 | `include` / `literalinclude` | ✅ (M2 wave 4.5) | Built on a new per-line provenance layer (`SourceTable` + `SpliceRequest`, `src/rst/block.rs` + `src/rst/lines.rs`): every line carries the source it came from, so a warning inside an included file points into that file. `include` covers the whole docutils option set (`:literal:`, `:code:`, `:number-lines:`, `:encoding:`, `:tab-width:`, `:start-line:`/`:end-line:`/`:start-after:`/`:end-before:`, `:class:`/`:name:`), the sphinx path rewrite (a leading `/` is srcdir-relative), circular-inclusion detection with sphinx's multi-line chain message, and the 35 vendored docutils standard include files (byte-identical to the pinned wheel). `literalinclude` ports sphinx's reader filter chain in order — `:lines:`, `:start-after:`/`:end-before:`/`:start-at:`/`:end-at:`, `:pyobject:`, `:prepend:`/`:append:`, `:dedent:`, `:diff:` (a difflib port), `:emphasize-lines:`, `:lineno-match:`/`:linenos:`/`:lineno-start:`, `:tab-width:`, `:encoding:`, `:caption:`/`:name:`/`:class:`/`:language:`/`:force:` — with every reader error funnelled into the single reporter warning sphinx emits. `:pyobject:` is a port of `sphinx.pycode`'s `DefinitionFinder` tokenizer, checked differentially against the real one over 1200 real modules (24,903 tags, 0 mismatches). `source_encoding` (default `utf-8-sig`) is a real key and the default `:encoding:` of both directives (panel fix round B) — and only that: this crate's own `.rst` sources are still decoded as UTF-8, where Sphinx passes the key to docutils as `settings.input_encoding` for the document read too. **Known limitation:** the diagnostics both directives raise — a missing or unreadable file, the refused `:parser:`, a circular inclusion — are docutils reporter messages, recorded in the doctree but not yet printed on stderr or in the `-w` file, so a broken include path drops its content silently and `-W` stays green (see *Diagnostics* under the known divergences). |
@@ -114,23 +114,28 @@ known-imperfect implementation for a blank file.
 
 ## Testing status
 
-**1031 tests, all passing** (as of M2 wave 4.5, panel fix round D). That is
-what `cargo test` reports across its thirteen targets — 875 lib + 7 bin + 149
+**1032 tests, all passing** (as of M2 wave 4.5, panel fix round E). That is
+what `cargo test` reports across its thirteen targets — 876 lib + 7 bin + 149
 integration; **0 of them are doc-tests** (the run lists `Doc-tests sphinx_ultra
 … running 0 tests` separately). A raw `#[test]` grep over `src/` and `tests/`
-returns 1029 — two short, because `tests/inventory_roundtrip.rs` writes two of
+returns 1030 — two short, because `tests/inventory_roundtrip.rs` writes two of
 its five as `#[tokio::test]`.
 Every generator below is pinned to sphinx 9.1.0 / docutils 0.22.4 and asserts
 those versions at runtime; all five reproduce their committed output
-byte-identically.
+byte-identically. `PYTHONNOUSERSITE=1` is on every regen command in the tree as
+of panel fix round E — the two *table* generators that emit Rust source
+(`tools/gen_digit_tables.py`, `tools/gen_punctuation_tables.py`, and the
+headers they write into `src/rst/digits.rs` and `src/rst/punctuation.rs`) were
+the last holdouts; round D's note scoped them out rather than fixing them. Both
+also need a `cargo fmt --all` after a regen, which their docstrings now say.
 
 | Suite | Status |
 |---|---|
-| Unit tests (lib + bin) | ✅ 882 passing (875 lib + 7 bin) |
+| Unit tests (lib + bin) | ✅ 883 passing (876 lib + 7 bin) |
 | Pattern compatibility tests | ✅ 10 passing — assertions encode Sphinx 9.1 semantics (M1 wave 4) |
 | Pattern differential suite | ✅ 881 generated cases vs `sphinx.util.matching` 9.1.0, zero divergence; regenerate with `PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx>=9.1,<9.2' python tools/gen_pattern_fixture.py` |
-| Doctree differential suite (docutils parse layer) | ✅ 685 generated cases vs docutils 0.22.4, zero divergence; regenerate with `PYTHONNOUSERSITE=1 uv run --python 3.12 --with docutils==0.22.4 python tools/gen_doctree_fixture.py` (the flag is not optional — `uv run` keeps user site-packages on `sys.path`, and a user-site Pygments there silently re-records every `code:: python` case as tokenized output) |
-| Sphinx doctree differential suite (real read phase) | ✅ 463 generated cases vs a `sphinx-build` 9.1.0 read phase, zero divergence; regenerate with `PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' python tools/gen_sphinx_fixture.py` |
+| Doctree differential suite (docutils parse layer) | ✅ 718 generated cases vs docutils 0.22.4, zero divergence; regenerate with `PYTHONNOUSERSITE=1 uv run --python 3.12 --with docutils==0.22.4 python tools/gen_doctree_fixture.py` (the flag is not optional — `uv run` keeps user site-packages on `sys.path`, and a user-site Pygments there silently re-records every `code:: python` case as tokenized output) |
+| Sphinx doctree differential suite (real read phase) | ✅ 472 generated cases vs a `sphinx-build` 9.1.0 read phase, zero divergence; regenerate with `PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' python tools/gen_sphinx_fixture.py` |
 | Environment differential suite | ✅ 59 tests over 29 projects / 84 documents vs a real `SphinxTestApp` build, zero divergence on every compared key (exemption tables above). The corpus comparison is over one **cold** build per project; warm-equals-cold is asserted by hand-written tests over their own two- and three-document projects. Same `uv` invocation with `tools/gen_env_fixture.py` |
 | Inventory round-trip suite | ✅ 5 tests (3 `#[test]` + 2 `#[tokio::test]`, so a bare `#[test]` grep undercounts it) over 12 committed `.inv` files (4 sphinx-written, 3 handcrafted-valid, 5 handcrafted-malformed), expectations taken from Sphinx's own `InventoryFile.loads`; same `uv` invocation with `tools/gen_inventory_fixture.py` |
 | Doctree serde / interner-cap suites | ✅ 3 passing — bincode round-trip and the interner's bound |
@@ -204,22 +209,82 @@ them. Divergences from earlier waves are recorded in the tables above.
   out-of-tree `.rst` through a symlink — none does; if one ever does, emit
   the pseudo-docname or exempt the key.
 
-**Hyperlink targets and Python whitespace (panel fix round D).**
+**Hyperlink targets and Python whitespace (panel fix rounds D and E).**
 
-- **A malformed multi-line target's fallback comment.** `.. _name` followed by
-  an indented `: uri` is `malformed hyperlink target.` on both sides, but
-  docutils' `hyperlink_target` has already advanced the state machine to the
-  block's last line when it raises, so the comment it falls back to starts
-  *there* (`: uri`, warning at line 2); this crate rewinds to the first line
-  and the comment carries the whole block. Found by round D's probes, held out
-  of the docutils corpus (recorded at its case list), wave-5 backlog.
-- **Python `\s` outside the name paths.** Round D moved every name, label and
-  URI normalizer — and sphinx's `ws_re` port for `envvar`/`confval`/`program`
-  and the `:option:` subcommand fold — onto `utils::py_isspace`; two
-  docutils-parity nano-edges of the same class remain: directive *argument*
-  splitting (`arg_text.split()` — `.. image:: p\x1fq.png` is two arguments
-  under docutils, one here) and the inline-markup start-string prefix
-  (`A\x1f*emph* B` opens emphasis there, stays literal here). Wave-5 sweep.
+Round D's two entries here were both wrong, and round E replaced them with
+code. What they claimed, and what was actually true:
+
+- **A malformed multi-line target's fallback comment.** Round D held out
+  `.. _name` + an indented `: uri` as "malformed on both sides, the comment
+  starts on a different line". It is not: at round D this crate produced a
+  **valid** `<target ids="name" names="name" refuri="uri">` and **no warning
+  at all**, where docutils yields a `<comment>` holding `: uri` plus
+  `WARNING line 2: malformed hyperlink target.` (the behaviour round D
+  described belongs to a *different* input, `.. _name` + `   uri`). Round E
+  ports `Body.hyperlink_target` whole — the one-line-at-a-time join with the
+  continuation's indentation kept, `explicit.patterns.target` run by hand with
+  its real tail `(?<![\s\x00])[ ]?:([ ]+|$)`
+  (`non_whitespace_escape_before = r'(?<![\s\x00])'`, states.py:780 — the old
+  in-code comment cited `(?<![ \n\x00])`, which does not exist), and the
+  malformed path's line attribution and comment slice — and pins 20
+  `round_e` docutils cases over it, this one included. No divergence remains
+  in this construct.
+- **Python `\s` outside the name paths.** Round D said "two docutils-parity
+  nano-edges remain" and that every other site was "not name munging". Round
+  D's own verifier refuted that with seven divergent sites, two of them id
+  munging. Round E converted them all, plus every other site a probe could
+  make diverge — `class_option`, `directives.uri`, `positive_int_list` (which
+  had been raising an ERROR on `:widths: 1\x1f2`), `raw`'s `format`, the
+  `unicode` directive's codes, `parse_directive_arguments`, extension-option
+  field names, sphinx's `option_desc_re`, docfields' `split`/`rsplit`,
+  `string2lines`' rstrip, and the whole inline-markup start/end-string
+  lookaround family including `embedded_link`. The table below is the honest
+  successor to the "sweep complete" claim: it names EVERY remaining
+  `is_whitespace`/`split_whitespace`/`trim()` site in `src/rst/` and
+  `src/doctree/` with a probe-backed classification, and `src/doctree/` has
+  none (its only two hits are doc comments).
+
+| Site | Classification | Basis |
+|---|---|---|
+| `src/rst/block.rs:451`, `:470` | benign | `directive_records` bookkeeping for the validation pipeline, not doctree output; the argument split it mirrors (`parse_directive_arguments`) is `py_split`. |
+| `src/rst/block.rs:1231`, `:1298`, `:2284`, `:2743`, `:2750`, `:2998`, `:3028`, `:3038`, `:3106`, `:3113`, `:4410`, `:5903`, `:7513`, `:7622`, `:7639`, `:7649`, `:7677`, `:8860`, `:9815`, `:12081`, `:13129` | benign | Blank-or-not tests and whole-line trims over text `string2lines` has already rstripped with `py_isspace` (round E) — a line whose only tail is Python whitespace is `is_blank()`/rstripped before it gets here. Probed: `Sec\x1f` + underline, `- a\x1f`, `.. a\x1f`, `.. [1]\x1ftext`, `-a\x1f  desc`. |
+| `src/rst/block.rs:4597`, `:4605`, `:4925`, `:5582`, `:5653`, `:7833`, `:7838`, `:8514`, `:8516`, `:9263`, `:10032`, `:10040`, `:10050`, `:10891`, `:12163` | benign | Same, one level down: the value is a field of an already-rstripped line whose interior Python whitespace is preserved on both sides or collapsed downstream by `py_split`. `:7833`/`:7838` now feed the ported `parse_target`; `:12163` feeds a `positive_int`. Probed: `:a\x1f: v`, `term : a\x1fb`, `:emphasize-lines: 1\x1f,2`, `:header: a\x1f,b`, `.. index:: single: a\x1fb`. |
+| `src/rst/block.rs:4350` | benign | `ws_collapse` (sphinx `ws_re`) already splits on `py_isspace`; the `trim()` only strips the argument's ends, which the collapse would drop anyway. |
+| `src/rst/block.rs:10948` | ledgered, documented in place | `literalinclude` `:dedent:`'s "non-whitespace stripped by dedent" check. docutils' is `str.isspace`-based; the dedent columns are spaces by construction in every probed shape, so no input reaches the difference. |
+| `src/rst/block.rs:12386` | **benign, and `py_isspace` would be WRONG** | `py_int_canonical`. Probed over all 0x110000 codepoints against CPython 3.12: `int()` strips Unicode White_Space only and *rejects* `\x1c`-`\x1f`, which `str.isspace` admits — `int('\x1f2')` raises, and docutils reports it (`:widths: 1,\x1f2` → `invalid literal for int() with base 10: '\x1f2'`). Rust's `trim()` is the exactly-right predicate. |
+| `src/rst/block.rs:12464` | converted | `py_repr`'s printability test: `is_control() || is_whitespace()` is exactly Cc ∪ Zs ∪ Zl ∪ Zp (Cs is unrepresentable in a Rust `char`). Cf/Co/Cn stay unescaped — the honest gap, since matching them needs a generated Unicode general-category table this tree does not have. |
+| `src/rst/inline.rs:840`, `:1415`, `:1416` | **ledgered — real divergence** | Sphinx's `explicit_title_re = r'^(.+?)\s*(?<!\x00)<(.*?)>$'`. Three probe-confirmed gaps in one construct: the crate takes the LAST `<` where the non-greedy `(.+?)` takes the FIRST (`` :pep:`a <b> <8>` `` → sphinx `invalid PEP number b> <8`, ours resolves PEP 8; `` :ref:`a <b> <c>` `` → sphinx `reftarget="b> <c"`, ours `"c"`); it trims the TARGET group, which sphinx does not (`` :pep:`title < 8 >` `` → sphinx index entry `PEP  8 `); and the title's `trim_end()` is Rust's set where sphinx's is `\s`. Porting `explicit_title_re` properly is one wave-5 change, not three. |
+
+Round E's probes also turned up four divergences it did NOT change, each
+verified present at `94b08cd` (so none is a round-E regression) and each
+recorded with its input in
+`.superpowers/sdd/2026-09-01-m2-wave4.5-py-domain/panel-fix-E-report.md`:
+
+- **`explicit_title_re`** — the table row above.
+- **A malformed substitution definition's fallback comment**, the exact
+  sibling of the hyperlink-target bug round E fixed. `substitution_def`
+  (states.py:2140-2178) also raises its `MarkupError` with the state machine
+  already on the block's last line, and that block is gathered with
+  `until_blank=False`, so it runs THROUGH a trailing blank: `.. |ab replace::
+  q` + a blank line + `para` yields an EMPTY `<comment>` and the warning at
+  line 2, where this crate emits a comment holding line 1 and warns at line 1.
+  No control character is needed to see it. Round E stopped short because
+  `indented_block` deliberately trims trailing blanks and the fix needs
+  docutils' un-trimmed extent — a change to shared machinery that wants its
+  own round. The single-line/EOF forms agree and ARE pinned
+  (`substitutions.marker_*_before_close_malformed`).
+- **`PropagateTargets` is not run at the parse layer** (plan §Scope-3, stated
+  in-code at `src/rst/block.rs`). Sphinx's recorded doctree moves a block
+  target's `ids` onto the next body node and leaves `refid` behind:
+  `.. _t:` + a blank + `para` gives `<target refid="t">` + `<paragraph ids="t"
+  names="t">` there, `<target ids="t" names="t">` + `<paragraph>` here. The
+  `.. index::` directive's own internal target has the same shape. The sphinx
+  corpus has no case where a block target is followed by a body node, which is
+  why 472 cases pass over a documented gap this wide; the env oracle carries it
+  as `KNOWN_RESOLVED_GAPS`' "unapplied `PropagateTargets`".
+- **A simple-table cell's nested line attribution** is one line short:
+  `=== ===` / `a::  b` / `=== ===` warns `Literal block expected; none found.`
+  at line 4 under docutils and line 3 here.
 
 **Duplicate explicit targets set from a directive option.** When `:name:` (or
 `figure`'s `:figname:`) repeats a name an earlier explicit target already
