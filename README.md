@@ -55,7 +55,7 @@ full, file-and-line-level status audit lives in
   numbering, the std domain (labels, glossary terms, `option`/`envvar`/
   `confval`), general-index data, an `objects.inv` reader/writer, and
   **intersphinx** resolution incl. the `:external:` roles — verified against a
-  real `sphinx-build` 9.1.0 across a 28-project / 83-document environment
+  real `sphinx-build` 9.1.0 across a 29-project / 84-document environment
   oracle
 - **🐍 Python domain & file inclusion**: the fourteen `py:*` directives with
   a real signature grammar (defaults, annotations, PEP 695 type parameters,

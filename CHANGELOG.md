@@ -70,7 +70,7 @@ everything forward is [ROADMAP.md](ROADMAP.md).
     green where `sphinx-build` fails. The glossary diagnostics above take
     the same channel.
   Evidence: the environment oracle grew to 29 projects / 84 documents and
-  the read-phase doctree oracle to 472 cases, both at zero divergence
+  the read-phase doctree oracle to 489 cases, both at zero divergence
   against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
   against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
   mismatches).
@@ -315,6 +315,28 @@ surface. The binary's CLI is unaffected.
 
 ### Fixed
 
+- **Glossary terms are verbatim, definition-list terms are `rstrip()`ped,
+  toctree entries are not trimmed (M2 wave 4.5, panel fix round F).**
+  Sphinx's `split_term_classifiers` takes a glossary term and its first
+  classifier exactly as written, so `term\xa0 : cls` keeps its NBSP in the
+  `<term>`, the index entry (`'term\xa0'`) and the registered term, and
+  `term : \xa0cls` keeps it in the index key; docutils' `Text.term` does the
+  opposite for a plain definition list (`text = parts[0].rstrip()`, Python's
+  whitespace set). `TocTree.parse_content` reads each entry line verbatim, so
+  an entry indented deeper than its block (`   a` / `     b`) names the
+  nonexisting document `'  b'` and leaves `b` an orphan, as Sphinx warns —
+  this crate had trimmed it and resolved `b`. Warning-stream `%r` now escapes
+  every non-printable character the way CPython's `repr` does
+  (`'foo\xa0bar'`) from one `py_repr_str`; the `src/env/toctree.rs` copy had
+  escaped only `< 0x20` and `0x7f`. The same round moved the remaining
+  `trim_start()`/`trim_end()` sites to Python's `strip` semantics — a field
+  body's or option description's leading NBSP is kept, and
+  `process_index_entry`, `parselinenos`, `parse_line_num_spec`,
+  `get_signatures`, `_filter_meta_fields`, the `::` tail, overlined titles,
+  `line-block` lines, simple-table margins and option synonyms strip
+  `\x1c`-`\x1f` like a space — and `include` in insert mode rstrips each line
+  with Python's set before the line-length-limit check. Every change is
+  pinned: docutils 718→735, sphinx 472→489, +2 env tests, +2 unit tests.
 - **`.. _ name:` was parsed as a hyperlink target (M2 wave 4.5, panel fix
   round D).** docutils' target construct is `\.\.[ ]+_(?![ ]|$)`: a space or
   end-of-line right after the `_` makes the whole block a plain comment. This
