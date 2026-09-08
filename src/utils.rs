@@ -1,6 +1,79 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+
+/// [`std::fs::canonicalize`] with the Windows verbatim prefix taken back
+/// off ([`simplify_verbatim`]) — the spelling every path comparison,
+/// display and `%r` in this crate speaks.
+///
+/// EVERY canonicalization in the tree (its tests included) goes through
+/// here: the prefix has to be present on all sides of a comparison or on
+/// none, and "none" is what Python produces, so "none" it is.
+pub fn canonicalize_simplified(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path).map(simplify_verbatim)
+}
+
+/// Drop the `\\?\` verbatim prefix that Windows' `GetFinalPathNameByHandle`
+/// — and so [`std::fs::canonicalize`] — puts in front of every canonical
+/// path.
+///
+/// Python's `pathlib.Path.resolve()` and `os.path.realpath()` return the
+/// plain `C:\dir\file` spelling, so the verbatim form is a byte-divergence
+/// in every message that prints a resolved path (`_StrPath(...)` reprs,
+/// `Include file '...'`, `:diff:` headers). It is also a FUNCTIONAL
+/// hazard: inside a verbatim path Windows does no normalization at all —
+/// `/` is an ordinary filename character there and `..` is not resolved —
+/// so a lexically joined `\\?\C:\src` + `sub/inner.rst` names nothing.
+///
+/// `\\?\UNC\server\share` maps back to `\\server\share`; a path long
+/// enough that the prefix is what makes it openable at all keeps it (the
+/// 260-character `MAX_PATH` limit, which the plain spelling is only exempt
+/// from with a per-application opt-in this crate does not make). A
+/// non-Windows path matches neither shape, so this is the identity
+/// function there.
+pub fn simplify_verbatim(path: PathBuf) -> PathBuf {
+    let simplified = match path.to_str() {
+        Some(text) => match simplify_verbatim_str(text) {
+            Cow::Borrowed(unchanged) if unchanged.len() == text.len() => None,
+            simplified => Some(simplified.into_owned()),
+        },
+        None => None,
+    };
+    match simplified {
+        Some(text) => PathBuf::from(text),
+        None => path,
+    }
+}
+
+/// The string half of [`simplify_verbatim`], so the rule can be tested
+/// with Windows-shaped literals on every platform.
+fn simplify_verbatim_str(text: &str) -> Cow<'_, str> {
+    /// `MAX_PATH`: at this length the plain spelling stops being openable,
+    /// so the verbatim prefix stays on.
+    const MAX_PATH: usize = 260;
+
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        let plain = format!(r"\\{share}");
+        if plain.len() < MAX_PATH {
+            return Cow::Owned(plain);
+        }
+        return Cow::Borrowed(text);
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        // Only `X:\...` survives the round trip; the other verbatim shapes
+        // (`\\?\Volume{...}`, a device path) have no plain spelling.
+        let mut head = rest.chars();
+        let drive = matches!(
+            (head.next(), head.next(), head.next()),
+            (Some(letter), Some(':'), Some('\\')) if letter.is_ascii_alphabetic()
+        );
+        if drive && rest.len() < MAX_PATH {
+            return Cow::Borrowed(rest);
+        }
+    }
+    Cow::Borrowed(text)
+}
 
 /// `BuildEnvironment.relfn2path` (`environment/__init__.py:454-478`): a
 /// filename written in a document resolves relative to that document's
@@ -79,7 +152,7 @@ pub(crate) fn resolve_path(path: &Path) -> PathBuf {
             }
             Component::Normal(name) => {
                 resolved.push(name);
-                if let Ok(real) = std::fs::canonicalize(&resolved) {
+                if let Ok(real) = canonicalize_simplified(&resolved) {
                     resolved = real;
                 }
             }
@@ -685,6 +758,34 @@ mod path_tests {
         assert_eq!(py_repr_str("a\u{2028}b"), "'a\\u2028b'");
         assert_eq!(py_repr_str("é ü"), "'é ü'", "printable non-ASCII stays raw");
     }
+
+    /// [`simplify_verbatim`] over Windows-shaped literals, which is the
+    /// only way to exercise the rule off Windows (`canonicalize` there
+    /// hands back exactly these shapes). The plain spelling is what
+    /// `pathlib.Path.resolve()` returns, and the only one Windows
+    /// normalizes `/` and `..` inside.
+    #[test]
+    fn the_verbatim_prefix_is_stripped_back_to_the_python_spelling() {
+        let simplify = |text: &str| {
+            simplify_verbatim(PathBuf::from(text))
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(simplify(r"\\?\C:\Users\me\docs"), r"C:\Users\me\docs");
+        assert_eq!(simplify(r"\\?\c:\x"), r"c:\x");
+        assert_eq!(simplify(r"\\?\UNC\server\share\doc"), r"\\server\share\doc");
+        // Not a drive path: no plain spelling exists, so it keeps the
+        // prefix rather than becoming unopenable.
+        assert_eq!(simplify(r"\\?\Volume{9f8a}\x"), r"\\?\Volume{9f8a}\x");
+        // Past MAX_PATH the prefix is what makes the path openable.
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(simplify(&long), long);
+        // Everything else — every POSIX path included — is untouched.
+        assert_eq!(simplify("/tmp/x/y"), "/tmp/x/y");
+        assert_eq!(simplify(r"C:\already\plain"), r"C:\already\plain");
+        assert_eq!(simplify(r"\\server\share"), r"\\server\share");
+    }
+
     /// Sphinx `.resolve()`s the joined path, so `..` walks up from a
     /// symlink's TARGET, not from the link's own parent. The lexical
     /// collapse [`relfn2path`] keeps for §Scope-8 display spellings gets
@@ -699,7 +800,7 @@ mod path_tests {
     #[test]
     fn relfn2path_io_walks_up_from_the_symlink_target() {
         let base = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(base.path()).unwrap();
+        let base = canonicalize_simplified(base.path()).unwrap();
         let srcdir = base.join("src");
         std::fs::create_dir_all(srcdir.join("real")).unwrap();
         std::fs::create_dir_all(base.join("ext/inner")).unwrap();

@@ -160,7 +160,7 @@ pub fn get_matching_files<P: AsRef<Path>>(
     include_patterns: &[String],
     exclude_patterns: &[String],
 ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let dirname = dirname.as_ref().canonicalize()?;
+    let dirname = crate::utils::canonicalize_simplified(dirname.as_ref())?;
     let include_patterns = if include_patterns.is_empty() {
         vec!["**".to_string()]
     } else {
@@ -366,7 +366,12 @@ mod tests {
         let files = get_matching_files(&base, &include, &["_build".to_string()]).unwrap();
         let names: Vec<String> = files
             .iter()
-            .map(|f| normalize_path(f.strip_prefix(base.canonicalize().unwrap()).unwrap()))
+            .map(|f| {
+                normalize_path(
+                    f.strip_prefix(crate::utils::canonicalize_simplified(&base).unwrap())
+                        .unwrap(),
+                )
+            })
             .collect();
         assert_eq!(names, vec!["index.rst"]);
 
@@ -375,7 +380,12 @@ mod tests {
         let files = get_matching_files(&base, &include, &["_build/**".to_string()]).unwrap();
         let names: Vec<String> = files
             .iter()
-            .map(|f| normalize_path(f.strip_prefix(base.canonicalize().unwrap()).unwrap()))
+            .map(|f| {
+                normalize_path(
+                    f.strip_prefix(crate::utils::canonicalize_simplified(&base).unwrap())
+                        .unwrap(),
+                )
+            })
             .collect();
         assert_eq!(names, vec!["index.rst"]);
 
@@ -384,7 +394,12 @@ mod tests {
         let files = get_matching_files(&base, &include, &["_build/".to_string()]).unwrap();
         let names: Vec<String> = files
             .iter()
-            .map(|f| normalize_path(f.strip_prefix(base.canonicalize().unwrap()).unwrap()))
+            .map(|f| {
+                normalize_path(
+                    f.strip_prefix(crate::utils::canonicalize_simplified(&base).unwrap())
+                        .unwrap(),
+                )
+            })
             .collect();
         assert_eq!(
             names,

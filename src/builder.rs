@@ -254,7 +254,7 @@ impl SphinxBuilder {
         // Canonicalize source_dir so it matches the canonicalized absolute paths
         // returned by matching::get_matching_files; without this, relative
         // --source paths (including the default ".") fail strip_prefix later.
-        let source_dir = source_dir.canonicalize().unwrap_or(source_dir);
+        let source_dir = crate::utils::canonicalize_simplified(&source_dir).unwrap_or(source_dir);
 
         let parser = Parser::new(&config)?.with_srcdir(source_dir.clone());
 
@@ -2004,7 +2004,7 @@ mod tests {
         let (stats, builder) = build_incrementally(&source_dir, &output_dir);
 
         // Canonicalized like the builder's own source_dir.
-        let src = source_dir.canonicalize().unwrap();
+        let src = crate::utils::canonicalize_simplified(&source_dir).unwrap();
         assert_eq!(
             builder.env.included.get("a"),
             Some(&std::collections::BTreeSet::from(["part".to_string()])),

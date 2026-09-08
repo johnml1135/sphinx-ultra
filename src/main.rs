@@ -601,8 +601,8 @@ async fn run_sphinx_build_mode(sb: SphinxBuildCli) -> i32 {
 /// so `docs` vs `./docs/` still match; a nonexistent output dir cannot
 /// overlap an existing source.
 fn output_overlaps_source(source: &std::path::Path, output: &std::path::Path) -> Option<String> {
-    let source = source.canonicalize().ok()?;
-    let output = output.canonicalize().ok()?;
+    let source = sphinx_ultra::utils::canonicalize_simplified(source).ok()?;
+    let output = sphinx_ultra::utils::canonicalize_simplified(output).ok()?;
     if source == output {
         Some(format!(
             "'{}' is same as source directory!",

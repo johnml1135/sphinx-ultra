@@ -254,7 +254,16 @@ const PROJECT: &str = "<project>";
 /// *inside* a parsed snapshot. Never run it over JSON text: there a `\`
 /// may open an escape sequence rather than separate two path components.
 fn normalize_source_paths(rendered: &str, root: &str) -> String {
-    let replaced = rendered.replace(root, PROJECT);
+    // A path that reached the string through Python `repr()` carries every
+    // separator DOUBLED — `_StrPath('C:\\proj\\example.py')` — so the
+    // escaped spelling of the root is a second thing to rewrite, and the
+    // tail below has to undo the doubling before it flips separators. On
+    // POSIX both spellings of the root are the same string and both passes
+    // are no-ops.
+    let escaped_root = root.replace('\\', r"\\");
+    let replaced = rendered
+        .replace(&escaped_root, PROJECT)
+        .replace(root, PROJECT);
 
     let mut out = String::with_capacity(replaced.len());
     let mut rest = replaced.as_str();
@@ -267,7 +276,7 @@ fn normalize_source_paths(rendered: &str, root: &str) -> String {
         let end = tail
             .find(|c: char| c.is_whitespace() || matches!(c, ':' | '\'' | '"' | ','))
             .unwrap_or(tail.len());
-        out.push_str(&tail[..end].replace('\\', "/"));
+        out.push_str(&tail[..end].replace(r"\\", "/").replace('\\', "/"));
         rest = &tail[end..];
     }
     out.push_str(rest);
@@ -378,7 +387,7 @@ fn build_project(project: &Project) -> Built {
     // Warning locations come from walking the source tree, which resolves
     // symlinks (`/var/...` -> `/private/var/...` on macOS): normalize the
     // root the same way so the `<project>` substitution below lands.
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let config = config_of(project);
     let mut builder = SphinxBuilder::new(config, source_dir.clone(), output_dir)
@@ -973,6 +982,18 @@ fn source_paths_normalize_across_separators() {
             win_root,
         ),
         r"<project>/a.rst:4: WARNING: invalid pair index entry 'a\nb' [index]"
+    );
+
+    // A path Python `repr()`'d into the message — the `_StrPath(...)` the
+    // literalinclude reader raises — has its separators doubled, and comes
+    // out spelled like every other one.
+    assert_eq!(
+        normalize_source_paths(
+            r"C:\proj\source\a.rst:15: WARNING: Object named 'nope' not found in include file _StrPath('C:\\proj\\source\\example.py') [docutils]",
+            win_root,
+        ),
+        "<project>/a.rst:15: WARNING: Object named 'nope' not found in include file \
+         _StrPath('<project>/example.py') [docutils]"
     );
 
     // A warning Sphinx logs with no location has no path to rewrite.
@@ -1950,7 +1971,7 @@ fn touching_one_document_re_reads_only_it_and_the_environment_still_matches_a_co
         "A\n=\n\n.. _label-a:\n\nSection A\n---------\n",
     );
     write(&source_dir, "b", "B\n=\n\nSee :ref:`label-a`.\n");
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let warm_out = tmp.path().join("warm");
     let (cold_hits, first_env, _) = incremental_build(&source_dir, &warm_out);
@@ -2070,7 +2091,7 @@ fn py_registrations_across_incremental_rebuilds_match_sphinx_s_clear_and_replay(
     let doc_b = "B\n=\n\n.. py:function:: dup()\n\n.. py:module:: beta\n";
     write(&source_dir, "a", doc_a);
     write(&source_dir, "b", doc_b);
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let duplicate_warning = |docname: &str, other: &str| {
         format!(
@@ -2173,7 +2194,7 @@ fn deleting_a_document_clears_it_and_updates_the_warnings() {
     );
     write(&source_dir, "a", "A\n=\n\n.. _shared:\n\nAnchor\n------\n");
     write(&source_dir, "b", "B\n=\n\nSee :ref:`shared`.\n");
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let (_, first_env, first_warnings) = incremental_build(&source_dir, &output_dir);
     assert!(first_warnings.is_empty(), "{first_warnings:?}");
@@ -2239,7 +2260,7 @@ fn a_dangling_toctree_entry_re_reads_its_container_until_the_document_appears() 
         "Index\n=====\n\n.. toctree::\n\n   a\n   later\n",
     );
     write(&source_dir, "a", "A\n=\n\nBody.\n");
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let dangling = vec![
         "<project>/index.rst:4: WARNING: toctree contains reference to \
@@ -2288,7 +2309,7 @@ fn adding_a_file_re_reads_the_globbed_toctree_that_would_have_matched_it() {
         "Index\n=====\n\n.. toctree::\n   :glob:\n\n   pages/*\n",
     );
     write(&source_dir, "pages/a", "A\n=\n\nBody.\n");
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let (_, first_env, _) = incremental_build(&source_dir, &output_dir);
     assert_eq!(
@@ -2328,7 +2349,7 @@ fn touching_an_image_re_reads_only_the_document_that_embeds_it() {
     write(&source_dir, "b", "B\n=\n\nBody.\n");
     let picture = source_dir.join("pic.png");
     std::fs::write(&picture, b"first").unwrap();
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let (_, env, _) = incremental_build(&source_dir, &output_dir);
     assert_eq!(
@@ -2510,7 +2531,7 @@ fn a_warm_rebuild_reports_the_same_std_domain_warnings() {
     .unwrap();
     // Warning locations come from the canonicalized source tree (macOS
     // resolves `/var/...` to `/private/var/...`).
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2612,7 +2633,7 @@ fn a_malformed_option_description_warns_like_sphinx_across_a_rebuild() {
         "A\n=\n\n.. option:: =bad\n\n   Body.\n\n.. option:: , --ok\n\n   Body.\n",
     )
     .unwrap();
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2711,7 +2732,7 @@ fn an_invalid_index_entry_drops_its_whole_node_like_sphinx() {
          .. index::\n   single: Fine\n\nMore.\n",
     )
     .unwrap();
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2925,7 +2946,7 @@ fn resolved_build(
     for (docname, body) in files {
         write(&source_dir, docname, body);
     }
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
     let mut config = BuildConfig::default();
     configure(&source_dir, &mut config);
     let mut builder =
@@ -3533,7 +3554,7 @@ fn env_build(
     for (docname, body) in files {
         write(&source_dir, docname, body);
     }
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
     let mut config = BuildConfig::default();
     configure(&source_dir, &mut config);
     let mut builder =
@@ -3784,7 +3805,7 @@ fn tree_warnings(files: &[(&str, &str)], configure: &dyn Fn(&mut BuildConfig)) -
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     }
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
     let mut config = BuildConfig::default();
     configure(&mut config);
     let mut builder =
@@ -4065,7 +4086,7 @@ fn source_encoding_is_threaded_from_the_build_configuration_into_the_parser() {
     )
     .unwrap();
     std::fs::write(source_dir.join("inc.inc"), b"caf\xe9 here\n").unwrap();
-    let source_dir = std::fs::canonicalize(&source_dir).unwrap();
+    let source_dir = sphinx_ultra::utils::canonicalize_simplified(&source_dir).unwrap();
     let config = BuildConfig {
         source_encoding: "latin-1".to_string(),
         ..Default::default()

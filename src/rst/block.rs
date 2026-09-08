@@ -3651,10 +3651,7 @@ impl BlockParser {
         // docutils mode: relative to the directory of the file containing
         // the directive (which may itself be an included file).
         let source_path = self.sources.path(at_source);
-        let base = match source_path.rsplit_once('/') {
-            Some((dir, _)) => dir,
-            None => "",
-        };
+        let base = containing_dir(source_path);
         let joined = if path_arg.starts_with('/') || base.is_empty() {
             path_arg.to_string()
         } else {
@@ -4319,10 +4316,7 @@ impl BlockParser {
             }
         }
         let source_path = self.sources.path(at_source);
-        let base = match source_path.rsplit_once('/') {
-            Some((dir, _)) => dir,
-            None => "",
-        };
+        let base = containing_dir(source_path);
         let joined = if path_arg.starts_with('/') || base.is_empty() {
             path_arg.to_string()
         } else {
@@ -10650,21 +10644,119 @@ fn py_slice(len: usize, start: Option<i64>, end: Option<i64>) -> (usize, usize) 
     (from as usize, to as usize)
 }
 
+/// `os.path.dirname(source)` (`misc.py:33`, the `adapt_path` base of both
+/// file-inserting directives in docutils mode): everything before the last
+/// separator, and the empty string when there is none.
+///
+/// The separators are the PLATFORM's ([`std::path::is_separator`]: `/`
+/// everywhere, `\` too on Windows) because the document source path is an
+/// OS path — `C:\docs\main.rst` holds no `/` at all, and splitting it on
+/// `/` alone left the base empty, so every docutils-mode include resolved
+/// against the process cwd instead of against the containing file.
+fn containing_dir(source_path: &str) -> &str {
+    match source_path.rfind(std::path::is_separator) {
+        Some(cut) => &source_path[..cut],
+        None => "",
+    }
+}
+
+#[cfg(test)]
+mod containing_dir_tests {
+    use super::containing_dir;
+
+    /// The POSIX rule holds everywhere; the `\` half only exists on
+    /// Windows, where `os.path.dirname` splits on it too (a document
+    /// source path there is `C:\docs\main.rst`, with no `/` in it at all).
+    #[test]
+    fn the_containing_directory_splits_on_the_platforms_separators() {
+        assert_eq!(containing_dir("a/b/main.rst"), "a/b");
+        assert_eq!(containing_dir("/abs/main.rst"), "/abs");
+        assert_eq!(containing_dir("main.rst"), "");
+        assert_eq!(containing_dir(""), "");
+        assert_eq!(containing_dir("<string>"), "");
+        #[cfg(windows)]
+        {
+            assert_eq!(containing_dir(r"C:\docs\main.rst"), r"C:\docs");
+            assert_eq!(containing_dir(r"C:\docs\sub/main.rst"), r"C:\docs\sub");
+        }
+        #[cfg(not(windows))]
+        {
+            // A backslash is an ordinary filename character off Windows.
+            assert_eq!(containing_dir(r"C:\docs\main.rst"), "");
+        }
+    }
+}
+
 /// The docutils `io.FileInput` open-failure spelling: `io.error_string`
 /// renders `InputError: [Errno N] <strerror>: '<path>'` (`DU/io.py:72-75`
 /// wraps the OSError as its `InputError` subclass). Probe-pinned for
 /// errno 2 (missing), 13 (permission denied) and 21 (directory).
 fn py_input_error_text(error: &std::io::Error, path: &str) -> String {
-    match error.raw_os_error() {
-        Some(errno) => {
-            // Rust renders a raw OS error as "<strerror> (os error N)";
-            // Python's message is the bare strerror.
-            let rendered = std::io::Error::from_raw_os_error(errno).to_string();
-            let suffix = format!(" (os error {errno})");
-            let strerror = rendered.strip_suffix(suffix.as_str()).unwrap_or(&rendered);
-            format!("InputError: [Errno {errno}] {strerror}: '{path}'")
-        }
+    match py_oserror_parts(error) {
+        Some((errno, strerror)) => format!("InputError: [Errno {errno}] {strerror}: '{path}'"),
+        // An error shape neither branch below recognizes: Rust's own
+        // message, without the `[Errno N]` Python would only have if we
+        // knew the number.
         None => format!("InputError: {error}: '{path}'"),
+    }
+}
+
+/// `(OSError.errno, OSError.strerror)` as CPython would spell the pair.
+///
+/// Python reports a POSIX errno and `os.strerror`'s text on EVERY
+/// platform: a missing file is `[Errno 2] No such file or directory` in
+/// Windows Python exactly as in Linux Python, because the errno comes from
+/// the CRT's own mapping of the Win32 status and the text from Python's
+/// `strerror` table.
+fn py_oserror_parts(error: &std::io::Error) -> Option<(i32, String)> {
+    platform_errno(error).or_else(|| {
+        python_errno_of_kind(error.kind()).map(|(errno, text)| (errno, text.to_string()))
+    })
+}
+
+/// On Unix `raw_os_error()` IS the errno Python reports, and Rust renders
+/// it through the very `strerror(3)` table `os.strerror` reads — so the
+/// pair is byte-identical for every errno, including the ones no
+/// [`std::io::ErrorKind`] names.
+#[cfg(unix)]
+fn platform_errno(error: &std::io::Error) -> Option<(i32, String)> {
+    let errno = error.raw_os_error()?;
+    // Rust renders a raw OS error as "<strerror> (os error N)"; Python's
+    // message is the bare strerror.
+    let rendered = std::io::Error::from_raw_os_error(errno).to_string();
+    let suffix = format!(" (os error {errno})");
+    let strerror = rendered.strip_suffix(suffix.as_str()).unwrap_or(&rendered);
+    Some((errno, strerror.to_string()))
+}
+
+/// Off Unix, `raw_os_error()` is NOT an errno — on Windows it is the Win32
+/// code (2 `ERROR_FILE_NOT_FOUND`, 3 `ERROR_PATH_NOT_FOUND`, 5
+/// `ERROR_ACCESS_DENIED`), which Rust renders with the Win32 text ("The
+/// system cannot find the file specified."). Python prints neither, so the
+/// number and the text both have to come from [`python_errno_of_kind`].
+#[cfg(not(unix))]
+fn platform_errno(_error: &std::io::Error) -> Option<(i32, String)> {
+    None
+}
+
+/// The `(errno, os.strerror(errno))` pairs whose NUMBER and TEXT are the
+/// same in glibc, in macOS libc and in the MSVC CRT — the table Python
+/// prints from on any platform this crate builds for. Probed on the pinned
+/// toolchain: `os.strerror(2)` `'No such file or directory'`,
+/// `os.strerror(13)` `'Permission denied'`, `os.strerror(20)` `'Not a
+/// directory'`, `os.strerror(21)` `'Is a directory'`.
+///
+/// ENAMETOOLONG and ELOOP are deliberately absent: their numbers are
+/// platform-specific (36/40 on Linux, 63/62 on macOS, 38/114 in the CRT),
+/// so there is no portable pair to pin, and on Unix — the only place this
+/// crate is probed against — [`platform_errno`] answers first anyway.
+fn python_errno_of_kind(kind: std::io::ErrorKind) -> Option<(i32, &'static str)> {
+    match kind {
+        std::io::ErrorKind::NotFound => Some((2, "No such file or directory")),
+        std::io::ErrorKind::PermissionDenied => Some((13, "Permission denied")),
+        std::io::ErrorKind::NotADirectory => Some((20, "Not a directory")),
+        std::io::ErrorKind::IsADirectory => Some((21, "Is a directory")),
+        _ => None,
     }
 }
 
@@ -17221,7 +17313,7 @@ mod include_tests {
     #[test]
     fn an_include_through_a_symlink_reads_the_targets_neighbour() {
         let base = tempfile::tempdir().unwrap();
-        let base = std::fs::canonicalize(base.path()).unwrap();
+        let base = crate::utils::canonicalize_simplified(base.path()).unwrap();
         let srcdir = base.join("src");
         std::fs::create_dir_all(base.join("ext/inner")).unwrap();
         std::fs::create_dir_all(&srcdir).unwrap();
@@ -17400,6 +17492,49 @@ mod include_tests {
     }
 
     // ---- row 4: read_file error texts --------------------------------
+
+    /// [`py_input_error_text`] renders PYTHON's `(errno, strerror)` pair,
+    /// which is the same pair on every platform: `os.strerror(2)` is
+    /// `'No such file or directory'` in Windows Python exactly as in
+    /// Linux Python. Rust's Windows `io::Error` carries neither — its
+    /// `raw_os_error()` is the WIN32 code (2 `ERROR_FILE_NOT_FOUND`, 3
+    /// `ERROR_PATH_NOT_FOUND`) and its text is "The system cannot find
+    /// the file specified." — so the mapping goes through `ErrorKind`
+    /// there. Built from `io::Error` values rather than from a real
+    /// failed open, so the pin holds wherever the suite runs.
+    #[test]
+    fn the_input_error_text_speaks_pythons_errno_table() {
+        // A raw OS error 2: ENOENT on Unix, ERROR_FILE_NOT_FOUND on
+        // Windows — `ErrorKind::NotFound` and `[Errno 2]` either way.
+        assert_eq!(
+            py_input_error_text(&std::io::Error::from_raw_os_error(2), "nothere.rst"),
+            "InputError: [Errno 2] No such file or directory: 'nothere.rst'"
+        );
+        // The kinds with no OS error behind them take the portable table.
+        for (kind, pair) in [
+            (
+                std::io::ErrorKind::NotFound,
+                "[Errno 2] No such file or directory",
+            ),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                "[Errno 13] Permission denied",
+            ),
+            (
+                std::io::ErrorKind::NotADirectory,
+                "[Errno 20] Not a directory",
+            ),
+            (
+                std::io::ErrorKind::IsADirectory,
+                "[Errno 21] Is a directory",
+            ),
+        ] {
+            assert_eq!(
+                py_input_error_text(&std::io::Error::from(kind), "x.rst"),
+                format!("InputError: {pair}: 'x.rst'")
+            );
+        }
+    }
 
     #[test]
     fn a_missing_file_is_a_severe_with_the_input_error_spelling() {
@@ -18444,12 +18579,18 @@ mod literalinclude_reader_tests {
     //! committed probe-mirror fixture module.
 
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
+    /// A committed fixture path, joined ONE SEGMENT AT A TIME: a single
+    /// `join("tests/fixtures/literalinclude")` embeds POSIX separators
+    /// inside a Windows path, and while that still opens, it renders as
+    /// the mixed `D:\repo\tests/fixtures/literalinclude\example.py`.
     fn fixture(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/literalinclude")
-            .join(name)
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for segment in ["tests", "fixtures", "literalinclude", name] {
+            path.push(segment);
+        }
+        path
     }
 
     fn example() -> PathBuf {
@@ -18645,8 +18786,8 @@ mod literalinclude_reader_tests {
         assert_eq!(
             read(options).err().unwrap(),
             format!(
-                "Object named 'Nope' not found in include file _StrPath('{}')",
-                example().display()
+                "Object named 'Nope' not found in include file _StrPath({})",
+                py_repr(Some(&example().display().to_string()))
             )
         );
     }
@@ -18675,9 +18816,9 @@ mod literalinclude_reader_tests {
         assert_eq!(
             err,
             format!(
-                "parsing '{}' failed: unterminated triple-quoted string literal \
+                "parsing {} failed: unterminated triple-quoted string literal \
                  (detected at line 3)",
-                broken.display()
+                py_repr(Some(&broken.display().to_string()))
             )
         );
     }
@@ -18842,8 +18983,8 @@ mod literalinclude_reader_tests {
         assert_eq!(
             result.err().unwrap(),
             format!(
-                "Line spec '99': no lines pulled from include file _StrPath('{}')",
-                example().display()
+                "Line spec '99': no lines pulled from include file _StrPath({})",
+                py_repr(Some(&example().display().to_string()))
             )
         );
     }
@@ -19371,7 +19512,26 @@ mod literalinclude_tests {
     /// system temp dir is itself a symlink, which is what makes the
     /// difference visible here.
     fn resolved(dir: &Path) -> String {
-        std::fs::canonicalize(dir).unwrap().display().to_string()
+        crate::utils::resolve_path(dir).display().to_string()
+    }
+
+    /// The OS-native spelling of `rel` under `dir`, one segment at a
+    /// time — which is how the product builds every path it renders
+    /// (`relfn2path` pushes segment by segment). An expectation written
+    /// `{dir}/{rel}` is a POSIX-only expectation: on Windows the product
+    /// renders `\` there, exactly as `sphinx-build` does.
+    fn at(dir: &Path, rel: &str) -> String {
+        let mut path = dir.to_path_buf();
+        for segment in rel.split('/') {
+            path.push(segment);
+        }
+        path.display().to_string()
+    }
+
+    /// [`at`] under the RESOLVED directory — the spelling every reader
+    /// message carries (see [`resolved`]).
+    fn resolved_at(dir: &Path, rel: &str) -> String {
+        at(Path::new(&resolved(dir)), rel)
     }
 
     /// Sphinx-mode parse of `main` as `main.rst` inside a srcdir holding
@@ -19463,7 +19623,7 @@ mod literalinclude_tests {
              \x20  :caption: The *example* file\n\
              \x20  :name: lit-example\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "example.py");
         assert_eq!(
             output.doctree.root.children[0].pformat(),
             format!(
@@ -19475,7 +19635,7 @@ mod literalinclude_tests {
                  \x20           example\n\
                  \x20        file\n\
                  \x20   <literal_block force=\"0\" highlight_args=\"{{'hl_lines': [2, 4], \
-                 'linenostart': 1}}\" language=\"python\" source=\"{p}/example.py\" \
+                 'linenostart': 1}}\" language=\"python\" source=\"{p}\" \
                  xml:space=\"preserve\">\n\
                  \x20       \"\"\"Example module.\"\"\"\n\
                  \x20       def top(x):\n\
@@ -19499,12 +19659,12 @@ mod literalinclude_tests {
              \x20  :lines: 6-8\n\
              \x20  :lineno-match:\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "example.py");
         assert_eq!(
             output.doctree.root.children[0].pformat(),
             format!(
                 "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 6}}\" \
-                 linenos=\"1\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 linenos=\"1\" source=\"{p}\" xml:space=\"preserve\">\n\
                  \x20   def top(x):\n\
                  \x20       \"\"\"Top function.\"\"\"\n\
                  \x20       return x + 1\n"
@@ -19524,12 +19684,12 @@ mod literalinclude_tests {
              \x20  :pyobject: Foo.method\n\
              \x20  :lineno-match:\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "example.py");
         assert_eq!(
             output.doctree.root.children[0].pformat(),
             format!(
                 "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 16}}\" \
-                 linenos=\"1\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 linenos=\"1\" source=\"{p}\" xml:space=\"preserve\">\n\
                  \x20       def method(self):\n\
                  \x20           return self.attr\n"
             )
@@ -19547,12 +19707,12 @@ mod literalinclude_tests {
              \x20  :lines: 1-2\n\
              \x20  :lineno-start: 5\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "example.py");
         assert_eq!(
             output.doctree.root.children[0].pformat(),
             format!(
                 "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 5}}\" \
-                 linenos=\"1\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 linenos=\"1\" source=\"{p}\" xml:space=\"preserve\">\n\
                  \x20   \"\"\"Example module.\"\"\"\n\
                  \x20   \n"
             )
@@ -19573,12 +19733,12 @@ mod literalinclude_tests {
              \x20  :force:\n\
              \x20  :class: snippet\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "example.py");
         assert_eq!(
             output.doctree.root.children[0].pformat(),
             format!(
                 "<literal_block classes=\"snippet\" force=\"1\" \
-                 highlight_args=\"{{'linenostart': 1}}\" source=\"{p}/example.py\" \
+                 highlight_args=\"{{'linenostart': 1}}\" source=\"{p}\" \
                  xml:space=\"preserve\">\n\
                  \x20   class Foo:\n\
                  \x20       \"\"\"A class.\"\"\"\n\
@@ -19600,12 +19760,12 @@ mod literalinclude_tests {
              \x20  :prepend: # begin\n\
              \x20  :append: # end\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "example.py");
         assert_eq!(
             output.doctree.root.children[0].pformat(),
             format!(
                 "<literal_block force=\"0\" highlight_args=\"{{'linenostart': 1}}\" \
-                 source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 source=\"{p}\" xml:space=\"preserve\">\n\
                  \x20   # begin\n\
                  \x20   \n\
                  \x20   def method(self):\n\
@@ -19646,7 +19806,7 @@ mod literalinclude_tests {
              \x20  :caption:\n\
              \x20  :lines: 3\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "example.py");
         assert_eq!(
             output.doctree.root.children[0].pformat(),
             format!(
@@ -19655,7 +19815,7 @@ mod literalinclude_tests {
                  \x20   <caption>\n\
                  \x20       example.py\n\
                  \x20   <literal_block force=\"0\" highlight_args=\"{{'linenostart': 1}}\" \
-                 source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 source=\"{p}\" xml:space=\"preserve\">\n\
                  \x20       CONST = 1\n"
             )
         );
@@ -19674,7 +19834,7 @@ mod literalinclude_tests {
              \x20  :lines: 3\n\
              \x20  :caption: .. bogus::\n",
         );
-        let p = tmp.path().display();
+        let p = at(tmp.path(), "main.rst");
         let msgs = messages_of(&output);
         assert_eq!(msgs.len(), 1, "{}", output.doctree.root.pformat());
         assert_eq!(msgs[0].0, 2);
@@ -19682,7 +19842,7 @@ mod literalinclude_tests {
         assert_eq!(
             msgs[0].3,
             format!(
-                "Invalid caption: {p}/main.rst:1: (INFO/1) No directive entry for \
+                "Invalid caption: {p}:1: (INFO/1) No directive entry for \
                  \"bogus\" in module \"docutils.parsers.rst.languages.en\".\n\
                  Trying \"bogus\" as canonical directive name."
             )
@@ -19703,8 +19863,8 @@ mod literalinclude_tests {
             ".. literalinclude:: example.py\n\
              \x20  :diff: example_old.py\n",
         );
-        let p = tmp.path().display();
-        let r = resolved(tmp.path());
+        let old = resolved_at(tmp.path(), "example_old.py");
+        let new = resolved_at(tmp.path(), "example.py");
         let node = &output.doctree.root.children[0];
         assert_eq!(node.kind, kinds::LITERAL_BLOCK);
         assert_eq!(
@@ -19713,13 +19873,11 @@ mod literalinclude_tests {
         );
         assert_eq!(
             node.get("source"),
-            Some(&AttrValue::Str(format!("{p}/example.py")))
+            Some(&AttrValue::Str(at(tmp.path(), "example.py")))
         );
         let text = node.children[0].astext();
         assert!(
-            text.starts_with(&format!(
-                "--- {r}/example_old.py\n+++ {r}/example.py\n@@ -1,7 +1,21 @@\n"
-            )),
+            text.starts_with(&format!("--- {old}\n+++ {new}\n@@ -1,7 +1,21 @@\n")),
             "{text}"
         );
         assert_eq!(output.registry.dependencies, vec!["example.py".to_string()]);
@@ -19734,7 +19892,7 @@ mod literalinclude_tests {
     #[test]
     fn the_three_logger_warnings_render_the_doubled_suffix_location() {
         let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().display().to_string();
+        let p = at(tmp.path(), "main.rst");
         for (main, line, message) in [
             (
                 ".. literalinclude:: example.py\n\x20  :lines: 1,99\n".to_string(),
@@ -19770,10 +19928,7 @@ mod literalinclude_tests {
             let table_path = &output.doctree.sources[warnings[0].source as usize];
             // The RENDERED location string — the doc2path append doubles
             // the suffix exactly as sphinx renders it.
-            assert_eq!(
-                warnings[0].rendered_path(table_path),
-                format!("{p}/main.rst.rst")
-            );
+            assert_eq!(warnings[0].rendered_path(table_path), format!("{p}.rst"));
         }
     }
 
@@ -19806,8 +19961,8 @@ mod literalinclude_tests {
             tmp.path(),
             "para\n\n.. literalinclude:: example.py\n\x20  :lines: 99\n",
         );
-        let p = tmp.path().display();
-        let r = resolved(tmp.path());
+        let main = at(tmp.path(), "main.rst");
+        let example = py_repr(Some(&resolved_at(tmp.path(), "example.py")));
         assert_eq!(output.registry.log_warnings.len(), 1);
         assert_eq!(
             output.registry.log_warnings[0].message,
@@ -19820,10 +19975,10 @@ mod literalinclude_tests {
             (
                 2,
                 3,
-                format!("{p}/main.rst"),
+                main,
                 format!(
                     "Line spec '99': no lines pulled from include file \
-                     _StrPath('{r}/example.py')"
+                     _StrPath({example})"
                 )
             )
         );
@@ -19844,7 +19999,8 @@ mod literalinclude_tests {
     #[test]
     fn the_negative_index_edges_of_linenos_specs_match_the_probe() {
         let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().display().to_string();
+        let p = at(tmp.path(), "example.py");
+        let main = at(tmp.path(), "main.rst");
 
         // `:emphasize-lines: 0` -> hl_lines [0], silently.
         let output = parse(
@@ -19855,7 +20011,7 @@ mod literalinclude_tests {
             output.doctree.root.children[0].pformat(),
             format!(
                 "<literal_block force=\"0\" highlight_args=\"{{'hl_lines': [0], \
-                 'linenostart': 1}}\" source=\"{p}/example.py\" xml:space=\"preserve\">\n\
+                 'linenostart': 1}}\" source=\"{p}\" xml:space=\"preserve\">\n\
                  \x20   \"\"\"Example module.\"\"\"\n\
                  \x20   \n\
                  \x20   CONST = 1\n"
@@ -19874,7 +20030,7 @@ mod literalinclude_tests {
             .pformat()
             .starts_with(&format!(
                 "<literal_block force=\"0\" highlight_args=\"{{'hl_lines': [], \
-                 'linenostart': 1}}\" source=\"{p}/example.py\""
+                 'linenostart': 1}}\" source=\"{p}\""
             )));
         assert_eq!(output.registry.log_warnings.len(), 1);
         assert_eq!(
@@ -19891,12 +20047,7 @@ mod literalinclude_tests {
         assert!(output.registry.log_warnings.is_empty());
         assert_eq!(
             messages_of(&output),
-            vec![(
-                2,
-                3,
-                format!("{p}/main.rst"),
-                "list index out of range".to_string()
-            )]
+            vec![(2, 3, main, "list index out of range".to_string())]
         );
     }
 
@@ -19934,12 +20085,15 @@ mod literalinclude_tests {
             "x = \"\"\"abc\ndef f():\n    pass\n",
         )
         .unwrap();
-        let p = resolved(tmp.path());
+        let file = |rel: &str| resolved_at(tmp.path(), rel);
         for (main, line, message) in [
             (
                 "c\n\n.. literalinclude:: nothere.py\n".to_string(),
                 3i64,
-                format!("Include file '{p}/nothere.py' not found or reading it failed"),
+                format!(
+                    "Include file '{}' not found or reading it failed",
+                    file("nothere.py")
+                ),
             ),
             (
                 ".. literalinclude:: example.py\n\
@@ -19952,8 +20106,9 @@ mod literalinclude_tests {
                 ".. literalinclude:: bad.bin\n".to_string(),
                 1,
                 format!(
-                    "Encoding 'utf-8-sig' used for reading included file '{p}/bad.bin' \
-                     seems to be wrong, try giving an :encoding: option"
+                    "Encoding 'utf-8-sig' used for reading included file '{}' \
+                     seems to be wrong, try giving an :encoding: option",
+                    file("bad.bin")
                 ),
             ),
             (
@@ -19985,7 +20140,10 @@ mod literalinclude_tests {
                 // probe `pyobject_missing`.
                 ".. literalinclude:: example.py\n\x20  :pyobject: Nope\n".to_string(),
                 1,
-                format!("Object named 'Nope' not found in include file _StrPath('{p}/example.py')"),
+                format!(
+                    "Object named 'Nope' not found in include file _StrPath({})",
+                    py_repr(Some(&file("example.py")))
+                ),
             ),
             (
                 // The analyzer-failure funnel: sphinx's prefix, our detail
@@ -19993,8 +20151,9 @@ mod literalinclude_tests {
                 ".. literalinclude:: broken2.py\n\x20  :pyobject: f\n".to_string(),
                 1,
                 format!(
-                    "parsing '{p}/broken2.py' failed: unterminated triple-quoted \
-                     string literal (detected at line 3)"
+                    "parsing {} failed: unterminated triple-quoted \
+                     string literal (detected at line 3)",
+                    py_repr(Some(&file("broken2.py")))
                 ),
             ),
         ] {
@@ -20077,7 +20236,7 @@ mod literalinclude_tests {
         let output = parse_rst_full(
             ".. literalinclude:: data.py\n",
             &ParseOptions {
-                source_path: tmp.path().join("sub/page.rst").display().to_string(),
+                source_path: at(tmp.path(), "sub/page.rst"),
                 sphinx: true,
                 docname: "sub/page".to_string(),
                 srcdir: Some(tmp.path().to_path_buf()),
@@ -20091,9 +20250,7 @@ mod literalinclude_tests {
         let node = &output.doctree.root.children[0];
         assert_eq!(
             node.get("source"),
-            Some(&AttrValue::Str(
-                tmp.path().join("sub/data.py").display().to_string()
-            ))
+            Some(&AttrValue::Str(at(tmp.path(), "sub/data.py")))
         );
         assert_eq!(node.children[0].astext(), "x = 1\n");
     }
