@@ -2984,6 +2984,36 @@
     },
     {
       "family": "dir_media",
+      "name": "dir_media.figure_figname_option",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure ids=\"my-fig\" names=\"my\\ fig\">\n        <image uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figname: my fig\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_no_content",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure ids=\"solo\" names=\"solo\">\n        <image uri=\"pic.png\">\n",
+      "rst": ".. figure:: pic.png\n   :figname: solo\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_and_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure ids=\"my-fig\" names=\"my\\ fig\">\n        <image ids=\"other\" names=\"other\" uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figname: my fig\n   :name: other\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_with_figclass_align",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure align=\"right\" classes=\"fc\" ids=\"fn\" names=\"fn\">\n        <image uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figclass: fc\n   :figname: fn\n   :align: right\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_figname_empty",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure>\n        <image uri=\"pic.png\">\n        <caption>\n            Caption.\n",
+      "rst": ".. figure:: pic.png\n   :figname:\n\n   Caption.\n"
+    },
+    {
+      "family": "dir_media",
       "name": "dir_media.figure_align_vertical_rejected",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <system_message level=\"3\" line=\"1\" source=\"<snippet>\" type=\"ERROR\">\n        <paragraph>\n            Error in \"figure\" directive:\n            invalid option value: (option: \"align\"; value: 'top')\n            \"top\" unknown; choose from \"left\", \"center\", or \"right\".\n        <literal_block xml:space=\"preserve\">\n            .. figure:: pic.png\n               :align: top\n            \n               Caption.\n",
       "rst": ".. figure:: pic.png\n   :align: top\n\n   Caption.\n"
@@ -3977,6 +4007,408 @@
       "name": "mixtures.everything_adjacent",
       "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"head\" names=\"head\">\n        <title>\n            Head\n        <definition_list>\n            <definition_list_item>\n                <term>\n                    term\n                <definition>\n                    <paragraph>\n                        def\n        <bullet_list bullet=\"-\">\n            <list_item>\n                <paragraph>\n                    a\n            <list_item>\n                <paragraph>\n                    b\n        <enumerated_list enumtype=\"arabic\" prefix=\"\" suffix=\".\">\n            <list_item>\n                <paragraph>\n                    one\n            <list_item>\n                <paragraph>\n                    two\n        <literal_block xml:space=\"preserve\">\n            lit\n        <comment xml:space=\"preserve\">\n            done\n",
       "rst": "Head\n====\n\nterm\n    def\n\n- a\n- b\n\n1. one\n2. two\n\n::\n\n    lit\n\n.. done\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_leading_space_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _ pad  lbl :\n    <paragraph>\n        See \n        <reference name=\"pad lbl\" refname=\"pad lbl\">\n            pad lbl\n        .\n",
+      "rst": ".. _ pad  lbl :\n\nSee `pad lbl`_.\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_leading_space_comment_absorbs_block",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _ x:\n        cont\n    <paragraph>\n        para\n",
+      "rst": ".. _ x:\n   cont\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_bare_underscore_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _\n    <paragraph>\n        para\n",
+      "rst": ".. _\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_bare_underscore_with_block_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _\n        name: uri\n    <paragraph>\n        para\n",
+      "rst": ".. _\n   name: uri\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_tab_after_underscore_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _    x:\n    <paragraph>\n        para\n",
+      "rst": ".. _\tx:\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_beside_leading_space_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"pad-lbl\" names=\"pad\\ lbl\">\n    <comment xml:space=\"preserve\">\n        _ pad  lbl :\n    <paragraph>\n        para\n",
+      "rst": ".. _pad  lbl:\n.. _ pad  lbl :\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_space_before_colon",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"pad-lbl\" names=\"pad\\ lbl\">\n    <paragraph>\n        para\n",
+      "rst": ".. _pad  lbl :\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_quoted_leading_space_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _` x`: https://x/\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _` x`: https://x/\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_quoted_trailing_space_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _`x `: https://x/\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _`x `: https://x/\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"a-b\" names=\"a\\ b\">\n    <paragraph>\n        para\n",
+      "rst": ".. _a\u001fb:\n\npara\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.section_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"sec-c\" names=\"sec\\ c\">\n        <title>\n            Sec\u001fC\n        <paragraph>\n            body\n",
+      "rst": "Sec\u001fC\n=====\n\nbody\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.reference_python_whitespace_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <reference name=\"a b\" refname=\"a b\">\n            a\u001fb\n         here.\n",
+      "rst": "See `a\u001fb`_ here.\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_python_whitespace_refuri",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"http://xy\">\n",
+      "rst": ".. _t: http://x\u001fy\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.target_python_whitespace_indirect_is_a_uri",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"ab_\">\n",
+      "rst": ".. _t: a\u001fb_\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.anonymous_target_python_whitespace_refuri",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target anonymous=\"1\" ids=\"id1\" refuri=\"http://xy\">\n",
+      "rst": "__ http://x\u001fy\n"
+    },
+    {
+      "family": "round_d",
+      "name": "round_d.embedded_uri_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        See \n        <reference name=\"text\" refuri=\"http://xy\">\n            text\n        <target ids=\"text\" names=\"text\" refuri=\"http://xy\">\n         here.\n",
+      "rst": "See `text <http://x\u001fy>`_ here.\n"
+    },
+    {
+      "family": "dir_image",
+      "name": "dir_image.target_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <reference refuri=\"http://xy\">\n        <image uri=\"p.png\">\n",
+      "rst": ".. image:: p.png\n   :target: http://x\u001fy\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_second_line_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        : uri\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   : uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_second_line_bare_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        uri\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_third_line_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        more\n    <system_message level=\"2\" line=\"3\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   : uri\n   more\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_malformed_comment_spans_blank",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        x\n        \n        y\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _name\n   x\n\n   y\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_wide_marker_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": "..   _name\n x\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_second_line_one_space_indent",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"name\" names=\"name\" refuri=\"uri\">\n",
+      "rst": ".. _name\n : uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_name_split_across_lines",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"a-b\" names=\"a\\ b\" refuri=\"uri\">\n",
+      "rst": ".. _a\n   b: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_three_spaces_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _lbl   :\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _lbl   :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_two_spaces_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _pad  lbl  :\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _pad  lbl  :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_nbsp_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _x :\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _x :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_us_before_colon_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _x\u001f:\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _x\u001f:\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_us_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _`x\u001f`: uri\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _`x\u001f`: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_nbsp_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        _`x `: uri\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed hyperlink target.\n",
+      "rst": ".. _`x `: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_space_before_colon",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"x-y\" names=\"x\\ y\" refuri=\"uri\">\n",
+      "rst": ".. _`x y` : uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_anonymous_space_before_colon",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target anonymous=\"1\" ids=\"id1\">\n",
+      "rst": ".. __ :\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_quoted_inner_backtick",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"a-b\" names=\"a`b\" refuri=\"uri\">\n",
+      "rst": ".. _`a`b`: uri\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_escaped_space_in_name",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"xy\" names=\"xy\">\n",
+      "rst": ".. _x\\ y:\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_escaped_space_in_link",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"a b\">\n",
+      "rst": ".. _t: a\\ b\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.target_indirect_needs_a_simplename",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <target ids=\"t\" names=\"t\" refuri=\"a$b_\">\n",
+      "rst": ".. _t: a$b_\n"
+    },
+    {
+      "family": "round_e",
+      "name": "round_e.explicit_nbsp_after_dots_is_comment",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n         _x:\n",
+      "rst": "..  _x:\n"
+    },
+    {
+      "family": "dir_admonitions",
+      "name": "dir_admonitions.class_option_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <note classes=\"a b\">\n        <paragraph>\n            body\n",
+      "rst": ".. note::\n   :class: a\u001fb\n\n   body\n"
+    },
+    {
+      "family": "dir_image",
+      "name": "dir_image.uri_argument_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <image uri=\"pq.png\">\n",
+      "rst": ".. image:: p\u001fq.png\n"
+    },
+    {
+      "family": "dir_media",
+      "name": "dir_media.figure_uri_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <figure>\n        <image uri=\"pq.png\">\n",
+      "rst": ".. figure:: p\u001fq.png\n"
+    },
+    {
+      "family": "dir_body",
+      "name": "dir_body.raw_format_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <raw format=\"ht ml\" xml:space=\"preserve\">\n        <b>x</b>\n",
+      "rst": ".. raw:: ht\u001fml\n\n   <b>x</b>\n"
+    },
+    {
+      "family": "dir_body",
+      "name": "dir_body.line_block_directive_leading_nbsp_is_indent",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <line_block>\n        <line_block>\n            <line>\n                x\n        <line>\n            y\n",
+      "rst": ".. line-block::\n\n    x\n   y\n"
+    },
+    {
+      "family": "dir_body",
+      "name": "dir_body.line_block_directive_leading_us_is_indent",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <line_block>\n        <line_block>\n            <line>\n                x\n        <line>\n            y\n",
+      "rst": ".. line-block::\n\n   \u001fx\n   y\n"
+    },
+    {
+      "family": "substitutions",
+      "name": "substitutions.unicode_codes_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <substitution_definition names=\"u\">\n        A\n        B\n    <paragraph>\n        <substitution_reference refname=\"u\">\n            u\n         here\n",
+      "rst": ".. |u| unicode:: 0x41\u001f0x42\n\n|u| here\n"
+    },
+    {
+      "family": "dir_tables",
+      "name": "dir_tables.list_table_widths_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table classes=\"colwidths-given\">\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"1\">\n            <colspec colwidth=\"2\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": ".. list-table::\n   :widths: 1\u001f2\n\n   * - a\n     - b\n"
+    },
+    {
+      "family": "dir_tables",
+      "name": "dir_tables.table_widths_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table classes=\"colwidths-given\">\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"1\">\n            <colspec colwidth=\"2\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": ".. table::\n   :widths: 1\u001f2\n\n   === ===\n   a   b\n   === ===\n"
+    },
+    {
+      "family": "dir_core",
+      "name": "dir_core.directive_argument_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <pending>\n        .. internal attributes:\n             .transform: docutils.transforms.misc.ClassAttribute\n             .details:\n               class: ['a', 'b']\n               directive: 'class'\n    <paragraph>\n        para\n",
+      "rst": ".. class:: a\u001fb\n\npara\n"
+    },
+    {
+      "family": "dir_image",
+      "name": "dir_image.align_choice_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <image align=\"left\" uri=\"p.png\">\n",
+      "rst": ".. image:: p.png\n   :align: \u001fleft\n"
+    },
+    {
+      "family": "tables_simple",
+      "name": "tables_simple.cell_trailing_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": "=== ===\na\u001f  b\n=== ===\n"
+    },
+    {
+      "family": "tables_grid",
+      "name": "tables_grid.cell_trailing_python_whitespace",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": "+---+---+\n| a\u001f| b |\n+---+---+\n"
+    },
+    {
+      "family": "substitutions",
+      "name": "substitutions.marker_us_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        |ab\u001f| replace:: q\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed substitution definition.\n",
+      "rst": ".. |ab\u001f| replace:: q\n"
+    },
+    {
+      "family": "substitutions",
+      "name": "substitutions.marker_nbsp_before_close_malformed",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <comment xml:space=\"preserve\">\n        |ab | replace:: q\n    <system_message level=\"2\" line=\"1\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            malformed substitution definition.\n",
+      "rst": ".. |ab | replace:: q\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_nbsp_before_classifier",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                cls\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term  : cls\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_us_before_classifier",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                cls\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term\u001f : cls\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_us_before_two_classifiers",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                a\n            <classifier>\n                b\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term\u001f : a : b\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.dl_term_ideographic_space_before_classifier",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <definition_list>\n        <definition_list_item>\n            <term>\n                term\n            <classifier>\n                cls\n            <definition>\n                <paragraph>\n                    def\n",
+      "rst": "term　 : cls\n   def\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.field_body_leading_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <field_list>\n        <field>\n            <field_name>\n                a\n            <field_body>\n                <paragraph>\n                     b\n",
+      "rst": ":a:  b\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.field_body_leading_nbsp_kept_multiline",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <field_list>\n        <field>\n            <field_name>\n                a\n            <field_body>\n                <paragraph>\n                     b\n                    c\n",
+      "rst": ":a:   b\n   c\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.option_desc_leading_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <option_list>\n        <option_list_item>\n            <option_group>\n                <option>\n                    <option_string>\n                        -a\n            <description>\n                <paragraph>\n                     desc\n",
+      "rst": "-a   desc\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.option_desc_three_spaces_then_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <option_list>\n        <option_list_item>\n            <option_group>\n                <option>\n                    <option_string>\n                        -a\n            <description>\n                <paragraph>\n                     desc\n",
+      "rst": "-a    desc\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.literal_marker_us_before_space_rstripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <paragraph>\n        abc\n    <literal_block xml:space=\"preserve\">\n        lit\n",
+      "rst": "abc\u001f ::\n\n   lit\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.title_overline_leading_us_stripped",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"t\" names=\"t\">\n        <title>\n            T\n",
+      "rst": "=====\n\u001fT\n=====\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.title_underline_leading_nbsp_kept",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <section ids=\"t\" names=\"t\">\n        <title>\n             T\n",
+      "rst": " T\n===\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.enum_next_line_leading_us_is_indented",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <enumerated_list enumtype=\"arabic\" prefix=\"\" suffix=\".\">\n        <list_item>\n            <paragraph>\n                a\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            Enumerated list ends without a blank line; unexpected unindent.\n    <paragraph>\n        \u001fb\n",
+      "rst": "1. a\n\u001fb\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.enum_next_line_leading_nbsp_is_indented",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <enumerated_list enumtype=\"arabic\" prefix=\"\" suffix=\".\">\n        <list_item>\n            <paragraph>\n                a\n    <system_message level=\"2\" line=\"2\" source=\"<snippet>\" type=\"WARNING\">\n        <paragraph>\n            Enumerated list ends without a blank line; unexpected unindent.\n    <paragraph>\n         b\n",
+      "rst": "1. a\n b\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.simple_table_margin_us_is_blank",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n",
+      "rst": "=== ===\na  \u001fb\n=== ===\n"
+    },
+    {
+      "family": "round_f",
+      "name": "round_f.simple_table_first_column_us_is_continuation",
+      "pseudo_xml": "<document source=\"<snippet>\">\n    <table>\n        <tgroup cols=\"2\">\n            <colspec colwidth=\"3\">\n            <colspec colwidth=\"3\">\n            <tbody>\n                <row>\n                    <entry>\n                        <paragraph>\n                            a\n                    <entry>\n                        <paragraph>\n                            b\n                            c\n",
+      "rst": "=== ===\na   b\n\u001f   c\n=== ===\n"
     }
   ],
   "docutils_version": "0.22.4",

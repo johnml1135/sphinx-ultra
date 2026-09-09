@@ -2,7 +2,8 @@
 //! pseudo-XML, over the committed fixture corpus.
 //!
 //! Regenerate the fixture (manual, never in CI):
-//!     uv run --python 3.12 --with docutils==0.22.4 python tools/gen_doctree_fixture.py
+//!     PYTHONNOUSERSITE=1 uv run --python 3.12 --with docutils==0.22.4 \
+//!         python tools/gen_doctree_fixture.py
 //!
 //! Clones the tests/pattern_differential.rs shape: committed JSON, floor
 //! guard against silent truncation, collect ALL mismatches before
@@ -48,7 +49,10 @@ fn matches_docutils_parser_pformat() {
                     sphinx: false,
                     docname: "index".into(),
                     exclude_patterns: Vec::new(),
+                    py: Default::default(),
+                    srcdir: None,
                     found_docs: None,
+                    ..Default::default()
                 },
             )
             .root

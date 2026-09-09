@@ -6,9 +6,11 @@
 //! docutils transforms/writers port line-by-line. One `Node` struct covers
 //! every element type; `kind` holds the docutils tagname from [`kinds`].
 //!
-//! Source spans are structural: every node carries a byte-offset [`Span`]
-//! into the original source (docutils itself only keeps `(source, line)`).
-//! Spans are line-granular in wave 1; the wave-2 inline parser refines them.
+//! Source spans are structural: every node carries a [`Span`] with real
+//! `(source, line)` provenance plus the byte range of its text in the
+//! parser's processed source (docutils itself only keeps `(source, line)`).
+//! Spans are line-granular; the inline parser stamps its nodes with the
+//! enclosing text block's span.
 
 pub mod ids;
 mod intern;
@@ -20,11 +22,26 @@ pub(crate) use intern::intern;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// Byte-offset range into a source file. `source` indexes a per-doctree
-/// source table; wave 1 always uses source 0 (`include` arrives in wave 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Source provenance of a node: which source it came from, the 1-based
+/// line docutils would report for it, and the byte range of its text.
+///
+/// `source` indexes the per-doctree source table ([`Doctree::sources`];
+/// 0 is the document itself, included files push further entries), and
+/// `start..end` is a byte range into the parser's *processed* text of that
+/// source (tab-expanded, trailing whitespace stripped — the text the
+/// parser actually consumed).
+///
+/// `line` is 1-based within `source`; 0 means unknown. It carries the
+/// docutils reporting convention the env layer's warnings need: every node
+/// is stamped with the first line of its span, except a `section`, which
+/// is stamped one past that (docutils creates a section only once the
+/// state machine has consumed the title's underline).
+///
+/// `Default` is [`Span::ZERO`]: source 0, line 0 (unknown), empty range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub source: u16,
+    pub line: u32,
     pub start: u32,
     pub end: u32,
 }
@@ -32,6 +49,7 @@ pub struct Span {
 impl Span {
     pub const ZERO: Span = Span {
         source: 0,
+        line: 0,
         start: 0,
         end: 0,
     };
@@ -193,18 +211,35 @@ impl Node {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Doctree {
     pub root: Node,
-    /// Source table that `Span.source` will index once `include` lands
-    /// (see `Span` doc comment); reserved now so this field doesn't need to
-    /// be added to the struct later. `#[serde(default = "default_sources")]`
-    /// is the standard hedge for a field added after data in this shape
-    /// might already exist — but note it only rescues *self-describing*
-    /// formats (e.g. JSON) from a missing field: bincode's wire format has
-    /// no field-presence framing, so a bincode blob that predates this
-    /// field would still fail to decode (`UnexpectedEnd`) rather than fall
-    /// back to the default. No such blob exists yet (nothing persists a
-    /// `Doctree` to bincode before this task), so that gap isn't live today.
+    /// The source table `Span.source` indexes: one path per source the
+    /// parse consumed. Entry 0 is the document's own path; sub-parses over
+    /// lifted text (table cells) and, later, included files push further
+    /// entries. `#[serde(default = "default_sources")]` is the standard
+    /// hedge for a field added after data in this shape might already
+    /// exist — but note it only rescues *self-describing* formats (e.g.
+    /// JSON) from a missing field: bincode's wire format has no
+    /// field-presence framing, so a bincode blob that predates this field
+    /// would still fail to decode (`UnexpectedEnd`) rather than fall back
+    /// to the default. No such blob existed before the field did, so that
+    /// gap isn't live today.
     #[serde(default = "default_sources")]
     pub sources: Vec<String>,
+}
+
+impl Doctree {
+    /// The `(source path, line)` a warning about a node should report —
+    /// docutils' `(node.source, node.line)`. Line 0 means unknown; a
+    /// `source` the table doesn't know (a foreign or hand-built span)
+    /// falls back to the document's own path.
+    pub fn source_and_line(&self, span: Span) -> (&str, u32) {
+        let path = self
+            .sources
+            .get(span.source as usize)
+            .or_else(|| self.sources.first())
+            .map(String::as_str)
+            .unwrap_or("<document>");
+        (path, span.line)
+    }
 }
 
 fn default_sources() -> Vec<String> {
@@ -241,7 +276,7 @@ mod tests {
     /// field, so this property can only be demonstrated through JSON here.
     #[test]
     fn doctree_deserialize_defaults_sources_when_field_absent_in_json() {
-        let json = r#"{"root":{"kind":"document","span":{"source":0,"start":0,"end":0},"text":null,"attrs":{"ids":[],"names":[],"dupnames":[],"classes":[],"backrefs":[],"extra":{}},"children":[]}}"#;
+        let json = r#"{"root":{"kind":"document","span":{"source":0,"line":0,"start":0,"end":0},"text":null,"attrs":{"ids":[],"names":[],"dupnames":[],"classes":[],"backrefs":[],"extra":{}},"children":[]}}"#;
 
         let restored: Doctree = serde_json::from_str(json).expect("json without sources decodes");
 
@@ -255,6 +290,7 @@ mod tests {
             kinds::PARAGRAPH,
             Span {
                 source: 0,
+                line: 1,
                 start: 0,
                 end: 10,
             },
@@ -270,6 +306,7 @@ mod tests {
             "hello",
             Span {
                 source: 0,
+                line: 1,
                 start: 0,
                 end: 5,
             },
@@ -288,6 +325,27 @@ mod tests {
         n.set("refuri", AttrValue::Str("https://y/".into()));
         assert_eq!(n.attrs.extra.len(), 2);
         assert_eq!(n.get("refuri"), Some(&AttrValue::Str("https://y/".into())));
+    }
+
+    #[test]
+    fn source_and_line_reads_the_table_and_falls_back_to_entry_0() {
+        let tree = Doctree {
+            root: Node::elem(kinds::DOCUMENT, Span::ZERO),
+            sources: vec!["a.rst".to_string(), "b.rst".to_string()],
+        };
+        let span = |source, line| Span {
+            source,
+            line,
+            start: 0,
+            end: 0,
+        };
+        assert_eq!(tree.source_and_line(span(0, 3)), ("a.rst", 3));
+        assert_eq!(tree.source_and_line(span(1, 7)), ("b.rst", 7));
+        assert_eq!(
+            tree.source_and_line(span(9, 2)),
+            ("a.rst", 2),
+            "an unknown source id falls back to the document's own path"
+        );
     }
 
     #[test]

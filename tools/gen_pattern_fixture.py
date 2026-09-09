@@ -8,7 +8,7 @@ translator in src/matching.rs can be diffed against real Sphinx behavior
 
 Regenerate with:
 
-    uv run --python 3.12 --with 'sphinx>=9.1,<9.2' python tools/gen_pattern_fixture.py
+    PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx>=9.1,<9.2' python tools/gen_pattern_fixture.py
 """
 
 import json

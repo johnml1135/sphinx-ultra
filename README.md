@@ -55,7 +55,14 @@ full, file-and-line-level status audit lives in
   numbering, the std domain (labels, glossary terms, `option`/`envvar`/
   `confval`), general-index data, an `objects.inv` reader/writer, and
   **intersphinx** resolution incl. the `:external:` roles — verified against a
-  real `sphinx-build` 9.1.0 across a 15-project environment oracle
+  real `sphinx-build` 9.1.0 across a 29-project / 84-document environment
+  oracle
+- **🐍 Python domain & file inclusion**: the fourteen `py:*` directives with
+  a real signature grammar (defaults, annotations, PEP 695 type parameters,
+  `:param:`/`:type:`/`:raises:`/`:returns:` doc fields), `:py:*:` and `:any:`
+  cross-reference resolution, `py-modindex` data, and `include` /
+  `literalinclude` with the full docutils and Sphinx option sets (incl.
+  `:pyobject:`) — verified against the same oracles
 - **⚠️ Build validation**: toctree consistency (nonexisting/excluded entries,
   self-reference, circular toctrees, orphans, "isn't included in any
   toctree"); directive/role validation on every build; cross-reference

@@ -29,6 +29,17 @@ pub struct Parser {
     /// directive consults to tell an excluded target from a nonexisting one
     /// (sphinx `TocTree.parse_content` reads `self.config.exclude_patterns`).
     exclude_patterns: Vec<String>,
+    /// The object-signature / py-domain configuration the read phase
+    /// consumes (see [`crate::rst::ParseOptions::py`]), projected out of the
+    /// build configuration once instead of per document.
+    py: crate::py::PySigConfig,
+    /// The project source directory (see
+    /// [`crate::rst::ParseOptions::srcdir`]): the build path sets it via
+    /// [`Parser::with_srcdir`] so the `include` directive resolves paths
+    /// sphinx-style; a bare `Parser::new` keeps standalone behavior.
+    srcdir: Option<std::path::PathBuf>,
+    /// `source_encoding` (see [`crate::rst::ParseOptions::source_encoding`]).
+    source_encoding: String,
 }
 
 /// Everything one source file's parse produces: the pipeline's [`Document`]
@@ -44,7 +55,18 @@ impl Parser {
     pub fn new(config: &BuildConfig) -> Result<Self> {
         Ok(Self {
             exclude_patterns: config.exclude_patterns.clone(),
+            py: crate::py::PySigConfig::from(config),
+            srcdir: None,
+            source_encoding: config.source_encoding.clone(),
         })
+    }
+
+    /// Attach the project source directory (sphinx `env.srcdir`), enabling
+    /// the `include` directive's sphinx-mode path resolution and its
+    /// `included`/`dependencies` recording.
+    pub fn with_srcdir(mut self, srcdir: std::path::PathBuf) -> Self {
+        self.srcdir = Some(srcdir);
+        self
     }
 
     pub fn parse(&self, file_path: &Path, content: &str, docname: &str) -> Result<Document> {
@@ -117,9 +139,11 @@ impl Parser {
                 docname: docname.to_string(),
                 found_docs,
                 exclude_patterns: self.exclude_patterns.clone(),
+                py: self.py.clone(),
+                srcdir: self.srcdir.clone(),
+                source_encoding: self.source_encoding.clone(),
             },
         );
-        let line_starts = line_start_offsets(content);
         {
             let root = &output.doctree.root;
 
@@ -129,14 +153,15 @@ impl Parser {
 
             // Flat TOC; the builder's stack walk nests by level. Anchors are
             // the sections' docutils ids (make_id) — a verified Sphinx-parity
-            // improvement over the M1 lowercase/space-hyphen slugs.
+            // improvement over the M1 lowercase/space-hyphen slugs. Line
+            // numbers come from the spans' stamped provenance.
             let mut toc = Vec::new();
-            collect_toc(root, 1, &line_starts, &mut toc);
+            collect_toc(root, 1, &mut toc);
             document.toc = toc;
 
             // Explicit targets for nitpicky label resolution.
             let mut labels = Vec::new();
-            collect_labels(root, &line_starts, &mut labels);
+            collect_labels(root, &mut labels);
             document.labels = labels;
         }
 
@@ -215,25 +240,6 @@ fn empty_doctree() -> Doctree {
     }
 }
 
-/// Byte offsets of each line start, for span-to-line mapping.
-fn line_start_offsets(content: &str) -> Vec<u32> {
-    let mut starts = vec![0u32];
-    for (i, b) in content.bytes().enumerate() {
-        if b == b'\n' {
-            starts.push((i + 1) as u32);
-        }
-    }
-    starts
-}
-
-/// 1-based line of a byte offset.
-fn line_of_offset(line_starts: &[u32], offset: u32) -> usize {
-    match line_starts.binary_search(&offset) {
-        Ok(i) => i + 1,
-        Err(i) => i,
-    }
-}
-
 fn first_section_title(root: &Node) -> Option<String> {
     for child in &root.children {
         if child.kind == kinds::SECTION {
@@ -247,7 +253,7 @@ fn first_section_title(root: &Node) -> Option<String> {
     None
 }
 
-fn collect_toc(node: &Node, level: usize, line_starts: &[u32], out: &mut Vec<TocEntry>) {
+fn collect_toc(node: &Node, level: usize, out: &mut Vec<TocEntry>) {
     for child in &node.children {
         if child.kind != kinds::SECTION {
             continue;
@@ -257,25 +263,25 @@ fn collect_toc(node: &Node, level: usize, line_starts: &[u32], out: &mut Vec<Toc
                 title: title.astext(),
                 level,
                 anchor: child.attrs.ids.first().cloned().unwrap_or_default(),
-                line_number: line_of_offset(line_starts, title.span.start),
+                line_number: title.span.line as usize,
                 children: Vec::new(),
             });
         }
-        collect_toc(child, level + 1, line_starts, out);
+        collect_toc(child, level + 1, out);
     }
 }
 
-fn collect_labels(node: &Node, line_starts: &[u32], out: &mut Vec<LabelRecord>) {
+fn collect_labels(node: &Node, out: &mut Vec<LabelRecord>) {
     for child in &node.children {
         if child.kind == kinds::TARGET && !child.attrs.names.is_empty() {
             for name in &child.attrs.names {
                 out.push(LabelRecord {
                     name: name.clone(),
-                    line: line_of_offset(line_starts, child.span.start),
+                    line: child.span.line as usize,
                 });
             }
         }
-        collect_labels(child, line_starts, out);
+        collect_labels(child, out);
     }
 }
 
@@ -405,7 +411,10 @@ mod tests {
                 sphinx: true,
                 docname: "index".to_string(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
+                srcdir: None,
                 found_docs: None,
+                ..Default::default()
             },
         );
 

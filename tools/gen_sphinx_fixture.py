@@ -3,8 +3,13 @@
 
 Regenerate with:
 
-    uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' \
-        python tools/gen_sphinx_fixture.py
+    PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' \
+        --with 'docutils==0.22.4' python tools/gen_sphinx_fixture.py
+
+PYTHONNOUSERSITE=1 is NOT optional: `uv run` keeps the user's site-packages
+on sys.path, and a user-site Pygments there silently re-records every
+`code:: python` case as tokenized output. Regenerating without the flag
+produces spurious fixture churn.
 
 THE SPHINX ORACLE. This fixture records what a REAL `sphinx-build` read phase
 produces for each snippet: the probe-validated minimal deterministic harness
@@ -16,6 +21,13 @@ That path was re-verified in this session to be byte-identical to a full
 `SphinxTestApp(buildername='dummy')` + `app.build()` + `env.get_doctree()`
 build for representative snippets (plain constructs, admonitions, images,
 errors, tables, targets).
+
+ORACLE VENUE NOTE (wave 4.5): the `include`/`literalinclude` directives are
+NOT exercised by this corpus and must not be added to it -- every case here
+is a single rst string against a fixed one-file srcdir, and file-inserting
+directives need aux files beside the document. Their oracle venue is the
+env fixture (tools/gen_env_fixture.py projects, which ship real member
+files) plus unit/e2e tests.
 
 DO NOT use `sphinx.testing.restructuredtext.parse()`: it builds an ad-hoc
 settings dict that omits `doctitle_xform=False` (and the other
@@ -110,6 +122,20 @@ Provenance: cases whose (family, name) mirror a case of
 tests/fixtures/doctree_differential.json reuse that case's exact rst input;
 three inputs are new (marked). Never remove or rename existing cases; later
 waves only EXTEND the corpus and SUPPORTED_KINDS.
+
+PER-CASE CONFOVERRIDES (wave-4.5 task 8): a case tuple may carry a fourth
+element, a dict of confoverrides applied ON TOP of the fixed CONFOVERRIDES
+base (smartquotes/keep_warnings are never overridden per-case). One
+SphinxTestApp is constructed per DISTINCT conf dict (cases grouped by their
+JSON-serialized conf, mirroring the [SIG] appendix probe scripts) so fifty
+conf cases do not spin fifty apps; the base settings assertions run against
+every app. The fixture schema emits "conf" on a case ONLY when non-empty —
+absent means defaults — and the Rust consumer maps every conf key onto
+ParseOptions.py (PySigConfig), ERRORING on unmapped keys so a future conf
+addition here fails loudly there instead of silently parsing under defaults.
+
+WAVE-4.5 EXCLUSIONS (py-domain corpus; every entry in EXCLUDED below carries
+its reason and the assert keeps CASES disjoint from it — see that dict).
 """
 
 import io
@@ -250,6 +276,26 @@ SUPPORTED_KINDS = {
     "desc_name",
     "desc_addname",
     "desc_content",
+    # wave-4.5 task 8: py-domain signatures, annotations and doc fields
+    "desc_parameterlist",
+    "desc_parameter",
+    "desc_optional",
+    "desc_returns",
+    "desc_annotation",
+    "desc_type_parameter_list",
+    "desc_type_parameter",
+    "desc_sig_name",
+    "desc_sig_operator",
+    "desc_sig_punctuation",
+    "desc_sig_space",
+    "desc_sig_keyword",
+    "desc_sig_keyword_type",
+    "desc_sig_literal_number",
+    "desc_sig_literal_string",
+    "desc_sig_literal_char",
+    "literal_strong",
+    "literal_emphasis",
+    "pending_xref_condition",
 }
 
 CASES = [
@@ -532,8 +578,32 @@ CASES = [
     ('sx_directives', 'glossary_serial_is_not_the_index_serial', '.. glossary::\n\n   !!!\n      Punctuation only.\n\n.. index:: Something\n'),
     ('sx_directives', 'glossary_term_with_markup', '.. glossary::\n\n   *emphasized* term\n      A def.\n'),
     ('sx_directives', 'glossary_sorted_classifier', '.. glossary::\n   :sorted:\n\n   zeta : key\n      Z def.\n'),
+    # panel fix round A: `GlossarySorter` (priority 500) really reorders the
+    # definition list, keyed on `unicodedata.normalize('NFD', term.lower())`.
+    # >= 3 terms, mixed case, and a non-ASCII term so the NFD/lower key is
+    # pinned rather than a plain byte sort.
+    ('sx_directives', 'glossary_sorted_reorders_terms', '.. glossary::\n   :sorted:\n\n   zeta\n      Z def.\n\n   Alpha\n      A def.\n\n   \u00e9clair\n      E def.\n\n   beta\n      B def.\n'),
+    # Without `:sorted:` the source order stands.
+    ('sx_directives', 'glossary_unsorted_keeps_source_order', '.. glossary::\n\n   zeta\n      Z def.\n\n   Alpha\n      A def.\n'),
     ('sx_directives', 'glossary_comment_lines', '.. glossary::\n\n   .. a comment line\n   alpha\n      The first letter.\n\n   .. a comment line\n   beta\n      The second letter.\n'),
     ('sx_directives', 'glossary_comment_swallows_its_continuation', '.. glossary::\n\n   .. a comment line\n      continued under the comment\n\n   alpha\n      The first letter.\n'),
+    # Wave-4.5 task 16: the three `Glossary.run` misformat warnings
+    # (`domains/std/__init__.py:461-503`). They are reporter warnings, so
+    # they land in the tree as system_message nodes BEFORE the glossary
+    # node, and they are reported ONE LINE LOW (0-based `content.items`
+    # offset rendered as a 1-based line) -- both of which these cases pin.
+    ('sx_directives', 'glossary_term_without_preceding_blank_line', '.. glossary::\n\n   term A\n      def A\n   term B\n      def B\n'),
+    ('sx_directives', 'glossary_terms_separated_by_empty_line', '.. glossary::\n\n   term A\n\n   term B\n      def AB\n'),
+    ('sx_directives', 'glossary_terms_separated_by_empty_lines_twice', '.. glossary::\n\n   term A\n\n   term B\n\n   term C\n      def\n'),
+    ('sx_directives', 'glossary_misformatted_indentation', '.. glossary::\n\n      stray indented line\n\n   term A\n      def A\n'),
+    ('sx_directives', 'glossary_comment_does_not_split_multi_term', '.. glossary::\n\n   term A\n   .. a comment\n   term B\n      shared def\n'),
+    ('sx_directives', 'glossary_comment_after_definition_warns', '.. glossary::\n\n   term A\n      def A\n   .. comment\n   term B\n      def B\n'),
+    ('sx_directives', 'glossary_definition_dedents_by_its_first_line', '.. glossary::\n\n   term A\n         deep def\n      shallow\n'),
+    # ... and `line[indent_len:]` (`:501`) slices CHARACTERS, not bytes:
+    # the first case's offset falls inside a two-byte 'e-acute' and the
+    # second keeps one character too many under a byte-count slice.
+    ('sx_directives', 'glossary_definition_dedent_splits_no_multibyte_char', '.. glossary::\n\n   term A\n      deep\n     éx\n'),
+    ('sx_directives', 'glossary_definition_dedent_counts_characters', '.. glossary::\n\n   term A\n       deep\n     ébcdef\n'),
     ('sx_roles', 'pep_role', 'See :pep:`8` for style.\n'),
     ('sx_roles', 'pep_role_anchor', 'See :pep:`8#imports` here.\n'),
     ('sx_roles', 'pep_role_explicit', 'See :pep:`the style guide <8>` here.\n'),
@@ -579,21 +649,365 @@ CASES = [
     ('sx_roles', 'option_role', 'Use :option:`--verbose` now.\n'),
     ('sx_roles', 'option_role_in_program_scope', '.. program:: myprog\n\nUse :option:`--verbose` now.\n'),
     ('sx_roles', 'confval_role', 'See :confval:`my_setting` here.\n'),
+    # panel fix round A: the BASE `XRefRole.process_link` collapses every
+    # whitespace run in the target (`roles.py:165`, `ws_re.sub(' ', target)`),
+    # so every role that does not override it without calling super does too.
+    ('sx_roles', 'xref_target_whitespace_collapsed', 'See :term:`foo  bar` and :doc:`some  page` and :envvar:`FOO  BAR`.\n'),
+    ('sx_roles', 'xref_target_wrapped_across_lines', 'See :term:`foo\nbar` here.\n'),
+    # ... and the two std roles whose overrides skip super keep the run.
+    ('sx_roles', 'xref_target_no_collapse_token_option', 'See :token:`a  b` and :option:`-x  y`.\n'),
+    # panel fix round C: `ws_re` is Python's `\s` == `str.isspace`, which
+    # admits \x1c-\x1f; \x1f is the one `splitlines` does not eat first.
+    ('sx_roles', 'xref_target_python_whitespace_collapsed', 'See :doc:`a\x1fb` and :term:`x\x1fy` here.\n'),
+    # ... an explicit title's target is taken VERBATIM between the brackets
+    # (`explicit_title_re`), so the padding survives every role's
+    # `process_link` — collapsed, never stripped; the title loses its
+    # trailing `\s*`.
+    ('sx_roles', 'xref_explicit_target_padding_kept', 'See :term:`x < foo   bar >` and :doc:`t < a  b >` and :any:`x < p  q >` and :ref:`r < l >` here.\n'),
+    # ... `:ref:`/`:numref:` are `lowercase=True` XRefRoles and nothing
+    # more: `target.lower()` then `ws_re.sub`, NOT docutils'
+    # `fully_normalize_name` (which would strip the padding as well).
+    ('sx_roles', 'xref_ref_target_lowercased_but_not_stripped', 'See :ref:`r < L abc >` and :numref:`n < X  y >` here.\n'),
+    # ... and a padded py target keeps its `()` through
+    # `update_title_and_target` (the target does not END with them).
+    ('sx_roles', 'xref_explicit_target_padding_kept_py', 'See :py:func:`x < f() >` and :func:`y\x1f<g>` here.\n'),
+    # ... `:eq:` is the math domain's, registered domainless like `:any:`
+    # (`app.add_role('eq', MathReferenceRole(warn_dangling=True))`):
+    # refdomain="math", classes "xref eq", refwarn=1.
+    ('sx_roles', 'eq_role_is_the_math_domains', 'See :eq:`euler` and :eq:`the one <euler>` and :eq:`a  b` here.\n'),
+    # panel fix round D: the std-domain NAME sites run the same `ws_re`
+    # (`ws_re.sub(' ', sig)` for envvar/confval, `ws_re.sub('-', …)` for
+    # program), so \x1f collapses in the index entry, `fullname`/toc name
+    # and the option's program scope.
+    ('sx_std', 'envvar_python_whitespace_name', '.. envvar:: FOO\x1fBAR\n\n   Body.\n'),
+    ('sx_std', 'confval_python_whitespace_name', '.. confval:: FOO\x1fBAR\n\n   Body.\n'),
+    ('sx_std', 'program_python_whitespace_name', '.. program:: git\x1fadd\n\n.. option:: -x\n\n   Body.\n'),
+    # ... and on the docutils side a label NAME is `' '.join(name.split())`,
+    # Python's `str.split()`: `.. _a\x1fb:` is the label `a b`, which both
+    # spellings of the `:ref:` reach. Each bare target is followed by a
+    # comment so `PropagateTargets` has nothing to donate to.
+    ('sx_roles', 'ref_label_python_whitespace_name', 'See :ref:`a\x1fb` and :ref:`A <a b>` here.\n\n.. _a\x1fb:\n.. _ a b :\n'),
+    # ... `.. _ pad  lbl :` (space after `_`) is a COMMENT under docutils'
+    # `\.\.[ ]+_(?![ ]|$)`, so beside the real label there is no
+    # `Duplicate explicit target name` message and no second name.
+    ('sx_roles', 'target_leading_space_is_a_comment', 'See :ref:`P <pad lbl>` here.\n\n.. _pad  lbl:\n.. _ pad  lbl :\n'),
+    # ----- wave-4.5 task 8: std-desc doc fields (T7 fix round 1) -----
+    # DocFieldTransformer runs for EVERY object description; std kinds use
+    # the empty typemap, so every field takes the unknown branch (renamed,
+    # body untouched).
+    ('sx_std', 'envvar_param_field', '.. envvar:: SIMPLE\n\n   :param x: thing\n'),
+    ('sx_std', 'envvar_meta_private_field', '.. envvar:: METAV\n\n   :meta private:\n'),
+    # T7 re-review quirk: markup in the field name duplicates as raw text +
+    # inline children inside the renamed field_name ("Param em x" AND the
+    # <emphasis> pair).
+    ('sx_std', 'envvar_param_markup_field_name', '.. envvar:: EMPH\n\n   :param *em* x: body\n'),
+    # A system_message inside a field BODY passes through the transform
+    # untouched. (The one-child system_message as a field_list CHILD crashes
+    # real sphinx — EXCLUDED sx_std.confval_bad_type_markup — and a
+    # two-child one is not expressible through parseable rst: block-level
+    # errors land inside field_body, as here.)
+    ('sx_std', 'envvar_field_body_system_message', '.. envvar:: SM\n\n   :param x: text\n     bad\n       indent\n'),
+    # ----- round E: the remaining Python-`str.split()` sites -----
+    # `option_desc_re = r'((?:/|--|-|\+)?[^\s=]+)(=?\s*.*)'` — Python `\s`,
+    # so \x1f ENDS the option name and `y` becomes its argument.
+    ('sx_std', 'option_name_python_whitespace', '.. program:: git\n\n.. option:: -x\x1fy\n\n   Body.\n'),
+    # `field_name.astext().split(None, maxsplit=1)` (docfields.py:384-389)
+    # and `fieldarg.rsplit(None, 1)` (:448-455) split the same way.
+    ('sx_std', 'envvar_field_name_python_whitespace', '.. envvar:: WS\n\n   :param\x1fx: thing\n'),
+    # `Element.starttag` renders a list item as `'%s' % (v,)` — the tuple's
+    # `repr`, which escapes every non-`str.isprintable()` character.
+    ('sx_directives', 'index_entry_repr_escapes_control_char', '.. index:: single: a\x1fb\n'),
+    ('sx_directives', 'index_entry_repr_escapes_nbsp', '.. index:: single: a\xa0b\n'),
+    ('sx_directives', 'index_entry_repr_escapes_del', '.. index:: single: a\x7fb\n'),
+    ('sx_directives', 'glossary_index_entry_repr_escapes_control_char', '.. glossary::\n\n   term\x1fone\n      definition\n'),
+    # ----- round F: the glossary term is NOT rstripped -----
+    # `split_term_classifiers` (domains/std/__init__.py:366-372) splits the
+    # line on ` +: +` and takes `parts[0]` VERBATIM — unlike docutils'
+    # `Text.term`, which rstrips it — so whitespace before the delimiter
+    # stays in the <term>, its index entry and the registered term; the
+    # first classifier (`parts[1]`) is verbatim too, and only the first one
+    # is used.
+    ('sx_directives', 'glossary_term_nbsp_before_classifier_kept', '.. glossary::\n\n   term\xa0 : cls\n      def\n'),
+    ('sx_directives', 'glossary_term_us_before_classifier_kept', '.. glossary::\n\n   term\x1f : cls\n      def\n'),
+    ('sx_directives', 'glossary_wide_classifier_delimiter', '.. glossary::\n\n   term  :  cls\n      def\n'),
+    ('sx_directives', 'glossary_classifier_leading_nbsp_kept', '.. glossary::\n\n   term : \xa0cls\n      def\n'),
+    ('sx_directives', 'glossary_second_classifier_ignored_first_kept', '.. glossary::\n\n   term : a : b\n      def\n'),
+    # round F: `process_index_entry` (util/nodes.py) `strip()`s the entry and
+    # every comma value and `lstrip()`s after a leading `!` — Python's set, so
+    # `\x1f` goes wherever a space would. `!` is recognised only at the very
+    # start of an entry (the `single: !x` form keeps its `!`).
+    ('sx_directives', 'index_bang_then_us_lstripped', '.. index:: !\x1fa\n'),
+    ('sx_directives', 'index_single_leading_us_stripped', '.. index:: single: \x1fa\n'),
+    ('sx_directives', 'index_single_bang_after_type_kept', '.. index:: single: !\x1fa\n'),
+    ('sx_directives', 'index_comma_value_leading_us_stripped', '.. index:: a,\x1fb\n'),
+    ('sx_directives', 'index_comma_bang_then_us_lstripped', '.. index:: a, !\x1fb\n'),
+    ('sx_directives', 'index_pair_leading_us_stripped', '.. index:: pair: \x1fa; b\n'),
+    ('sx_directives', 'index_value_trailing_us_before_comma_stripped', '.. index:: a\x1f, b\n'),
+    # round F: `Cmdoption.handle_signature` `strip()`s every `, `-separated
+    # synonym (Python's set) before `option_desc_re`; `parse_directive_arguments`'
+    # `split(None, 0)` lstrips only the whole argument, so a \x1f opening the
+    # SECOND synonym reaches that strip.
+    ('sx_std', 'option_second_synonym_leading_us_stripped', '.. program:: git\n\n.. option:: -x, \x1f-y\n\n   Body.\n'),
+    # round F: `parselinenos` — `begend = part.strip().split('-')` — strips each
+    # comma part with Python's set BEFORE `int()` (which would reject a \x1f).
+    ('sx_directives', 'code_block_emphasize_lines_leading_us_stripped', '.. code-block:: python\n   :emphasize-lines: \x1f1\n\n   x = 1\n'),
+    ('sx_directives', 'code_block_emphasize_lines_part_trailing_us_stripped', '.. code-block:: python\n   :emphasize-lines: 1\x1f,2\n\n   x = 1\n   y = 2\n'),
+    # `parse_directive_arguments` re-splits with `arg_text.split(None,
+    # required + optional - 1)` when there are too many words — Python
+    # whitespace both times, so \x1f ends the version argument.
+    ('sx_directives', 'versionadded_argument_python_whitespace', '.. versionadded:: 1.0\x1fa b\n'),
+    ('sx_directives', 'deprecated_argument_python_whitespace', '.. deprecated:: 2.0\x1fx y\n'),
+    # ----- wave-4.5 task 8: py-domain object directives ([PY §1.6/1.7]) -----
+    # Propagation-visible module shapes and known-divergence signatures are
+    # in EXCLUDED above, each with its reason.
+    ('py', 'function_plain_args', '.. py:function:: func(a, b)\n\n   Body.\n'),
+    # round E: `:param type name:` splits with `rsplit(None, 1)` — Python
+    # whitespace, so \x1f separates the type from the name.
+    ('py', 'param_type_name_python_whitespace', '.. py:function:: f(x)\n\n   :param int\x1fx: the thing\n'),
+    ('py', 'function_full_markers', '.. py:function:: mymod.func(a, b=1, *args, c: int = 2, **kwargs) -> str\n'),
+    ('py', 'function_posonly', '.. py:function:: func(a, /, b, *, c)\n'),
+    ('py', 'function_posonly_trailing', '.. py:function:: func(a, /)\n'),
+    ('py', 'function_brackets_fallback', '.. py:function:: func(a[, b])\n'),
+    ('py', 'function_default_str', ".. py:function:: func(name='x', items=[])\n"),
+    ('py', 'function_no_arglist', '.. py:function:: func\n'),
+    ('py', 'function_async', '.. py:function:: coro(x)\n   :async:\n'),
+    ('py', 'function_module_option', '.. py:function:: f(x)\n   :module: optmod\n'),
+    ('py', 'function_annotation_option', '.. py:function:: f(x)\n   :annotation: something extra\n'),
+    ('py', 'function_bad_sig', '.. py:function:: not a signature!\n'),
+    ('py', 'function_multi_sig', '.. py:function:: f(x)\n                  g(y)\n\n   Shared body.\n'),
+    # round F: `get_signatures` `strip()`s each signature line (Python's set),
+    # and `_filter_meta_fields` `strip()`s the field name before the `meta`
+    # test — a \x1f opening either is gone.
+    ('py', 'function_second_signature_leading_us_stripped', '.. py:function:: f()\n                  \x1fg()\n'),
+    ('py', 'function_meta_field_leading_us_filtered', '.. py:function:: f()\n\n   :\x1fmeta private:\n'),
+    ('py', 'module_deprecated', '.. py:module:: oldmod\n   :deprecated:\n'),
+    ('py', 'module_noindex', '.. py:module:: quietmod\n   :no-index:\n'),
+    ('py', 'module_noindexentry', '.. py:module:: halfmod\n   :no-index-entry:\n'),
+    ('py', 'module_notypesetting_inert', '.. py:module:: ntmod\n   :no-typesetting:\n'),
+    ('py', 'module_bad_option', '.. py:module:: badmod\n   :noindexentry:\n'),
+    ('py', 'currentmodule_function', '.. py:currentmodule:: curmod\n\n.. py:function:: f(x)\n'),
+    ('py', 'currentmodule_none_pops', '.. py:currentmodule:: curmod\n\n.. py:currentmodule:: None\n\n.. py:function:: f(x)\n'),
+    ('py', 'class_with_bases', '.. py:class:: MyClass(Base1, Base2)\n\n   .. py:method:: meth(self, arg)\n\n      Body.\n'),
+    ('py', 'method_options', '.. py:class:: C\n\n   .. py:method:: m1(x)\n      :classmethod:\n\n   .. py:method:: m2(x)\n      :staticmethod:\n\n   .. py:method:: m3(x)\n      :abstractmethod:\n      :async:\n      :final:\n'),
+    ('py', 'classmethod_staticmethod_directives', '.. py:class:: C\n\n   .. py:classmethod:: cm(x)\n\n   .. py:staticmethod:: sm(x)\n'),
+    ('py', 'attribute_typed', '.. py:class:: C\n\n   .. py:attribute:: attr\n      :type: int\n      :value: 42\n'),
+    ('py', 'property_typed', '.. py:class:: C\n\n   .. py:property:: prop\n      :type: str\n      :abstractmethod:\n      :classmethod:\n'),
+    ('py', 'data_typed', '.. py:data:: CONST\n   :type: dict[str, int]\n   :value: {}\n'),
+    ('py', 'decorator_basic', '.. py:decorator:: mydeco\n'),
+    ('py', 'decorator_with_args', '.. py:decorator:: mydeco(flag)\n'),
+    ('py', 'decoratormethod_basic', '.. py:class:: C\n\n   .. py:decoratormethod:: dm\n'),
+    ('py', 'type_alias_canonical', '.. py:type:: MyAlias\n   :canonical: list[int]\n'),
+    ('py', 'exception_basic', '.. py:exception:: MyError\n'),
+    ('py', 'nested_classes', '.. py:class:: Outer\n\n   .. py:class:: Inner\n\n      .. py:method:: m(x)\n'),
+    ('py', 'method_class_prefix_given', '.. py:class:: C\n\n   .. py:method:: C.meth(x)\n'),
+    ('py', 'method_other_prefix', '.. py:class:: C\n\n   .. py:method:: D.meth(x)\n'),
+    ('py', 'function_fields', '.. py:function:: f(a, b)\n\n   :param int a: first\n   :param b: second\n   :type b: str\n   :returns: something\n   :rtype: bool\n   :raises ValueError: when bad\n'),
+    ('py', 'function_meta_field', '.. py:function:: f()\n\n   :meta private:\n'),
+    ('py', 'noindex_function', '.. py:function:: hidden()\n   :no-index:\n'),
+    ('py', 'old_noindex_spelling', '.. py:function:: hidden()\n   :noindex:\n'),
+    ('py', 'noindexentry_function', '.. py:function:: quiet()\n   :no-index-entry:\n'),
+    ('py', 'nocontentsentry_function', '.. py:function:: quiet2()\n   :no-contents-entry:\n'),
+    ('py', 'notypesetting_function', '.. py:function:: invisible()\n   :no-typesetting:\n'),
+    ('py', 'canonical_function', '.. py:function:: new_name()\n   :canonical: old.name\n'),
+    ('py', 'duplicate_functions', '.. py:function:: dup()\n\n.. py:function:: dup()\n'),
+    # tp-list/arglist warning spellings (T6 row 13): the WARNING bytes live
+    # in the logger (pinned by src/rst/block.rs arglist_and_tp_list_error_
+    # paths_warn); the fixture pins the fallback TREE shape for exactly the
+    # three probed spellings — other tp failures render exception text this
+    # crate does not reproduce byte-for-byte.
+    ('py', 'arglist_duplicate_param', '.. py:function:: f(a, a)\n'),
+    ('py', 'tp_list_variadic_bound', '.. py:function:: f[*Ts: int](x)\n'),
+    ('py', 'tp_list_tokenerror', '.. py:function:: f[(T](x)\n'),
+    # read-phase xref roles ([PY §3.1]; @ on BOTH deco titles, T6 ledger 1)
+    ('py', 'roles_basic', 'See :py:func:`target` and :py:func:`target()` and :py:func:`custom <target>`.\n'),
+    ('py', 'roles_tilde_dot', 'See :py:meth:`~pkg.Cls.meth` and :py:meth:`.Cls.meth` and :py:mod:`pkg`.\n'),
+    ('py', 'role_deco_implicit_and_explicit', 'See :py:deco:`mydeco` and :py:deco:`custom <mydeco>`.\n'),
+    ('py', 'role_lstrip_edges', 'See :py:func:`..target` and :py:func:`~~pkg.f` and :py:class:`custom <.Cls>`.\n'),
+    ('py', 'role_in_currentmodule_scope', '.. py:currentmodule:: rmod\n\nSee :py:func:`local` here.\n'),
+    ('py', 'role_in_class_scope', '.. py:class:: C\n\n   See :py:meth:`m` here.\n'),
+    # An unqualified role name resolves against `primary_domain` (py) first,
+    # and `type` is a py role with no std counterpart.
+    ('py', 'role_type_unqualified', '.. py:type:: MyAlias\n\nA :type:`MyAlias` here.\n'),
+    # `after_content` ASSIGNS `modules.pop()`, so a `:module:` option with no
+    # enclosing module scope leaves `py:module` present holding None — which
+    # `AnyXRefRole`'s ref_context copy renders as the "True" sentinel.
+    ('py', 'any_after_module_option', '.. py:function:: f()\n   :module: mymod\n\n   Body.\n\nAfter :any:`x`.\n'),
+    # `.. py:currentmodule:: None` pops the key instead, so nothing is stamped.
+    ('py', 'any_after_currentmodule_none', '.. py:currentmodule:: m\n\n.. py:currentmodule:: None\n\nAfter :any:`x`.\n'),
+    # ----- wave-4.5 task 8: signature/annotation parsing shapes ([PY §2]) -----
+    # Default configuration; the annotation grammar, arglist channels and
+    # PEP-695 type parameter lists.
+    ('pysig', 'union_pipe', '.. py:function:: f(x: int | None) -> int | str\n'),
+    ('pysig', 'optional_union_rewrite', '.. py:function:: f(x: Optional[int], y: Union[int, str])\n'),
+    ('pysig', 'subscript_generics', '.. py:function:: f(x: list[str], y: dict[str, int]) -> list[str]\n'),
+    ('pysig', 'tilde_annotation', '.. py:function:: f(x: ~mymod.MyClass)\n'),
+    ('pysig', 'dot_annotation_refspecific', '.. py:function:: f(x: .MyClass)\n'),
+    ('pysig', 'string_annotation_literal', ".. py:function:: f(x: 'MyClass')\n"),
+    ('pysig', 'typing_prefix_and_none', '.. py:function:: f(x: typing.Any, y: None)\n'),
+    ('pysig', 'tuple_ellipsis', '.. py:function:: f(x: tuple[int, ...])\n'),
+    ('pysig', 'literal_annotation_default_conf', ".. py:function:: f(x: Literal['a', 'b'] = 'a')\n"),
+    ('pysig', 'typeparams_full', '.. py:class:: C[T, *Ts, **P]\n'),
+    ('pysig', 'typeparams_constraint', '.. py:function:: f[T: (int, str)](x: T) -> T\n'),
+    ('pysig', 'typeparams_default', '.. py:function:: f[T = int](x)\n'),
+    ('pysig', 'pseudo_default_eq_shape', '.. py:function:: f(a[, b=1])\n'),
+    ('pysig', 'pseudo_bracket_imbalance', '.. py:function:: f(a[, b)\n'),
+    ('pysig', 'varargs_then_keyword', '.. py:function:: f(*args, k=1)\n'),
+    ('pysig', 'negative_none_defaults', '.. py:function:: f(x=-1, y=None)\n'),
+    ('pysig', 'annotated_default_spacing', '.. py:function:: f(x: int = 2, y=3)\n'),
+    ('pysig', 'backslash_in_arglist_default', '.. py:function:: f(a\\, b)\n'),
+    # ----- panel fix round A: exec-mode annotations, numeric source -----
+    # ----- recovery order, and BoolOp defaults -----
+    # PEP 646. `_parse_annotation` parses in EXEC mode, so `*Ts` is a legal
+    # `Expr(Starred(...))` statement; CPython's `star_annotation` production
+    # makes `*args` the only parameter slot that can carry one.
+    ('pysig', 'star_annotation_pep646', '.. py:function:: f(*args: *Ts)\n'),
+    ('pysig', 'star_annotation_bracketed_unpack', '.. py:function:: f(*args: *tuple[int, ...])\n'),
+    ('pysig', 'star_annotation_neighbours', '.. py:function:: f(a, *args: *Ts, b)\n'),
+    ('pysig', 'star_annotation_retann', '.. py:function:: f() -> *Ts\n'),
+    # `visit_Constant` recovers numeric source text by AST position, so a
+    # call's callee keeps its own spellings even when the arguments carry
+    # numbers too.
+    ('pysig', 'chained_call_numeric_default', '.. py:function:: f(x=a(0x10).b(16))\n'),
+    ('pysig', 'called_call_numeric_default', '.. py:function:: f(x=g(0xFF)(255))\n'),
+    ('pysig', 'octal_chain_numeric_default', '.. py:function:: f(x=P(0o755).mask(0o022))\n'),
+    # `sphinx.pycode.ast` has a first-class `visit_BoolOp`, so `and`/`or`
+    # defaults take the AST path (separators keep their `abbreviation`).
+    # `_parse_annotation`'s walk has no BoolOp branch, so the same operator
+    # in an ANNOTATION still falls back to one whole-text xref.
+    ('pysig', 'boolop_default_keyword_only', '.. py:function:: f(a, *, x=A or B)\n'),
+    ('pysig', 'boolop_default_positional_only', '.. py:function:: f(a=A and B, /)\n'),
+    ('pysig', 'boolop_default_mixed_chain', '.. py:function:: f(x=a and b or c)\n'),
+    ('pysig', 'boolop_annotation_falls_back', '.. py:function:: f(x: a or b)\n'),
+    # PEP 695 empty bound: `_parse_annotation('')` is the empty node list,
+    # so `if not annotation: continue` drops the whole type parameter.
+    ('pysig', 'empty_type_param_bound', '.. py:function:: f[T:](x)\n'),
+    ('pysig', 'empty_type_param_bound_default', '.. py:function:: f[T: = int](x)\n'),
+    ('pysig', 'empty_type_param_bound_sibling', '.. py:function:: f[T:, U](x)\n'),
+    # ----- wave-4.5 task 8: signature-config family ([SIG] A/B/C/D/E + -----
+    # ----- U/L/F-U/P matrices as per-case confoverrides) -----
+    ('pyconf', 'wrap_equal_no_flip', '.. py:function:: foo(aaaa)\n', {'maximum_signature_line_length': 9}),
+    ('pyconf', 'wrap_over_flips', '.. py:function:: foo(aaaa)\n', {'maximum_signature_line_length': 8}),
+    ('pyconf', 'wrap_retann_counts', '.. py:function:: foo(a) -> int\n', {'maximum_signature_line_length': 12}),
+    ('pyconf', 'wrap_retann_equal_no_flip', '.. py:function:: foo(a) -> int\n', {'maximum_signature_line_length': 13}),
+    ('pyconf', 'wrap_prefix_counts', '.. py:function:: Klass.foo(a)\n', {'maximum_signature_line_length': 11}),
+    ('pyconf', 'wrap_whitespace_stripped', '.. py:function::    foo(aaaa)   \n', {'maximum_signature_line_length': 9}),
+    ('pyconf', 'wrap_tp_span_subtracted', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 10}),
+    ('pyconf', 'wrap_both_flip', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 7}),
+    ('pyconf', 'wrap_neither_flips', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 11}),
+    ('pyconf', 'wrap_python_key_wins_high', '.. py:function:: foo(aaaa)\n', {'python_maximum_signature_line_length': 1000, 'maximum_signature_line_length': 1}),
+    ('pyconf', 'wrap_python_key_wins_low', '.. py:function:: foo(aaaa)\n', {'python_maximum_signature_line_length': 1, 'maximum_signature_line_length': 1000}),
+    ('pyconf', 'wrap_global_fallback', '.. py:function:: foo(aaaa)\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'wrap_falsy_zero_fallthrough', '.. py:function:: foo(aaaa)\n', {'python_maximum_signature_line_length': 0, 'maximum_signature_line_length': 1}),
+    ('pyconf', 'wrap_defaults_never_flip', '.. py:function:: foo(aaaa)\n'),
+    ('pyconf', 'single_line_parameter_list_option', '.. py:function:: foo[T](aaaa)\n   :single-line-parameter-list:\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'single_line_type_parameter_list_option', '.. py:function:: foo[T](aaaa)\n   :single-line-type-parameter-list:\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'trailing_comma_attr_both_lists', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 1}),
+    ('pyconf', 'trailing_comma_off', '.. py:function:: foo[T](aaaa)\n', {'maximum_signature_line_length': 1, 'python_trailing_comma_in_multi_line_signatures': False}),
+    ('pyconf', 'annotation_qualified_default', '.. py:function:: f(x: pkg.Cls) -> pkg.Cls\n'),
+    ('pyconf', 'unqualified_type_names', '.. py:function:: f(x: pkg.Cls) -> pkg.Cls\n', {'python_use_unqualified_type_names': True}),
+    ('pyconf', 'short_literal_types', ".. py:function:: f(x: Literal['a', 'b'] = 'a')\n", {'python_display_short_literal_types': True}),
+    ('pyconf', 'field_unqualified_type_names', '.. py:function:: f(x)\n\n   :param x: thing\n   :type x: pkg.Cls\n', {'python_use_unqualified_type_names': True}),
+    # T2 ledger closure: the add_function_parentheses seam pinned at the
+    # full parse_rst level (BlockParser -> inline roles), not just in the
+    # role unit tests.
+    ('pyconf', 'func_role_parens_off', 'Call :py:func:`mymod.myfunc` now.\n', {'add_function_parentheses': False}),
+    ('pyconf', 'func_role_written_parens_removed', 'Call :py:func:`mymod.myfunc()` now.\n', {'add_function_parentheses': False}),
+    ('pyconf', 'index_entry_parens_invariant', '.. py:function:: myfunc(x)\n\n   Body.\n', {'add_function_parentheses': False}),
+    ('pyconf', 'toc_show_parents_hide', '.. py:class:: C\n\n   .. py:method:: m(x)\n', {'toc_object_entries_show_parents': 'hide'}),
+    ('pyconf', 'toc_show_parents_all', '.. py:class:: C\n\n   .. py:method:: m(x)\n', {'toc_object_entries_show_parents': 'all'}),
+    ('pyconf', 'toc_object_entries_off', '.. py:function:: f(x)\n', {'toc_object_entries': False}),
+    # The `finally` in `ObjectDescription.run` gates `_toc_parts`/`_toc_name`
+    # for EVERY object description, std kinds included.
+    ('pyconf', 'toc_object_entries_off_confval', '.. confval:: myopt\n', {'toc_object_entries': False}),
+    ('pyconf', 'toc_object_entries_on_confval', '.. confval:: myopt\n'),
+    ('pyconf', 'toc_object_entries_off_envvar', '.. envvar:: MYVAR\n', {'toc_object_entries': False}),
+    ('pyconf', 'add_module_names_off', '.. py:function:: f(x)\n   :module: optmod\n', {'add_module_names': False}),
+    ('pyconf', 'strip_signature_backslash_on', '.. py:function:: f(a\\, b)\n', {'strip_signature_backslash': True}),
 ]
 
 
-def make_app(base: Path) -> SphinxTestApp:
+# Wave-4.5 exclusion ledger: py-domain candidate cases this corpus must NOT
+# carry, each with the evidence for why. The assert in main() keeps CASES
+# disjoint from this set; removing an entry requires re-probing the reason.
+EXCLUDED = {
+    # -- PropagateTargets-visible module shapes (plan §Scope-3: docutils
+    #    PropagateTargets is a transform this crate deliberately does not run
+    #    until wave 5; the sphinx pformat moves the module target's id onto
+    #    the NEXT body node, ours keeps it on the target) --
+    "py.module_basic": (
+        "PropagateTargets folds ids='module-mymod' onto the following desc "
+        "(target keeps refid) — propagation-visible, wave 5 [PY §1.6]"
+    ),
+    "py.module_content_and_sections": (
+        "PropagateTargets moves the module id onto the first content "
+        "paragraph AND py:module content parses with "
+        "allow_section_headings=True (nested sections unrepresentable in "
+        "this parser's nested contexts, T6 deviation 4) [PY §1.6]"
+    ),
+    "py.duplicate_modules": (
+        "PropagateTargets folds the first target's id onto the second "
+        "(sphinx: <target ids='module-0 module-dupmod'>) — propagation-"
+        "visible; the module-0 serial registration is pinned by the Rust "
+        "unit test duplicate_modules_take_the_module_0_serial in "
+        "src/rst/block.rs instead [PY §5]"
+    ),
+    # -- T6 documented divergence: retann ending in ')' --
+    "py.function_greedy_retann": (
+        "f(x) -> (int, str): py_sig_re swallows the parenthesized retann "
+        "into the arglist; sphinx's def-wrapped grammar then treats the "
+        "stray ')' as closing the def and KEEPS params [x], our arglist "
+        "grammar rejects it (silent Syntax) and pseudo-parses — documented "
+        "T6 deviation 2, node-shape divergence"
+    ),
+    # -- T5 documented conservative divergences (src/py/arglist.rs module
+    #    docs): expression forms outside the task-3 unparser subset --
+    "py.function_default_complex": (
+        "f(x=1 + 2j): complex literals are outside the task-3 expression "
+        "subset -> Err(Syntax) -> pseudo fallback renders the raw text "
+        "where sphinx ast_unparse renders '1 + 2j' — TEXTUAL divergence "
+        "(T5 report)"
+    ),
+    "py.function_default_exotic_exprs": (
+        "lambda / comparison / slice / f-string / dict-unpack defaults: "
+        "sphinx renders (or warns via NotImplementedError/ValueError) "
+        "where our expression parser errs silently into the pseudo "
+        "fallback — silent-vs-warn + shape divergence (T5 report)"
+    ),
+    # -- T3 documented conservative divergences (src/py/expr.rs) --
+    "py.function_default_exotic_strings": (
+        r"\N{...} escapes and lone-surrogate \u escapes in string "
+        "defaults: unsupported by the task-3 unparser -> Err -> pseudo "
+        "fallback (T3 report)"
+    ),
+    "py.function_sig_complexity_budget": (
+        "expressions beyond the 200-node MAX_DEPTH complexity budget err "
+        "into the fallback where CPython/sphinx succeed (T3 review fix 2)"
+    ),
+    # -- real sphinx crashes: nothing to record --
+    "sx_std.confval_bad_type_markup": (
+        ".. confval:: t + :type: *bad — the one-child system_message "
+        "inside the generated field_list CRASHES sphinx 9.1.0 "
+        "(DocFieldTransformer 'assert len(field) == 2'); no oracle output "
+        "exists by definition (T7 report)"
+    ),
+}
+
+
+def make_app(base: Path, conf: dict) -> SphinxTestApp:
     if base.exists():
         shutil.rmtree(base)
     base.mkdir(parents=True)
     (base / "conf.py").write_text(CONF_PY, encoding="utf-8")
     (base / "index.rst").write_text("Placeholder\n===========\n", encoding="utf-8")
+    assert not (set(conf) & set(CONFOVERRIDES)), (
+        f"per-case conf must not override the fixture base settings: {conf}"
+    )
     return SphinxTestApp(
         buildername="dummy",
         srcdir=base,
         status=io.StringIO(),
         warning=io.StringIO(),
-        confoverrides=dict(CONFOVERRIDES),
+        confoverrides={**CONFOVERRIDES, **conf},
     )
 
 
@@ -669,75 +1083,124 @@ def check_effective_settings(app: SphinxTestApp, doctree) -> dict:
     return effective
 
 
+def case_parts(case):
+    """A case tuple is (family, name, rst[, conf]); absent conf = defaults."""
+    family, name, rst = case[0], case[1], case[2]
+    conf = case[3] if len(case) == 4 else {}
+    assert isinstance(conf, dict), f"{family}.{name}: conf must be a dict"
+    return family, name, rst, conf
+
+
 def main() -> int:
-    names = [f"{family}.{name}" for family, name, _ in CASES]
+    names = [f"{c[0]}.{c[1]}" for c in CASES]
     assert len(names) == len(set(names)), "family-qualified case names must be unique"
-    assert len(CASES) >= 40, f"corpus degenerated: {len(CASES)} cases"
+    # Anti-truncation floors. Both the global floor and the per-family ones
+    # below were set in wave 3 against a corpus a fraction of this size and
+    # had gone dead (the wave-4 final panel filed the global >= 40 against
+    # 314 cases; the family floors summed to 119). Wave-4.5 task 16 raises
+    # them to ~85-90% of the committed corpus, the same bar task 14 applied
+    # to the env fixture: enough headroom to reorganize a family, not enough
+    # to delete one silently. Corpus policy is EXTEND-only, so a regen that
+    # trips a floor means cases were lost, not that the floor is stale.
+    assert len(CASES) >= 400, f"corpus degenerated: {len(CASES)} cases"
+
+    for reason in EXCLUDED.values():
+        assert reason.strip(), "every exclusion entry needs its reason"
+    hit = set(names) & set(EXCLUDED)
+    assert not hit, f"excluded cases must not join the corpus: {sorted(hit)}"
 
     floors = {
-        "sx_plain": 15,
-        "sx_admonitions": 10,
+        "sx_plain": 140,
+        "sx_admonitions": 34,
         "sx_body": 30,
-        "sx_image": 6,
-        "sx_directives": 18,
-        "sx_roles": 6,
-        "sx_std": 12,
+        "sx_image": 8,
+        "sx_directives": 46,
+        "sx_roles": 19,
+        "sx_std": 25,
+        "py": 49,
+        "pysig": 30,
+        "pyconf": 30,
     }
     counts: dict = {}
-    for family, _, _ in CASES:
-        counts[family] = counts.get(family, 0) + 1
+    for case in CASES:
+        counts[case[0]] = counts.get(case[0], 0) + 1
     assert set(counts) == set(floors), f"unexpected families: {sorted(counts)}"
     for family, floor in floors.items():
         assert counts.get(family, 0) >= floor, (
             f"family {family}: {counts.get(family, 0)} < floor {floor}"
         )
 
-    # resolve(): on macOS mkdtemp returns /var/... while Sphinx resolves the
-    # srcdir to /private/var/...; the path-normalization replace must match.
-    base = Path(tempfile.mkdtemp(prefix="sphinx_oracle_srcdir_")).resolve() / "src"
+    # Group cases by DISTINCT conf: one SphinxTestApp per group (mirrors the
+    # [SIG] appendix probe scripts without spinning one app per case). The
+    # default group ({}) always exists and provides the settings header.
+    groups: dict = {}  # conf_key -> (conf, [(family, name, rst), ...])
+    for case in CASES:
+        family, name, rst, conf = case_parts(case)
+        key = json.dumps(conf, sort_keys=True)
+        groups.setdefault(key, (conf, []))[1].append((family, name, rst))
+    assert "{}" in groups, "the default-conf group must exist"
 
-    with docutils_namespace(), patch_docutils(str(base)):
-        app = make_app(base)
-        try:
-            settings_record = check_effective_settings(app, probe(app, base, "sanity\n"))
+    settings_record = None
+    results: dict = {}  # "family.name" -> case record
+    bad = []
+    for key in sorted(groups, key=lambda k: (k != "{}", k)):
+        conf, group_cases = groups[key]
+        # resolve(): on macOS mkdtemp returns /var/... while Sphinx resolves
+        # the srcdir to /private/var/...; path normalization must match.
+        base = Path(tempfile.mkdtemp(prefix="sphinx_oracle_srcdir_")).resolve() / "src"
+        with docutils_namespace(), patch_docutils(str(base)):
+            app = make_app(base, conf)
+            try:
+                # The base settings assertions hold for EVERY app: per-case
+                # conf keys never touch the pinned docutils settings.
+                record = check_effective_settings(app, probe(app, base, "sanity\n"))
+                if key == "{}":
+                    settings_record = record
 
-            out_cases = []
-            bad = []
-            for family, name, rst in CASES:
-                doctree = probe(app, base, rst)
-                stray = {node.tagname for node in doctree.findall()} - SUPPORTED_KINDS
-                if stray:
-                    bad.append(f"{family}.{name}: unsupported kinds {sorted(stray)}")
-                    continue
-                pseudo = normalize(doctree.pformat(), base)
-                assert pseudo.startswith(f'<document source="{SOURCE_TOKEN}">\n'), (
-                    f"{family}.{name}: unexpected document start tag:\n{pseudo}"
-                )
-                out_cases.append(
-                    {
+                for family, name, rst in group_cases:
+                    doctree = probe(app, base, rst)
+                    stray = {n.tagname for n in doctree.findall()} - SUPPORTED_KINDS
+                    if stray:
+                        bad.append(f"{family}.{name}: unsupported kinds {sorted(stray)}")
+                        continue
+                    pseudo = normalize(doctree.pformat(), base)
+                    assert pseudo.startswith(f'<document source="{SOURCE_TOKEN}">\n'), (
+                        f"{family}.{name}: unexpected document start tag:\n{pseudo}"
+                    )
+                    record_case = {
                         "name": f"{family}.{name}",
                         "family": family,
                         "rst": rst,
                         "pseudo_xml": pseudo,
                     }
-                )
-            if bad:
-                print("CORPUS SCOPE VIOLATIONS:", file=sys.stderr)
-                for b in bad:
-                    print(f"  {b}", file=sys.stderr)
-                return 1
+                    if conf:
+                        record_case["conf"] = conf
+                    results[f"{family}.{name}"] = record_case
 
-            # In-process determinism check: a second full pass over the corpus
-            # must be byte-identical (catches cross-case env leakage).
-            for case in out_cases:
-                again = normalize(probe(app, base, case["rst"]).pformat(), base)
-                assert again == case["pseudo_xml"], (
-                    f"{case['name']}: second parse differs (cross-case state leak?)\n"
-                    f"--- first ---\n{case['pseudo_xml']}\n--- second ---\n{again}"
-                )
-        finally:
-            app.cleanup()
-            shutil.rmtree(base.parent, ignore_errors=True)
+                # In-process determinism check: a second pass over the group
+                # must be byte-identical (catches cross-case env leakage).
+                for family, name, rst in group_cases:
+                    case_name = f"{family}.{name}"
+                    if case_name not in results:
+                        continue  # scope violation above
+                    again = normalize(probe(app, base, rst).pformat(), base)
+                    assert again == results[case_name]["pseudo_xml"], (
+                        f"{case_name}: second parse differs (cross-case state "
+                        f"leak?)\n--- first ---\n{results[case_name]['pseudo_xml']}"
+                        f"\n--- second ---\n{again}"
+                    )
+            finally:
+                app.cleanup()
+                shutil.rmtree(base.parent, ignore_errors=True)
+
+    if bad:
+        print("CORPUS SCOPE VIOLATIONS:", file=sys.stderr)
+        for b in bad:
+            print(f"  {b}", file=sys.stderr)
+        return 1
+
+    # Emit in CASES order regardless of the conf grouping above.
+    out_cases = [results[name] for name in names]
 
     fixture = {
         "docutils_version": docutils.__version__,
@@ -749,6 +1212,11 @@ def main() -> int:
             "full dummy-builder build + env.get_doctree)"
         ),
         "settings": settings_record,
+        "conf_semantics": (
+            "a case's optional 'conf' dict is confoverrides applied on top "
+            "of the base settings above; absent = defaults. The consumer "
+            "maps every key onto ParseOptions.py and errors on unmapped keys."
+        ),
         "normalizations": [
             f"srcdir index.rst absolute path -> {SOURCE_TOKEN}",
             "document translation_progress attribute stripped "

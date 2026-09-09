@@ -7,6 +7,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -22,6 +23,7 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "a1": [],
@@ -29,6 +31,12 @@
           "b": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -150,6 +158,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "pages/a": [
             "index"
@@ -159,11 +168,18 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "index": [],
           "pages/a": [],
           "pages/b": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "index": [
             null,
@@ -263,6 +279,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -272,11 +289,18 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "b": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -393,16 +417,29 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/pic.png",
+            "<project>/pic2.png"
+          ]
+        },
         "files_to_rebuild": {
           "a": [
             "index"
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -543,16 +580,24 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -644,6 +689,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "b",
@@ -654,11 +700,18 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "b": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": null,
         "resolved_pformat": {
           "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph classes=\"current\" iscurrent=\"1\" toctree=\"1\">\n                <bullet_list classes=\"current\" iscurrent=\"1\">\n                    <list_item classes=\"toctree-l1 current\" iscurrent=\"1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n                        <bullet_list classes=\"current\" iscurrent=\"1\">\n                            <list_item classes=\"toctree-l2 current\" iscurrent=\"1\">\n                                <compact_paragraph classes=\"toctree-l2 current\" iscurrent=\"1\">\n                                    <reference anchorname=\"\" classes=\"current\" internal=\"1\" iscurrent=\"1\" refuri=\"\">\n                                        A\n                                <bullet_list>\n",
@@ -751,6 +804,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -764,12 +818,19 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "b": [],
           "c": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -884,18 +945,26 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "included": [
             "index"
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "included": [],
           "index": [],
           "non_orphan": [],
           "orphan": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "included": [
             "index",
@@ -1000,6 +1069,11 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/pic.png"
+          ]
+        },
         "files_to_rebuild": {
           "a": [
             "index"
@@ -1009,11 +1083,18 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "b": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -1161,6 +1242,11 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/pic.png"
+          ]
+        },
         "files_to_rebuild": {
           "a": [
             "index"
@@ -1170,11 +1256,18 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "b": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -1286,6 +1379,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -1295,11 +1389,18 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "b": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -1410,6 +1511,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -1452,6 +1554,7 @@
             "group": "T"
           }
         ],
+        "included": {},
         "index_entries": {
           "a": [
             [
@@ -1472,6 +1575,12 @@
           "b": [],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -1595,6 +1704,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -1782,6 +1892,7 @@
             "group": "M"
           }
         ],
+        "included": {},
         "index_entries": {
           "a": [
             [
@@ -1838,6 +1949,12 @@
           ],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -1971,6 +2088,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -2169,6 +2287,7 @@
             "group": "W"
           }
         ],
+        "included": {},
         "index_entries": {
           "a": [
             [
@@ -2230,6 +2349,12 @@
           ],
           "index": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -2319,6 +2444,7 @@
         "smartquotes": false
       },
       "expect": {
+        "dependencies": {},
         "files_to_rebuild": {
           "a": [
             "index"
@@ -2331,12 +2457,19 @@
           ]
         },
         "genindex": [],
+        "included": {},
         "index_entries": {
           "a": [],
           "index": [],
           "sub/b": [],
           "sub/c": []
         },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
         "relations": {
           "a": [
             "index",
@@ -2442,6 +2575,3680 @@
         "sub/c": "Sub C\n=====\n\nLeaf content for sub/c.\n"
       },
       "name": "doc_refs"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ],
+          "b": [
+            "index"
+          ]
+        },
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "alpha.same() (in module zmod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#zmod.alpha.same"
+                  ]
+                ]
+              }
+            ],
+            "group": "A"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "helper() (in module zmod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#zmod.helper"
+                  ]
+                ]
+              }
+            ],
+            "group": "H"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "module",
+                "subitems": [
+                  {
+                    "name": "zmod",
+                    "targets": [
+                      [
+                        "",
+                        "#module-zmod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "M"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "render() (zmod.Widget method)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#zmod.Widget.render"
+                  ]
+                ]
+              }
+            ],
+            "group": "R"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "Widget (class in zmod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#zmod.Widget"
+                  ]
+                ]
+              }
+            ],
+            "group": "W"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "zeta.same() (in module zmod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#zmod.zeta.same"
+                  ]
+                ]
+              },
+              {
+                "category_key": null,
+                "name": "zmod",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-zmod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "Z"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "a": [
+            [
+              "pair",
+              "module; zmod",
+              "module-zmod",
+              "",
+              null
+            ],
+            [
+              "single",
+              "Widget (class in zmod)",
+              "zmod.Widget",
+              "",
+              null
+            ],
+            [
+              "single",
+              "render() (zmod.Widget method)",
+              "zmod.Widget.render",
+              "",
+              null
+            ],
+            [
+              "single",
+              "zeta.same() (in module zmod)",
+              "zmod.zeta.same",
+              "",
+              null
+            ],
+            [
+              "single",
+              "alpha.same() (in module zmod)",
+              "zmod.alpha.same",
+              "",
+              null
+            ],
+            [
+              "single",
+              "helper() (in module zmod)",
+              "zmod.helper",
+              "",
+              null
+            ]
+          ],
+          "b": [],
+          "index": []
+        },
+        "py_modindex": {
+          "collapse": true,
+          "groups": [
+            {
+              "entries": [
+                {
+                  "anchor": "module-zmod",
+                  "descr": "",
+                  "docname": "a",
+                  "extra": "",
+                  "name": "zmod",
+                  "qualifier": "",
+                  "subtype": 0
+                }
+              ],
+              "letter": "z"
+            }
+          ]
+        },
+        "py_modules": [
+          {
+            "deprecated": false,
+            "docname": "a",
+            "name": "zmod",
+            "node_id": "module-zmod",
+            "platform": "",
+            "synopsis": ""
+          }
+        ],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "a",
+            "name": "zmod",
+            "node_id": "module-zmod",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "a",
+            "name": "zmod.Widget",
+            "node_id": "zmod.Widget",
+            "objtype": "class"
+          },
+          {
+            "aliased": false,
+            "docname": "a",
+            "name": "zmod.Widget.render",
+            "node_id": "zmod.Widget.render",
+            "objtype": "method"
+          },
+          {
+            "aliased": false,
+            "docname": "a",
+            "name": "zmod.zeta.same",
+            "node_id": "zmod.zeta.same",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "a",
+            "name": "zmod.alpha.same",
+            "node_id": "zmod.alpha.same",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "a",
+            "name": "zmod.helper",
+            "node_id": "zmod.helper",
+            "objtype": "function"
+          }
+        ],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            "b"
+          ],
+          "b": [
+            "index",
+            "a",
+            null
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"module-zmod a\" names=\"a\">\n        <title>\n            A\n        <index entries=\"('pair',\\ 'module;\\ zmod',\\ 'module-zmod',\\ '',\\ None)\">\n        <index entries=\"('single',\\ 'Widget\\ (class\\ in\\ zmod)',\\ 'zmod.Widget',\\ '',\\ None)\">\n        <desc classes=\"py class\" desctype=\"class\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"class\">\n            <desc_signature _toc_name=\"Widget\" _toc_parts=\"('zmod', 'Widget')\" class=\"\" classes=\"sig sig-object py\" fullname=\"Widget\" ids=\"zmod.Widget\" module=\"zmod\">\n                <desc_annotation xml:space=\"preserve\">\n                    <desc_sig_keyword classes=\"k\">\n                        class\n                    <desc_sig_space classes=\"w\">\n                         \n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    zmod.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    Widget\n            <desc_content>\n                <index entries=\"('single',\\ 'render()\\ (zmod.Widget\\ method)',\\ 'zmod.Widget.render',\\ '',\\ None)\">\n                <desc classes=\"py method\" desctype=\"method\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"method\">\n                    <desc_signature _toc_name=\"Widget.render()\" _toc_parts=\"('zmod', 'Widget', 'render')\" class=\"Widget\" classes=\"sig sig-object py\" fullname=\"Widget.render\" ids=\"zmod.Widget.render\" module=\"zmod\">\n                        <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                            render\n                        <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                            <desc_parameter xml:space=\"preserve\">\n                                <desc_sig_name classes=\"n\">\n                                    x\n                    <desc_content>\n        <index entries=\"('single',\\ 'zeta.same()\\ (in\\ module\\ zmod)',\\ 'zmod.zeta.same',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"zeta.same()\" _toc_parts=\"('zmod', 'zeta', 'same')\" class=\"zeta\" classes=\"sig sig-object py\" fullname=\"zeta.same\" ids=\"zmod.zeta.same\" module=\"zmod\">\n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    zeta.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    same\n                <desc_parameterlist xml:space=\"preserve\">\n            <desc_content>\n        <index entries=\"('single',\\ 'alpha.same()\\ (in\\ module\\ zmod)',\\ 'zmod.alpha.same',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"alpha.same()\" _toc_parts=\"('zmod', 'alpha', 'same')\" class=\"alpha\" classes=\"sig sig-object py\" fullname=\"alpha.same\" ids=\"zmod.alpha.same\" module=\"zmod\">\n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    alpha.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    same\n                <desc_parameterlist xml:space=\"preserve\">\n            <desc_content>\n        <index entries=\"('single',\\ 'helper()\\ (in\\ module\\ zmod)',\\ 'zmod.helper',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"helper()\" _toc_parts=\"('zmod', 'helper')\" class=\"\" classes=\"sig sig-object py\" fullname=\"helper\" ids=\"zmod.helper\" module=\"zmod\">\n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    zmod.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    helper\n                <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                    <desc_parameter xml:space=\"preserve\">\n                        <desc_sig_name classes=\"n\">\n                            arg\n                        <desc_sig_operator classes=\"o\">\n                            =\n                        <inline classes=\"default_value\" support_smartquotes=\"0\">\n                            1\n            <desc_content>\n",
+          "b": "<document source=\"<project>/b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"b\" names=\"b\">\n        <title>\n            B\n        <paragraph>\n            See \n            <reference internal=\"1\" reftitle=\"zmod.Widget\" refuri=\"#zmod.Widget\">\n                <literal classes=\"xref py py-class\">\n                    zmod.Widget\n             and \n            <reference internal=\"1\" reftitle=\"zmod.Widget.render\" refuri=\"#zmod.Widget.render\">\n                <literal classes=\"xref py py-meth\">\n                    render()\n             and\n            <reference internal=\"1\" reftitle=\"zmod.helper\" refuri=\"#zmod.helper\">\n                <literal classes=\"xref py py-func\">\n                    zmod.helper()\n             and \n            <reference internal=\"1\" reftitle=\"zmod\" refuri=\"#module-zmod\">\n                <literal classes=\"xref py py-mod\">\n                    zmod\n             and \n            <reference internal=\"1\" reftitle=\"zmod.zeta.same\" refuri=\"#zmod.zeta.same\">\n                <literal classes=\"xref py py-func\">\n                    same()\n            .\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#zmod.Widget\" internal=\"1\" refuri=\"#zmod.Widget\">\n                                        <literal>\n                                            Widget\n                                <bullet_list>\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#zmod.Widget.render\" internal=\"1\" refuri=\"#zmod.Widget.render\">\n                                                <literal>\n                                                    Widget.render()\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#zmod.zeta.same\" internal=\"1\" refuri=\"#zmod.zeta.same\">\n                                        <literal>\n                                            zeta.same()\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#zmod.alpha.same\" internal=\"1\" refuri=\"#zmod.alpha.same\">\n                                        <literal>\n                                            alpha.same()\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#zmod.helper\" internal=\"1\" refuri=\"#zmod.helper\">\n                                        <literal>\n                                            helper()\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 6,
+          "b": 1,
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#zmod.Widget\" internal=\"1\" refuri=\"a\">\n                        <literal>\n                            Widget\n                <bullet_list>\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#zmod.Widget.render\" internal=\"1\" refuri=\"a\">\n                                <literal>\n                                    Widget.render()\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#zmod.zeta.same\" internal=\"1\" refuri=\"a\">\n                        <literal>\n                            zeta.same()\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#zmod.alpha.same\" internal=\"1\" refuri=\"a\">\n                        <literal>\n                            alpha.same()\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#zmod.helper\" internal=\"1\" refuri=\"a\">\n                        <literal>\n                            helper()\n",
+          "b": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"b\">\n                B\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a') (None,\\ 'b')\" glob=\"0\" hidden=\"0\" includefiles=\"a b\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a",
+            "b"
+          ]
+        },
+        "warnings": [
+          "<project>/b.rst:4: WARNING: more than one target found for cross-reference 'same': zmod.zeta.same, zmod.alpha.same [ref.python]"
+        ]
+      },
+      "files": {
+        "a": "A\n=\n\n.. py:module:: zmod\n\n.. py:class:: Widget\n\n   .. py:method:: render(x)\n\n.. py:function:: zeta.same()\n\n.. py:function:: alpha.same()\n\n.. py:function:: helper(arg=1)\n",
+        "b": "B\n=\n\nSee :py:class:`zmod.Widget` and :py:meth:`~zmod.Widget.render` and\n:py:func:`zmod.helper` and :py:mod:`zmod` and :py:func:`.same`.\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n   b\n"
+      },
+      "name": "py_basic"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ],
+          "b": [
+            "index"
+          ]
+        },
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "built-in function",
+                "subitems": [
+                  {
+                    "name": "dupfn()",
+                    "targets": [
+                      [
+                        "",
+                        "#dupfn"
+                      ],
+                      [
+                        "",
+                        "#dupfn"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "B"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "dupfn()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#dupfn"
+                      ],
+                      [
+                        "",
+                        "#dupfn"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "dupmod",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-0"
+                      ],
+                      [
+                        "",
+                        "#module-dupmod"
+                      ],
+                      [
+                        "",
+                        "#module-dupmod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "D"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "Keeper (built-in class)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#Keeper"
+                  ]
+                ]
+              }
+            ],
+            "group": "K"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "module",
+                "subitems": [
+                  {
+                    "name": "dupmod",
+                    "targets": [
+                      [
+                        "",
+                        "#module-0"
+                      ],
+                      [
+                        "",
+                        "#module-dupmod"
+                      ],
+                      [
+                        "",
+                        "#module-dupmod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "M"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "a": [
+            [
+              "pair",
+              "built-in function; dupfn()",
+              "dupfn",
+              "",
+              null
+            ],
+            [
+              "single",
+              "Keeper (built-in class)",
+              "Keeper",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; dupmod",
+              "module-dupmod",
+              "",
+              null
+            ]
+          ],
+          "b": [
+            [
+              "pair",
+              "built-in function; dupfn()",
+              "dupfn",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; dupmod",
+              "module-dupmod",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; dupmod",
+              "module-0",
+              "",
+              null
+            ]
+          ],
+          "index": []
+        },
+        "py_modindex": {
+          "collapse": true,
+          "groups": [
+            {
+              "entries": [
+                {
+                  "anchor": "module-0",
+                  "descr": "",
+                  "docname": "b",
+                  "extra": "",
+                  "name": "dupmod",
+                  "qualifier": "",
+                  "subtype": 0
+                }
+              ],
+              "letter": "d"
+            }
+          ]
+        },
+        "py_modules": [
+          {
+            "deprecated": false,
+            "docname": "b",
+            "name": "dupmod",
+            "node_id": "module-0",
+            "platform": "",
+            "synopsis": ""
+          }
+        ],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "b",
+            "name": "dupfn",
+            "node_id": "dupfn",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "a",
+            "name": "Keeper",
+            "node_id": "Keeper",
+            "objtype": "class"
+          },
+          {
+            "aliased": false,
+            "docname": "b",
+            "name": "dupmod",
+            "node_id": "module-0",
+            "objtype": "module"
+          }
+        ],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            "b"
+          ],
+          "b": [
+            "index",
+            "a",
+            null
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <index entries=\"('pair',\\ 'built-in\\ function;\\ dupfn()',\\ 'dupfn',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"dupfn()\" _toc_parts=\"('dupfn',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"dupfn\" ids=\"dupfn\" module=\"True\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    dupfn\n                <desc_parameterlist xml:space=\"preserve\">\n            <desc_content>\n        <index entries=\"('single',\\ 'Keeper\\ (built-in\\ class)',\\ 'Keeper',\\ '',\\ None)\">\n        <desc classes=\"py class\" desctype=\"class\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"class\">\n            <desc_signature _toc_name=\"Keeper\" _toc_parts=\"('Keeper',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"Keeper\" ids=\"Keeper\" module=\"True\">\n                <desc_annotation xml:space=\"preserve\">\n                    <desc_sig_keyword classes=\"k\">\n                        class\n                    <desc_sig_space classes=\"w\">\n                         \n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    Keeper\n            <desc_content>\n        <index entries=\"('pair',\\ 'module;\\ dupmod',\\ 'module-dupmod',\\ '',\\ None)\">\n        <target ids=\"module-dupmod\" ismod=\"1\">\n",
+          "b": "<document source=\"<project>/b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"b\" names=\"b\">\n        <title>\n            B\n        <index entries=\"('pair',\\ 'built-in\\ function;\\ dupfn()',\\ 'dupfn',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"dupfn()\" _toc_parts=\"('dupfn',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"dupfn\" ids=\"dupfn\" module=\"True\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    dupfn\n                <desc_parameterlist xml:space=\"preserve\">\n            <desc_content>\n        <index entries=\"('pair',\\ 'module;\\ dupmod',\\ 'module-dupmod',\\ '',\\ None)\">\n        <index entries=\"('pair',\\ 'module;\\ dupmod',\\ 'module-0',\\ '',\\ None)\">\n        <target ismod=\"1\" refid=\"module-dupmod\">\n        <target ids=\"module-0 module-dupmod\" ismod=\"1\">\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#dupfn\" internal=\"1\" refuri=\"#dupfn\">\n                                        <literal>\n                                            dupfn()\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#Keeper\" internal=\"1\" refuri=\"#Keeper\">\n                                        <literal>\n                                            Keeper\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#dupfn\" internal=\"1\" refuri=\"#dupfn\">\n                                        <literal>\n                                            dupfn()\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 3,
+          "b": 2,
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#dupfn\" internal=\"1\" refuri=\"a\">\n                        <literal>\n                            dupfn()\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#Keeper\" internal=\"1\" refuri=\"a\">\n                        <literal>\n                            Keeper\n",
+          "b": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"b\">\n                B\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#dupfn\" internal=\"1\" refuri=\"b\">\n                        <literal>\n                            dupfn()\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a') (None,\\ 'b')\" glob=\"0\" hidden=\"0\" includefiles=\"a b\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a",
+            "b"
+          ]
+        },
+        "warnings": [
+          "<project>/b.rst:4: WARNING: duplicate object description of dupfn, other instance in a, use :no-index: for one of them",
+          "<project>/b.rst:6: WARNING: duplicate object description of dupmod, other instance in a, use :no-index: for one of them",
+          "<project>/b.rst:8: WARNING: duplicate object description of dupmod, other instance in b, use :no-index: for one of them"
+        ]
+      },
+      "files": {
+        "a": "A\n=\n\n.. py:function:: dupfn()\n\n.. py:class:: Keeper\n\n.. py:module:: dupmod\n",
+        "b": "B\n=\n\n.. py:function:: dupfn()\n\n.. py:module:: dupmod\n\n.. py:module:: dupmod\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n   b\n"
+      },
+      "name": "py_dup"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {
+          "mod": [
+            "index"
+          ]
+        },
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "module",
+                "subitems": [
+                  {
+                    "name": "pkg.mymod",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.mymod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "my_func() (in module pkg.mymod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#pkg.mymod.my_func"
+                  ]
+                ]
+              },
+              {
+                "category_key": null,
+                "name": "my_method() (pkg.mymod.MyClass method)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#pkg.mymod.MyClass.my_method"
+                  ]
+                ]
+              },
+              {
+                "category_key": null,
+                "name": "MyClass (class in pkg.mymod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#pkg.mymod.MyClass"
+                  ]
+                ]
+              }
+            ],
+            "group": "M"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "pkg.mymod",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.mymod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "P"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "index": [],
+          "mod": [
+            [
+              "pair",
+              "module; pkg.mymod",
+              "module-pkg.mymod",
+              "",
+              null
+            ],
+            [
+              "single",
+              "MyClass (class in pkg.mymod)",
+              "pkg.mymod.MyClass",
+              "",
+              null
+            ],
+            [
+              "single",
+              "my_method() (pkg.mymod.MyClass method)",
+              "pkg.mymod.MyClass.my_method",
+              "",
+              null
+            ],
+            [
+              "single",
+              "my_func() (in module pkg.mymod)",
+              "pkg.mymod.my_func",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": [
+            {
+              "entries": [
+                {
+                  "anchor": "",
+                  "descr": "",
+                  "docname": "",
+                  "extra": "",
+                  "name": "pkg",
+                  "qualifier": "",
+                  "subtype": 1
+                },
+                {
+                  "anchor": "module-pkg.mymod",
+                  "descr": "",
+                  "docname": "mod",
+                  "extra": "",
+                  "name": "pkg.mymod",
+                  "qualifier": "",
+                  "subtype": 2
+                }
+              ],
+              "letter": "p"
+            }
+          ]
+        },
+        "py_modules": [
+          {
+            "deprecated": false,
+            "docname": "mod",
+            "name": "pkg.mymod",
+            "node_id": "module-pkg.mymod",
+            "platform": "",
+            "synopsis": ""
+          }
+        ],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod",
+            "node_id": "module-pkg.mymod",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod.MyClass",
+            "node_id": "pkg.mymod.MyClass",
+            "objtype": "class"
+          },
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod.MyClass.my_method",
+            "node_id": "pkg.mymod.MyClass.my_method",
+            "objtype": "method"
+          },
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod.my_func",
+            "node_id": "pkg.mymod.my_func",
+            "objtype": "function"
+          }
+        ],
+        "relations": {
+          "index": [
+            null,
+            null,
+            "mod"
+          ],
+          "mod": [
+            "index",
+            "index",
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                Mod\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#pkg.mymod.MyClass\" internal=\"1\" refuri=\"#pkg.mymod.MyClass\">\n                                        <literal>\n                                            MyClass\n                                <bullet_list>\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#pkg.mymod.MyClass.my_method\" internal=\"1\" refuri=\"#pkg.mymod.MyClass.my_method\">\n                                                <literal>\n                                                    MyClass.my_method()\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#pkg.mymod.my_func\" internal=\"1\" refuri=\"#pkg.mymod.my_func\">\n                                        <literal>\n                                            my_func()\n",
+          "mod": "<document source=\"<project>/mod.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"module-pkg.mymod mod\" names=\"mod\">\n        <title>\n            Mod\n        <index entries=\"('pair',\\ 'module;\\ pkg.mymod',\\ 'module-pkg.mymod',\\ '',\\ None)\">\n        <index entries=\"('single',\\ 'MyClass\\ (class\\ in\\ pkg.mymod)',\\ 'pkg.mymod.MyClass',\\ '',\\ None)\">\n        <desc classes=\"py class\" desctype=\"class\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"class\">\n            <desc_signature _toc_name=\"MyClass\" _toc_parts=\"('pkg.mymod', 'MyClass')\" class=\"\" classes=\"sig sig-object py\" fullname=\"MyClass\" ids=\"pkg.mymod.MyClass\" module=\"pkg.mymod\">\n                <desc_annotation xml:space=\"preserve\">\n                    <desc_sig_keyword classes=\"k\">\n                        class\n                    <desc_sig_space classes=\"w\">\n                         \n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    pkg.mymod.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    MyClass\n            <desc_content>\n                <paragraph>\n                    Class body.\n                <index entries=\"('single',\\ 'my_method()\\ (pkg.mymod.MyClass\\ method)',\\ 'pkg.mymod.MyClass.my_method',\\ '',\\ None)\">\n                <desc classes=\"py method\" desctype=\"method\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"method\">\n                    <desc_signature _toc_name=\"MyClass.my_method()\" _toc_parts=\"('pkg.mymod', 'MyClass', 'my_method')\" class=\"MyClass\" classes=\"sig sig-object py\" fullname=\"MyClass.my_method\" ids=\"pkg.mymod.MyClass.my_method\" module=\"pkg.mymod\">\n                        <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                            my_method\n                        <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                            <desc_parameter xml:space=\"preserve\">\n                                <desc_sig_name classes=\"n\">\n                                    arg\n                    <desc_content>\n                        <paragraph>\n                            Method body.\n        <index entries=\"('single',\\ 'my_func()\\ (in\\ module\\ pkg.mymod)',\\ 'pkg.mymod.my_func',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"my_func()\" _toc_parts=\"('pkg.mymod', 'my_func')\" class=\"\" classes=\"sig sig-object py\" fullname=\"my_func\" ids=\"pkg.mymod.my_func\" module=\"pkg.mymod\">\n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    pkg.mymod.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    my_func\n                <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                    <desc_parameter xml:space=\"preserve\">\n                        <desc_sig_name classes=\"n\">\n                            x\n            <desc_content>\n                <paragraph>\n                    Function body.\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1,
+          "mod": 4
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'mod')\" glob=\"0\" hidden=\"0\" includefiles=\"mod\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "mod": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"mod\">\n                Mod\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#pkg.mymod.MyClass\" internal=\"1\" refuri=\"mod\">\n                        <literal>\n                            MyClass\n                <bullet_list>\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#pkg.mymod.MyClass.my_method\" internal=\"1\" refuri=\"mod\">\n                                <literal>\n                                    MyClass.my_method()\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#pkg.mymod.my_func\" internal=\"1\" refuri=\"mod\">\n                        <literal>\n                            my_func()\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "mod"
+          ]
+        },
+        "warnings": []
+      },
+      "files": {
+        "index": "Index\n=====\n\n.. toctree::\n\n   mod\n",
+        "mod": "Mod\n===\n\n.. py:module:: pkg.mymod\n\n.. py:class:: MyClass\n\n   Class body.\n\n   .. py:method:: my_method(arg)\n\n      Method body.\n\n.. py:function:: my_func(x)\n\n   Function body.\n"
+      },
+      "name": "py_toc"
+    },
+    {
+      "conf": {
+        "smartquotes": false,
+        "toc_object_entries_show_parents": "all"
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {
+          "mod": [
+            "index"
+          ]
+        },
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "module",
+                "subitems": [
+                  {
+                    "name": "pkg.mymod",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.mymod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "my_func() (in module pkg.mymod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#pkg.mymod.my_func"
+                  ]
+                ]
+              },
+              {
+                "category_key": null,
+                "name": "my_method() (pkg.mymod.MyClass method)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#pkg.mymod.MyClass.my_method"
+                  ]
+                ]
+              },
+              {
+                "category_key": null,
+                "name": "MyClass (class in pkg.mymod)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#pkg.mymod.MyClass"
+                  ]
+                ]
+              }
+            ],
+            "group": "M"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "pkg.mymod",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.mymod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "P"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "index": [],
+          "mod": [
+            [
+              "pair",
+              "module; pkg.mymod",
+              "module-pkg.mymod",
+              "",
+              null
+            ],
+            [
+              "single",
+              "MyClass (class in pkg.mymod)",
+              "pkg.mymod.MyClass",
+              "",
+              null
+            ],
+            [
+              "single",
+              "my_method() (pkg.mymod.MyClass method)",
+              "pkg.mymod.MyClass.my_method",
+              "",
+              null
+            ],
+            [
+              "single",
+              "my_func() (in module pkg.mymod)",
+              "pkg.mymod.my_func",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": [
+            {
+              "entries": [
+                {
+                  "anchor": "",
+                  "descr": "",
+                  "docname": "",
+                  "extra": "",
+                  "name": "pkg",
+                  "qualifier": "",
+                  "subtype": 1
+                },
+                {
+                  "anchor": "module-pkg.mymod",
+                  "descr": "",
+                  "docname": "mod",
+                  "extra": "",
+                  "name": "pkg.mymod",
+                  "qualifier": "",
+                  "subtype": 2
+                }
+              ],
+              "letter": "p"
+            }
+          ]
+        },
+        "py_modules": [
+          {
+            "deprecated": false,
+            "docname": "mod",
+            "name": "pkg.mymod",
+            "node_id": "module-pkg.mymod",
+            "platform": "",
+            "synopsis": ""
+          }
+        ],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod",
+            "node_id": "module-pkg.mymod",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod.MyClass",
+            "node_id": "pkg.mymod.MyClass",
+            "objtype": "class"
+          },
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod.MyClass.my_method",
+            "node_id": "pkg.mymod.MyClass.my_method",
+            "objtype": "method"
+          },
+          {
+            "aliased": false,
+            "docname": "mod",
+            "name": "pkg.mymod.my_func",
+            "node_id": "pkg.mymod.my_func",
+            "objtype": "function"
+          }
+        ],
+        "relations": {
+          "index": [
+            null,
+            null,
+            "mod"
+          ],
+          "mod": [
+            "index",
+            "index",
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                Mod\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#pkg.mymod.MyClass\" internal=\"1\" refuri=\"#pkg.mymod.MyClass\">\n                                        <literal>\n                                            pkg.mymod.MyClass\n                                <bullet_list>\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#pkg.mymod.MyClass.my_method\" internal=\"1\" refuri=\"#pkg.mymod.MyClass.my_method\">\n                                                <literal>\n                                                    pkg.mymod.MyClass.my_method()\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\" skip_section_number=\"1\">\n                                    <reference anchorname=\"#pkg.mymod.my_func\" internal=\"1\" refuri=\"#pkg.mymod.my_func\">\n                                        <literal>\n                                            pkg.mymod.my_func()\n",
+          "mod": "<document source=\"<project>/mod.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"module-pkg.mymod mod\" names=\"mod\">\n        <title>\n            Mod\n        <index entries=\"('pair',\\ 'module;\\ pkg.mymod',\\ 'module-pkg.mymod',\\ '',\\ None)\">\n        <index entries=\"('single',\\ 'MyClass\\ (class\\ in\\ pkg.mymod)',\\ 'pkg.mymod.MyClass',\\ '',\\ None)\">\n        <desc classes=\"py class\" desctype=\"class\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"class\">\n            <desc_signature _toc_name=\"pkg.mymod.MyClass\" _toc_parts=\"('pkg.mymod', 'MyClass')\" class=\"\" classes=\"sig sig-object py\" fullname=\"MyClass\" ids=\"pkg.mymod.MyClass\" module=\"pkg.mymod\">\n                <desc_annotation xml:space=\"preserve\">\n                    <desc_sig_keyword classes=\"k\">\n                        class\n                    <desc_sig_space classes=\"w\">\n                         \n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    pkg.mymod.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    MyClass\n            <desc_content>\n                <paragraph>\n                    Class body.\n                <index entries=\"('single',\\ 'my_method()\\ (pkg.mymod.MyClass\\ method)',\\ 'pkg.mymod.MyClass.my_method',\\ '',\\ None)\">\n                <desc classes=\"py method\" desctype=\"method\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"method\">\n                    <desc_signature _toc_name=\"pkg.mymod.MyClass.my_method()\" _toc_parts=\"('pkg.mymod', 'MyClass', 'my_method')\" class=\"MyClass\" classes=\"sig sig-object py\" fullname=\"MyClass.my_method\" ids=\"pkg.mymod.MyClass.my_method\" module=\"pkg.mymod\">\n                        <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                            my_method\n                        <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                            <desc_parameter xml:space=\"preserve\">\n                                <desc_sig_name classes=\"n\">\n                                    arg\n                    <desc_content>\n                        <paragraph>\n                            Method body.\n        <index entries=\"('single',\\ 'my_func()\\ (in\\ module\\ pkg.mymod)',\\ 'pkg.mymod.my_func',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"pkg.mymod.my_func()\" _toc_parts=\"('pkg.mymod', 'my_func')\" class=\"\" classes=\"sig sig-object py\" fullname=\"my_func\" ids=\"pkg.mymod.my_func\" module=\"pkg.mymod\">\n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                    pkg.mymod.\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    my_func\n                <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                    <desc_parameter xml:space=\"preserve\">\n                        <desc_sig_name classes=\"n\">\n                            x\n            <desc_content>\n                <paragraph>\n                    Function body.\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1,
+          "mod": 4
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'mod')\" glob=\"0\" hidden=\"0\" includefiles=\"mod\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "mod": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"mod\">\n                Mod\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#pkg.mymod.MyClass\" internal=\"1\" refuri=\"mod\">\n                        <literal>\n                            pkg.mymod.MyClass\n                <bullet_list>\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#pkg.mymod.MyClass.my_method\" internal=\"1\" refuri=\"mod\">\n                                <literal>\n                                    pkg.mymod.MyClass.my_method()\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#pkg.mymod.my_func\" internal=\"1\" refuri=\"mod\">\n                        <literal>\n                            pkg.mymod.my_func()\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "mod"
+          ]
+        },
+        "warnings": []
+      },
+      "files": {
+        "index": "Index\n=====\n\n.. toctree::\n\n   mod\n",
+        "mod": "Mod\n===\n\n.. py:module:: pkg.mymod\n\n.. py:class:: MyClass\n\n   Class body.\n\n   .. py:method:: my_method(arg)\n\n      Method body.\n\n.. py:function:: my_func(x)\n\n   Function body.\n"
+      },
+      "name": "py_toc_parents"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {},
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "module",
+                "subitems": [
+                  {
+                    "name": "orphan.child",
+                    "targets": [
+                      [
+                        "",
+                        "#module-orphan.child"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "pkg",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "pkg.sub",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.sub"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "pkg.sub2",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.sub2"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "zzz",
+                    "targets": [
+                      [
+                        "",
+                        "#module-zzz"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "M"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "orphan.child",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-orphan.child"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "O"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "pkg",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "pkg.sub",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.sub"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "pkg.sub2",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.sub2"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "P"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "zzz",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-zzz"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "Z"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "index": [
+            [
+              "pair",
+              "module; pkg",
+              "module-pkg",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; pkg.sub",
+              "module-pkg.sub",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; pkg.sub2",
+              "module-pkg.sub2",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; orphan.child",
+              "module-orphan.child",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; zzz",
+              "module-zzz",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": [
+            {
+              "entries": [
+                {
+                  "anchor": "",
+                  "descr": "",
+                  "docname": "",
+                  "extra": "",
+                  "name": "orphan",
+                  "qualifier": "",
+                  "subtype": 1
+                },
+                {
+                  "anchor": "module-orphan.child",
+                  "descr": "",
+                  "docname": "index",
+                  "extra": "",
+                  "name": "orphan.child",
+                  "qualifier": "",
+                  "subtype": 2
+                }
+              ],
+              "letter": "o"
+            },
+            {
+              "entries": [
+                {
+                  "anchor": "module-pkg",
+                  "descr": "",
+                  "docname": "index",
+                  "extra": "",
+                  "name": "pkg",
+                  "qualifier": "",
+                  "subtype": 1
+                },
+                {
+                  "anchor": "module-pkg.sub",
+                  "descr": "Sub synopsis.",
+                  "docname": "index",
+                  "extra": "",
+                  "name": "pkg.sub",
+                  "qualifier": "",
+                  "subtype": 2
+                },
+                {
+                  "anchor": "module-pkg.sub2",
+                  "descr": "",
+                  "docname": "index",
+                  "extra": "Windows",
+                  "name": "pkg.sub2",
+                  "qualifier": "",
+                  "subtype": 2
+                }
+              ],
+              "letter": "p"
+            },
+            {
+              "entries": [
+                {
+                  "anchor": "module-zzz",
+                  "descr": "",
+                  "docname": "index",
+                  "extra": "",
+                  "name": "zzz",
+                  "qualifier": "Deprecated",
+                  "subtype": 0
+                }
+              ],
+              "letter": "z"
+            }
+          ]
+        },
+        "py_modules": [
+          {
+            "deprecated": false,
+            "docname": "index",
+            "name": "pkg",
+            "node_id": "module-pkg",
+            "platform": "",
+            "synopsis": ""
+          },
+          {
+            "deprecated": false,
+            "docname": "index",
+            "name": "pkg.sub",
+            "node_id": "module-pkg.sub",
+            "platform": "",
+            "synopsis": "Sub synopsis."
+          },
+          {
+            "deprecated": false,
+            "docname": "index",
+            "name": "pkg.sub2",
+            "node_id": "module-pkg.sub2",
+            "platform": "Windows",
+            "synopsis": ""
+          },
+          {
+            "deprecated": false,
+            "docname": "index",
+            "name": "orphan.child",
+            "node_id": "module-orphan.child",
+            "platform": "",
+            "synopsis": ""
+          },
+          {
+            "deprecated": true,
+            "docname": "index",
+            "name": "zzz",
+            "node_id": "module-zzz",
+            "platform": "",
+            "synopsis": ""
+          }
+        ],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "pkg",
+            "node_id": "module-pkg",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "pkg.sub",
+            "node_id": "module-pkg.sub",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "pkg.sub2",
+            "node_id": "module-pkg.sub2",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "orphan.child",
+            "node_id": "module-orphan.child",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "zzz",
+            "node_id": "module-zzz",
+            "objtype": "module"
+          }
+        ],
+        "relations": {
+          "index": [
+            null,
+            null,
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"module-pkg index\" names=\"index\">\n        <title>\n            Index\n        <index entries=\"('pair',\\ 'module;\\ pkg',\\ 'module-pkg',\\ '',\\ None)\">\n        <index entries=\"('pair',\\ 'module;\\ pkg.sub',\\ 'module-pkg.sub',\\ '',\\ None)\">\n        <index entries=\"('pair',\\ 'module;\\ pkg.sub2',\\ 'module-pkg.sub2',\\ '',\\ None)\">\n        <index entries=\"('pair',\\ 'module;\\ orphan.child',\\ 'module-orphan.child',\\ '',\\ None)\">\n        <index entries=\"('pair',\\ 'module;\\ zzz',\\ 'module-zzz',\\ '',\\ None)\">\n        <target ismod=\"1\" refid=\"module-pkg.sub\">\n        <target ismod=\"1\" refid=\"module-pkg.sub2\">\n        <target ismod=\"1\" refid=\"module-orphan.child\">\n        <target ids=\"module-zzz module-orphan.child module-pkg.sub2 module-pkg.sub\" ismod=\"1\">\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n"
+        },
+        "toctree_includes": {},
+        "warnings": []
+      },
+      "files": {
+        "index": "Index\n=====\n\n.. py:module:: pkg\n\n.. py:module:: pkg.sub\n   :synopsis: Sub synopsis.\n\n.. py:module:: pkg.sub2\n   :platform: Windows\n\n.. py:module:: orphan.child\n\n.. py:module:: zzz\n   :deprecated:\n"
+      },
+      "name": "py_modindex"
+    },
+    {
+      "conf": {
+        "modindex_common_prefix": [
+          "pkg."
+        ],
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {},
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "module",
+                "subitems": [
+                  {
+                    "name": "other",
+                    "targets": [
+                      [
+                        "",
+                        "#module-other"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "pkg.aaa",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.aaa"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "pkg.bbb",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.bbb"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "M"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "other",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-other"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "O"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "pkg.aaa",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.aaa"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "pkg.bbb",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-pkg.bbb"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "P"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "index": [
+            [
+              "pair",
+              "module; pkg.aaa",
+              "module-pkg.aaa",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; pkg.bbb",
+              "module-pkg.bbb",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; other",
+              "module-other",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": true,
+          "groups": [
+            {
+              "entries": [
+                {
+                  "anchor": "module-pkg.aaa",
+                  "descr": "",
+                  "docname": "index",
+                  "extra": "",
+                  "name": "pkg.aaa",
+                  "qualifier": "",
+                  "subtype": 0
+                }
+              ],
+              "letter": "a"
+            },
+            {
+              "entries": [
+                {
+                  "anchor": "module-pkg.bbb",
+                  "descr": "",
+                  "docname": "index",
+                  "extra": "",
+                  "name": "pkg.bbb",
+                  "qualifier": "",
+                  "subtype": 0
+                }
+              ],
+              "letter": "b"
+            },
+            {
+              "entries": [
+                {
+                  "anchor": "module-other",
+                  "descr": "",
+                  "docname": "index",
+                  "extra": "",
+                  "name": "other",
+                  "qualifier": "",
+                  "subtype": 0
+                }
+              ],
+              "letter": "o"
+            }
+          ]
+        },
+        "py_modules": [
+          {
+            "deprecated": false,
+            "docname": "index",
+            "name": "pkg.aaa",
+            "node_id": "module-pkg.aaa",
+            "platform": "",
+            "synopsis": ""
+          },
+          {
+            "deprecated": false,
+            "docname": "index",
+            "name": "pkg.bbb",
+            "node_id": "module-pkg.bbb",
+            "platform": "",
+            "synopsis": ""
+          },
+          {
+            "deprecated": false,
+            "docname": "index",
+            "name": "other",
+            "node_id": "module-other",
+            "platform": "",
+            "synopsis": ""
+          }
+        ],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "pkg.aaa",
+            "node_id": "module-pkg.aaa",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "pkg.bbb",
+            "node_id": "module-pkg.bbb",
+            "objtype": "module"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "other",
+            "node_id": "module-other",
+            "objtype": "module"
+          }
+        ],
+        "relations": {
+          "index": [
+            null,
+            null,
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"module-pkg.aaa index\" names=\"index\">\n        <title>\n            Index\n        <index entries=\"('pair',\\ 'module;\\ pkg.aaa',\\ 'module-pkg.aaa',\\ '',\\ None)\">\n        <index entries=\"('pair',\\ 'module;\\ pkg.bbb',\\ 'module-pkg.bbb',\\ '',\\ None)\">\n        <index entries=\"('pair',\\ 'module;\\ other',\\ 'module-other',\\ '',\\ None)\">\n        <target ismod=\"1\" refid=\"module-pkg.bbb\">\n        <target ids=\"module-other module-pkg.bbb\" ismod=\"1\">\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n"
+        },
+        "toctree_includes": {},
+        "warnings": []
+      },
+      "files": {
+        "index": "Index\n=====\n\n.. py:module:: pkg.aaa\n\n.. py:module:: pkg.bbb\n\n.. py:module:: other\n"
+      },
+      "name": "py_modindex_prefix"
+    },
+    {
+      "conf": {
+        "nitpicky": true,
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {},
+        "genindex": [],
+        "included": {},
+        "index_entries": {
+          "index": []
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "index": [
+            null,
+            null,
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <paragraph>\n            Ref \n            <literal classes=\"xref py py-func\">\n                missing_fn()\n             and \n            <literal classes=\"xref py py-class\">\n                int\n             and \n            <literal classes=\"xref py py-class\">\n                Missing\n            .\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n"
+        },
+        "toctree_includes": {},
+        "warnings": [
+          "<project>/index.rst:4: WARNING: py:func reference target not found: missing_fn [ref.func]",
+          "<project>/index.rst:4: WARNING: py:class reference target not found: Missing [ref.class]"
+        ]
+      },
+      "files": {
+        "index": "Index\n=====\n\nRef :py:func:`missing_fn` and :py:class:`int` and :py:class:`Missing`.\n"
+      },
+      "name": "py_nitpicky"
+    },
+    {
+      "conf": {
+        "keep_warnings": true,
+        "smartquotes": false
+      },
+      "data_files": {
+        "clip_part.inc": "clip alpha\nclip beta\n",
+        "code_numbered.inc": "line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\nline nine\nline ten\n",
+        "code_plain.inc": "plain code line\nsecond code line\n",
+        "example.py": "\"\"\"Example module.\"\"\"\n\nCONST = 1\n\n\ndef top(x):\n    \"\"\"Top function.\"\"\"\n    return x + 1\n\n\nclass Foo:\n    \"\"\"A class.\"\"\"\n\n    attr = 2\n\n    def method(self):\n        return self.attr\n\n\ndef tail():\n    pass\n",
+        "lit_part.inc": "Literal alpha.\nLiteral beta.\n",
+        "numbered.inc": "num one\nnum two\nnum three\nnum four\nnum five\nnum six\nnum seven\nnum eight\nnum nine\nnum ten\n"
+      },
+      "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/abs_part.rst",
+            "<project>/chain1.rst",
+            "<project>/chain2.rst",
+            "<project>/circ_a.rst",
+            "<project>/circ_b.rst",
+            "<project>/clip_part.inc",
+            "<project>/example.py"
+          ],
+          "b": [
+            "<project>/code_numbered.inc",
+            "<project>/code_plain.inc",
+            "<project>/example.py",
+            "<project>/lit_part.inc",
+            "<project>/numbered.inc"
+          ],
+          "chain1": [
+            "<project>/chain2.rst"
+          ],
+          "circ_a": [
+            "<project>/circ_a.rst",
+            "<project>/circ_b.rst"
+          ],
+          "circ_b": [
+            "<project>/circ_a.rst",
+            "<project>/circ_b.rst"
+          ],
+          "sub/nested": [
+            "<project>/shared/frag.rst",
+            "<project>/sub/frag2.rst"
+          ]
+        },
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ],
+          "b": [
+            "index"
+          ],
+          "sub/nested": [
+            "index"
+          ]
+        },
+        "genindex": [],
+        "included": {
+          "a": [
+            "abs_part",
+            "chain1",
+            "chain2",
+            "circ_a",
+            "circ_b",
+            "missing"
+          ],
+          "chain1": [
+            "chain2"
+          ],
+          "circ_a": [
+            "circ_a",
+            "circ_b"
+          ],
+          "circ_b": [
+            "circ_a",
+            "circ_b"
+          ],
+          "shared/frag": [
+            "shared/frag2"
+          ],
+          "sub/nested": [
+            "shared/frag",
+            "sub/frag2"
+          ]
+        },
+        "index_entries": {
+          "a": [],
+          "abs_part": [],
+          "b": [],
+          "chain1": [],
+          "chain2": [],
+          "circ_a": [],
+          "circ_b": [],
+          "index": [],
+          "shared/frag": [],
+          "sub/frag2": [],
+          "sub/nested": []
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            "b"
+          ],
+          "b": [
+            "index",
+            "a",
+            "sub/nested"
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ],
+          "sub/nested": [
+            "index",
+            "b",
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <paragraph>\n            Chain one.\n        <paragraph>\n            Chain two.\n        <paragraph>\n            Absolute part.\n        <system_message level=\"4\" line=\"8\" source=\"<project>/a.rst\" type=\"SEVERE\">\n            <paragraph>\n                Problems with \"include\" directive path:\n                InputError: [Errno 2] No such file or directory: '<project>/missing.rst'.\n            <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n                .. include:: missing.rst\n        <system_message level=\"4\" line=\"10\" source=\"<project>/a.rst\" type=\"SEVERE\">\n            <paragraph>\n                Problem with \"start-after\" option of \"include\" directive:\n                Text not found.\n            <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n                .. include:: clip_part.inc\n                   :start-after: nope-not-here\n        <paragraph>\n            Circ A.\n        <paragraph>\n            Circ B.\n        <system_message level=\"2\" line=\"3\" source=\"<project>/circ_b.rst\" type=\"WARNING\">\n            <paragraph>\n                circular inclusion in \"include\" directive:\n                <project>/circ_a.rst\n                > <project>/circ_b.rst\n                > <project>/circ_a.rst\n                > <project>/a.rst\n            <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n                .. include:: circ_a.rst\n        <system_message level=\"2\" line=\"15\" source=\"<project>/a.rst\" type=\"WARNING\">\n            <paragraph>\n                Object named 'not_there' not found in include file _StrPath('<project>/example.py')\n",
+          "abs_part": "<document source=\"<project>/abs_part.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Absolute part.\n",
+          "b": "<document source=\"<project>/b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"b\" names=\"b\">\n        <title>\n            B\n        <literal_block force=\"0\" ids=\"lit-block\" language=\"default\" linenos=\"0\" names=\"lit-block\" source=\"<project>/lit_part.inc\" xml:space=\"preserve\">\n            Literal alpha.\n            Literal beta.\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" source=\"<project>/numbered.inc\" xml:space=\"preserve\">\n            <inline classes=\"ln\">\n                 1 \n            num one\n            <inline classes=\"ln\">\n                 2 \n            num two\n            <inline classes=\"ln\">\n                 3 \n            num three\n            <inline classes=\"ln\">\n                 4 \n            num four\n            <inline classes=\"ln\">\n                 5 \n            num five\n            <inline classes=\"ln\">\n                 6 \n            num six\n            <inline classes=\"ln\">\n                 7 \n            num seven\n            <inline classes=\"ln\">\n                 8 \n            num eight\n            <inline classes=\"ln\">\n                 9 \n            num nine\n            <inline classes=\"ln\">\n                10 \n            num ten\n        <literal_block classes=\"code\" force=\"0\" language=\"default\" linenos=\"0\" source=\"<project>/code_plain.inc\" xml:space=\"preserve\">\n            plain code line\n            second code line\n        <literal_block classes=\"code\" force=\"0\" language=\"default\" linenos=\"0\" source=\"<project>/code_numbered.inc\" xml:space=\"preserve\">\n            <inline classes=\"ln\">\n                1 \n            line one\n            <inline classes=\"ln\">\n                2 \n            line two\n            <inline classes=\"ln\">\n                3 \n            line three\n            <inline classes=\"ln\">\n                4 \n            line four\n            <inline classes=\"ln\">\n                5 \n            line five\n            <inline classes=\"ln\">\n                6 \n            line six\n            <inline classes=\"ln\">\n                7 \n            line seven\n            <inline classes=\"ln\">\n                8 \n            line eight\n            <inline classes=\"ln\">\n                9 \n            line nine\n            <inline classes=\"ln\">\n                10 \n            line ten\n        <literal_block force=\"0\" highlight_args=\"{'linenostart': 16}\" language=\"default\" linenos=\"1\" source=\"<project>/example.py\" xml:space=\"preserve\">\n                def method(self):\n                    return self.attr\n        <container classes=\"literal-block-wrapper\" ids=\"id1\" literal_block=\"1\">\n            <caption>\n                Example tail\n            <literal_block force=\"0\" highlight_args=\"{'hl_lines': [2], 'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/example.py\" xml:space=\"preserve\">\n                def top(x):\n                    \"\"\"Top function.\"\"\"\n                    return x + 1\n",
+          "chain1": "<document source=\"<project>/chain1.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Chain one.\n    <paragraph>\n        Chain two.\n",
+          "chain2": "<document source=\"<project>/chain2.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Chain two.\n",
+          "circ_a": "<document source=\"<project>/circ_a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Circ A.\n    <paragraph>\n        Circ B.\n    <system_message level=\"2\" line=\"3\" source=\"<project>/circ_b.rst\" type=\"WARNING\">\n        <paragraph>\n            circular inclusion in \"include\" directive:\n            <project>/circ_a.rst\n            > <project>/circ_b.rst\n            > <project>/circ_a.rst\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n            .. include:: circ_a.rst\n",
+          "circ_b": "<document source=\"<project>/circ_b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Circ B.\n    <paragraph>\n        Circ A.\n    <system_message level=\"2\" line=\"3\" source=\"<project>/circ_a.rst\" type=\"WARNING\">\n        <paragraph>\n            circular inclusion in \"include\" directive:\n            <project>/circ_b.rst\n            > <project>/circ_a.rst\n            > <project>/circ_b.rst\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n            .. include:: circ_b.rst\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                Nested\n",
+          "shared/frag": "<document source=\"<project>/shared/frag.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Frag paragraph one.\n    <system_message level=\"4\" line=\"3\" source=\"<project>/shared/frag.rst\" type=\"SEVERE\">\n        <paragraph>\n            Problems with \"include\" directive path:\n            InputError: [Errno 2] No such file or directory: '<project>/shared/frag2.rst'.\n        <literal_block force=\"0\" language=\"default\" linenos=\"0\" xml:space=\"preserve\">\n            .. include:: frag2.rst\n",
+          "sub/frag2": "<document source=\"<project>/sub/frag2.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        Frag2 paragraph.\n",
+          "sub/nested": "<document source=\"<project>/sub/nested.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"nested\" names=\"nested\">\n        <title>\n            Nested\n        <paragraph>\n            Frag paragraph one.\n        <paragraph>\n            Frag2 paragraph.\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "lit-block": [
+              "b",
+              "lit-block"
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 1,
+          "abs_part": 0,
+          "b": 1,
+          "chain1": 0,
+          "chain2": 0,
+          "circ_a": 0,
+          "circ_b": 0,
+          "index": 1,
+          "shared/frag": 0,
+          "sub/frag2": 0,
+          "sub/nested": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n",
+          "abs_part": "<bullet_list>\n",
+          "b": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"b\">\n                B\n",
+          "chain1": "<bullet_list>\n",
+          "chain2": "<bullet_list>\n",
+          "circ_a": "<bullet_list>\n",
+          "circ_b": "<bullet_list>\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a') (None,\\ 'b') (None,\\ 'sub/nested')\" glob=\"0\" hidden=\"0\" includefiles=\"a b sub/nested\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "shared/frag": "<bullet_list>\n",
+          "sub/frag2": "<bullet_list>\n",
+          "sub/nested": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"sub/nested\">\n                Nested\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a",
+            "b",
+            "sub/nested"
+          ]
+        },
+        "warnings": [
+          "<project>/a.rst:8: CRITICAL: Problems with \"include\" directive path:",
+          "InputError: [Errno 2] No such file or directory: '<project>/missing.rst'. [docutils]",
+          "<project>/a.rst:10: CRITICAL: Problem with \"start-after\" option of \"include\" directive:",
+          "Text not found. [docutils]",
+          "<project>/circ_b.rst:3: WARNING: circular inclusion in \"include\" directive:",
+          "<project>/circ_a.rst",
+          "> <project>/circ_b.rst",
+          "> <project>/circ_a.rst",
+          "> <project>/a.rst [docutils]",
+          "<project>/a.rst:15: WARNING: Object named 'not_there' not found in include file _StrPath('<project>/example.py') [docutils]",
+          "<project>/circ_b.rst:3: WARNING: circular inclusion in \"include\" directive:",
+          "<project>/circ_a.rst",
+          "> <project>/circ_b.rst",
+          "> <project>/circ_a.rst [docutils]",
+          "<project>/circ_a.rst:3: WARNING: circular inclusion in \"include\" directive:",
+          "<project>/circ_b.rst",
+          "> <project>/circ_a.rst",
+          "> <project>/circ_b.rst [docutils]",
+          "<project>/shared/frag.rst:3: CRITICAL: Problems with \"include\" directive path:",
+          "InputError: [Errno 2] No such file or directory: '<project>/shared/frag2.rst'. [docutils]"
+        ]
+      },
+      "files": {
+        "a": "A\n=\n\n.. include:: chain1.rst\n\n.. include:: /abs_part.rst\n\n.. include:: missing.rst\n\n.. include:: clip_part.inc\n   :start-after: nope-not-here\n\n.. include:: circ_a.rst\n\n.. literalinclude:: example.py\n   :pyobject: not_there\n",
+        "abs_part": "Absolute part.\n",
+        "b": "B\n=\n\n.. include:: lit_part.inc\n   :literal:\n   :name: lit-block\n\n.. include:: numbered.inc\n   :literal:\n   :number-lines:\n\n.. include:: code_plain.inc\n   :code:\n\n.. include:: code_numbered.inc\n   :code:\n   :number-lines:\n\n.. literalinclude:: example.py\n   :pyobject: Foo.method\n   :lineno-match:\n\n.. literalinclude:: example.py\n   :lines: 6-8\n   :emphasize-lines: 2\n   :caption: Example tail\n",
+        "chain1": "Chain one.\n\n.. include:: chain2.rst\n",
+        "chain2": "Chain two.\n",
+        "circ_a": "Circ A.\n\n.. include:: circ_b.rst\n",
+        "circ_b": "Circ B.\n\n.. include:: circ_a.rst\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n   b\n   sub/nested\n",
+        "shared/frag": "Frag paragraph one.\n\n.. include:: frag2.rst\n",
+        "sub/frag2": "Frag2 paragraph.\n",
+        "sub/nested": "Nested\n======\n\n.. include:: ../shared/frag.rst\n"
+      },
+      "name": "inc_basic"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "data_files": {
+        "snippet.inc": "alpha\nbeta\ngamma\n"
+      },
+      "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/part.rst",
+            "<project>/snippet.inc"
+          ]
+        },
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ]
+        },
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "built-in function",
+                "subitems": [
+                  {
+                    "name": "partfn()",
+                    "targets": [
+                      [
+                        "",
+                        "#partfn"
+                      ],
+                      [
+                        "",
+                        "#partfn"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "B"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "partfn()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#partfn"
+                      ],
+                      [
+                        "",
+                        "#partfn"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "P"
+          }
+        ],
+        "included": {
+          "a": [
+            "part"
+          ]
+        },
+        "index_entries": {
+          "a": [
+            [
+              "pair",
+              "built-in function; partfn()",
+              "partfn",
+              "",
+              null
+            ]
+          ],
+          "index": [],
+          "part": [
+            [
+              "pair",
+              "built-in function; partfn()",
+              "partfn",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "part",
+            "name": "partfn",
+            "node_id": "partfn",
+            "objtype": "function"
+          }
+        ],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            null
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <section ids=\"part\" names=\"part\">\n            <title>\n                Part\n            <index entries=\"('pair',\\ 'built-in\\ function;\\ partfn()',\\ 'partfn',\\ '',\\ None)\">\n            <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n                <desc_signature _toc_name=\"partfn()\" _toc_parts=\"('partfn',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"partfn\" ids=\"partfn\" module=\"True\">\n                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                        partfn\n                    <desc_parameterlist xml:space=\"preserve\">\n                <desc_content>\n            <paragraph>\n                See \n                <inline classes=\"xref std std-ref\">\n                    missing-target\n                .\n            <literal_block force=\"0\" highlight_args=\"{'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/snippet.inc\" xml:space=\"preserve\">\n                alpha\n                beta\n                gamma\n            <literal_block force=\"0\" highlight_args=\"{'hl_lines': [], 'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/snippet.inc\" xml:space=\"preserve\">\n                alpha\n                beta\n                gamma\n            <literal_block force=\"0\" highlight_args=\"{'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/snippet.inc\" xml:space=\"preserve\">\n                pha\n                ta\n                mma\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\">\n                                    <reference anchorname=\"#part\" internal=\"1\" refuri=\"#part\">\n                                        Part\n                                <bullet_list>\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#partfn\" internal=\"1\" refuri=\"#partfn\">\n                                                <literal>\n                                                    partfn()\n",
+          "part": "<document source=\"<project>/part.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"part\" names=\"part\">\n        <title>\n            Part\n        <index entries=\"('pair',\\ 'built-in\\ function;\\ partfn()',\\ 'partfn',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"partfn()\" _toc_parts=\"('partfn',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"partfn\" ids=\"partfn\" module=\"True\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    partfn\n                <desc_parameterlist xml:space=\"preserve\">\n            <desc_content>\n        <paragraph>\n            See \n            <inline classes=\"xref std std-ref\">\n                missing-target\n            .\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 3,
+          "index": 1,
+          "part": 2
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n        <bullet_list>\n            <list_item>\n                <compact_paragraph>\n                    <reference anchorname=\"#part\" internal=\"1\" refuri=\"a\">\n                        Part\n                <bullet_list>\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#partfn\" internal=\"1\" refuri=\"a\">\n                                <literal>\n                                    partfn()\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a')\" glob=\"0\" hidden=\"0\" includefiles=\"a\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "part": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"part\">\n                Part\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#partfn\" internal=\"1\" refuri=\"part\">\n                        <literal>\n                            partfn()\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a"
+          ]
+        },
+        "warnings": [
+          "<project>/a.rst.rst:6: WARNING: line number spec is out of range(1-3): '1-40'",
+          "<project>/a.rst.rst:9: WARNING: line number spec is out of range(1-3): '9'",
+          "<project>/a.rst.rst:12: WARNING: non-whitespace stripped by dedent",
+          "<project>/part.rst:4: WARNING: duplicate object description of partfn, other instance in a, use :no-index: for one of them",
+          "<project>/part.rst:6: WARNING: undefined label: 'missing-target' [ref.ref]",
+          "<project>/part.rst:6: WARNING: undefined label: 'missing-target' [ref.ref]"
+        ]
+      },
+      "files": {
+        "a": "A\n=\n\n.. include:: part.rst\n\n.. literalinclude:: snippet.inc\n   :lines: 1-40\n\n.. literalinclude:: snippet.inc\n   :emphasize-lines: 9\n\n.. literalinclude:: snippet.inc\n   :dedent: 2\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n",
+        "part": "Part\n----\n\n.. py:function:: partfn()\n\nSee :ref:`missing-target`.\n"
+      },
+      "name": "inc_warn"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "data_files": {
+        "example.py": "\"\"\"Example module.\"\"\"\n\nCONST = 1\n\n\ndef top(x):\n    \"\"\"Top function.\"\"\"\n    return x + 1\n\n\nclass Foo:\n    \"\"\"A class.\"\"\"\n\n    attr = 2\n\n    def method(self):\n        return self.attr\n\n\ndef tail():\n    pass\n",
+        "pic.png": "not really a png\n"
+      },
+      "expect": {
+        "dependencies": {
+          "a": [
+            "<project>/example.py",
+            "<project>/part.rst",
+            "<project>/pic.png"
+          ]
+        },
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ],
+          "b": [
+            "index"
+          ]
+        },
+        "genindex": [],
+        "included": {
+          "a": [
+            "part"
+          ]
+        },
+        "index_entries": {
+          "a": [],
+          "b": [],
+          "index": [],
+          "part": []
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            "b"
+          ],
+          "b": [
+            "index",
+            "a",
+            null
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <paragraph>\n            part para\n        <literal_block force=\"0\" highlight_args=\"{'linenostart': 1}\" language=\"default\" linenos=\"0\" source=\"<project>/example.py\" xml:space=\"preserve\">\n            \"\"\"Example module.\"\"\"\n            \n        <image candidates=\"{'*': 'pic.png'}\" uri=\"pic.png\">\n",
+          "b": "<document source=\"<project>/b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"b\" names=\"b\">\n        <title>\n            B\n        <paragraph>\n            no deps here\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n",
+          "part": "<document source=\"<project>/part.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <paragraph>\n        part para\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 1,
+          "b": 1,
+          "index": 1,
+          "part": 0
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n",
+          "b": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"b\">\n                B\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a') (None,\\ 'b')\" glob=\"0\" hidden=\"0\" includefiles=\"a b\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n",
+          "part": "<bullet_list>\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a",
+            "b"
+          ]
+        },
+        "warnings": []
+      },
+      "files": {
+        "a": "A\n=\n\n.. include:: part.rst\n\n.. literalinclude:: example.py\n   :lines: 1-2\n\n.. image:: pic.png\n",
+        "b": "B\n=\n\nno deps here\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n   b\n",
+        "part": "part para\n"
+      },
+      "name": "inc_deps"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {
+          "a": [
+            "index"
+          ],
+          "b": [
+            "index"
+          ]
+        },
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "built-in function",
+                "subitems": [
+                  {
+                    "name": "mod.dup()",
+                    "targets": [
+                      [
+                        "",
+                        "#mod.dup"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "mod.f()",
+                    "targets": [
+                      [
+                        "",
+                        "#mod.f"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "B"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "mod",
+                "subitems": [
+                  {
+                    "name": "module",
+                    "targets": [
+                      [
+                        "",
+                        "#module-mod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "mod.dup()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#mod.dup"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "mod.f()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#mod.f"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              },
+              {
+                "category_key": null,
+                "name": "mod.item (built-in variable)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#mod.item"
+                  ]
+                ]
+              },
+              {
+                "category_key": null,
+                "name": "module",
+                "subitems": [
+                  {
+                    "name": "mod",
+                    "targets": [
+                      [
+                        "",
+                        "#module-mod"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "M"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "a": [],
+          "b": [
+            [
+              "pair",
+              "built-in function; mod.f()",
+              "mod.f",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "built-in function; mod.dup()",
+              "mod.dup",
+              "",
+              null
+            ],
+            [
+              "single",
+              "mod.item (built-in variable)",
+              "mod.item",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "module; mod",
+              "module-mod",
+              "",
+              null
+            ]
+          ],
+          "index": []
+        },
+        "py_modindex": {
+          "collapse": true,
+          "groups": [
+            {
+              "entries": [
+                {
+                  "anchor": "module-mod",
+                  "descr": "",
+                  "docname": "b",
+                  "extra": "",
+                  "name": "mod",
+                  "qualifier": "",
+                  "subtype": 0
+                }
+              ],
+              "letter": "m"
+            }
+          ]
+        },
+        "py_modules": [
+          {
+            "deprecated": false,
+            "docname": "b",
+            "name": "mod",
+            "node_id": "module-mod",
+            "platform": "",
+            "synopsis": ""
+          }
+        ],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "b",
+            "name": "mod.f",
+            "node_id": "mod.f",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "b",
+            "name": "mod.dup",
+            "node_id": "mod.dup",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "b",
+            "name": "mod.item",
+            "node_id": "mod.item",
+            "objtype": "data"
+          },
+          {
+            "aliased": false,
+            "docname": "b",
+            "name": "mod",
+            "node_id": "module-mod",
+            "objtype": "module"
+          }
+        ],
+        "relations": {
+          "a": [
+            "index",
+            "index",
+            "b"
+          ],
+          "b": [
+            "index",
+            "a",
+            null
+          ],
+          "index": [
+            null,
+            null,
+            "a"
+          ]
+        },
+        "resolved_pformat": {
+          "a": "<document source=\"<project>/a.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"a\" names=\"a\">\n        <title>\n            A\n        <paragraph>\n            Hits: \n            <reference internal=\"1\" reftitle=\"mod.f\" refuri=\"#mod.f\">\n                <literal classes=\"xref any py py-func\">\n                    f\n             and \n            <reference internal=\"1\" reftitle=\"mod.f\" refuri=\"#mod.f\">\n                <literal classes=\"xref any py py-func\">\n                    f()\n             and \n            <reference internal=\"1\" reftitle=\"mod\" refuri=\"#module-mod\">\n                <literal classes=\"xref any py py-mod\">\n                    mod\n             and \n            <reference internal=\"1\" reftitle=\"mod.item\" refuri=\"#mod.item\">\n                <literal classes=\"xref any py py-data\">\n                    item\n            \n            and \n            <reference internal=\"1\" refuri=\"#std-label\">\n                <inline classes=\"std std-ref std std-ref\">\n                    Only Label\n             and \n            <reference internal=\"1\" refuri=\"\">\n                <inline classes=\"doc doc doc\">\n                    Index\n            .\n        <paragraph>\n            Ambiguous: \n            <reference internal=\"1\" refuri=\"#dup\">\n                <inline classes=\"std std-ref std std-ref\">\n                    Dup Section\n            . Dangling: \n            <literal classes=\"xref any\">\n                nosuch_any\n            .\n",
+          "b": "<document source=\"<project>/b.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"b\" names=\"b\">\n        <title>\n            B\n        <target refid=\"dup\">\n        <section ids=\"dup-section dup\" names=\"dup\\ section dup\">\n            <title>\n                Dup Section\n            <index entries=\"('pair',\\ 'built-in\\ function;\\ mod.f()',\\ 'mod.f',\\ '',\\ None)\">\n            <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n                <desc_signature _toc_name=\"mod.f()\" _toc_parts=\"('mod', 'f')\" class=\"mod\" classes=\"sig sig-object py\" fullname=\"mod.f\" ids=\"mod.f\" module=\"True\">\n                    <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                        mod.\n                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                        f\n                    <desc_parameterlist xml:space=\"preserve\">\n                <desc_content>\n            <index entries=\"('pair',\\ 'built-in\\ function;\\ mod.dup()',\\ 'mod.dup',\\ '',\\ None)\">\n            <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n                <desc_signature _toc_name=\"mod.dup()\" _toc_parts=\"('mod', 'dup')\" class=\"mod\" classes=\"sig sig-object py\" fullname=\"mod.dup\" ids=\"mod.dup\" module=\"True\">\n                    <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                        mod.\n                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                        dup\n                    <desc_parameterlist xml:space=\"preserve\">\n                <desc_content>\n            <index entries=\"('single',\\ 'mod.item\\ (built-in\\ variable)',\\ 'mod.item',\\ '',\\ None)\">\n            <desc classes=\"py data\" desctype=\"data\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"data\">\n                <desc_signature _toc_name=\"mod.item\" _toc_parts=\"('mod', 'item')\" class=\"mod\" classes=\"sig sig-object py\" fullname=\"mod.item\" ids=\"mod.item\" module=\"True\">\n                    <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n                        mod.\n                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                        item\n                <desc_content>\n            <target refid=\"std-label\">\n        <section ids=\"only-label std-label\" names=\"only\\ label std-label\">\n            <title>\n                Only Label\n            <paragraph>\n                Text.\n            <index entries=\"('pair',\\ 'module;\\ mod',\\ 'module-mod',\\ '',\\ None)\">\n            <target ids=\"module-mod\" ismod=\"1\">\n",
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <compound classes=\"toctree-wrapper\">\n            <compact_paragraph toctree=\"1\">\n                <bullet_list>\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                A\n                    <list_item classes=\"toctree-l1\">\n                        <compact_paragraph classes=\"toctree-l1\">\n                            <reference anchorname=\"\" internal=\"1\" refuri=\"\">\n                                B\n                        <bullet_list>\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\">\n                                    <reference anchorname=\"#dup-section\" internal=\"1\" refuri=\"#dup-section\">\n                                        Dup Section\n                                <bullet_list>\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#mod.f\" internal=\"1\" refuri=\"#mod.f\">\n                                                <literal>\n                                                    mod.f()\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#mod.dup\" internal=\"1\" refuri=\"#mod.dup\">\n                                                <literal>\n                                                    mod.dup()\n                                    <list_item classes=\"toctree-l3\">\n                                        <compact_paragraph classes=\"toctree-l3\" skip_section_number=\"1\">\n                                            <reference anchorname=\"#mod.item\" internal=\"1\" refuri=\"#mod.item\">\n                                                <literal>\n                                                    mod.item\n                            <list_item classes=\"toctree-l2\">\n                                <compact_paragraph classes=\"toctree-l2\">\n                                    <reference anchorname=\"#only-label\" internal=\"1\" refuri=\"#only-label\">\n                                        Only Label\n"
+        },
+        "std": {
+          "anonlabels": {
+            "dup": [
+              "b",
+              "dup"
+            ],
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ],
+            "std-label": [
+              "b",
+              "std-label"
+            ]
+          },
+          "labels": {
+            "dup": [
+              "b",
+              "dup",
+              "Dup Section"
+            ],
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ],
+            "std-label": [
+              "b",
+              "std-label",
+              "Only Label"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "a": 1,
+          "b": 6,
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "a": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"a\">\n                A\n",
+          "b": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"b\">\n                B\n        <bullet_list>\n            <list_item>\n                <compact_paragraph>\n                    <reference anchorname=\"#dup-section\" internal=\"1\" refuri=\"b\">\n                        Dup Section\n                <bullet_list>\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#mod.f\" internal=\"1\" refuri=\"b\">\n                                <literal>\n                                    mod.f()\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#mod.dup\" internal=\"1\" refuri=\"b\">\n                                <literal>\n                                    mod.dup()\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#mod.item\" internal=\"1\" refuri=\"b\">\n                                <literal>\n                                    mod.item\n            <list_item>\n                <compact_paragraph>\n                    <reference anchorname=\"#only-label\" internal=\"1\" refuri=\"b\">\n                        Only Label\n",
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n        <bullet_list>\n            <toctree caption=\"True\" entries=\"(None,\\ 'a') (None,\\ 'b')\" glob=\"0\" hidden=\"0\" includefiles=\"a b\" includehidden=\"0\" maxdepth=\"-1\" numbered=\"0\" parent=\"index\" rawentries=\"\" titlesonly=\"0\">\n"
+        },
+        "toctree_includes": {
+          "index": [
+            "a",
+            "b"
+          ]
+        },
+        "warnings": [
+          "<project>/a.rst:7: WARNING: more than one target found for 'any' cross-reference 'dup': could be :std:ref:`Dup Section` or :py:func:`mod.dup` [ref.any]",
+          "<project>/a.rst:7: WARNING: 'any' reference target not found: nosuch_any [ref.any]"
+        ]
+      },
+      "files": {
+        "a": "A\n=\n\nHits: :any:`f` and :any:`f()` and :any:`mod` and :any:`item`\nand :any:`std-label` and :any:`index`.\n\nAmbiguous: :any:`dup`. Dangling: :any:`nosuch_any`.\n",
+        "b": "B\n=\n\n.. _dup:\n\nDup Section\n-----------\n\n.. py:function:: mod.f()\n\n.. py:function:: mod.dup()\n\n.. py:data:: mod.item\n\n.. _std-label:\n\nOnly Label\n----------\n\nText.\n\n.. py:module:: mod\n",
+        "index": "Index\n=====\n\n.. toctree::\n\n   a\n   b\n"
+      },
+      "name": "py_any"
+    },
+    {
+      "conf": {
+        "nitpicky": true,
+        "smartquotes": false
+      },
+      "data_files": {
+        "part.inc": ".. py:function:: f(x: missingtype)\n\n   :param nosuch_inc z: q\n"
+      },
+      "expect": {
+        "dependencies": {
+          "index": [
+            "<project>/part.inc"
+          ]
+        },
+        "files_to_rebuild": {},
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "built-in function",
+                "subitems": [
+                  {
+                    "name": "f()",
+                    "targets": [
+                      [
+                        "",
+                        "#f"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "g()",
+                    "targets": [
+                      [
+                        "",
+                        "#g"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "h()",
+                    "targets": [
+                      [
+                        "",
+                        "#h"
+                      ]
+                    ]
+                  },
+                  {
+                    "name": "top()",
+                    "targets": [
+                      [
+                        "",
+                        "#top"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "B"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "d (built-in variable)",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#d"
+                  ]
+                ]
+              }
+            ],
+            "group": "D"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "f()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#f"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "F"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "g()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#g"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "G"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "h()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#h"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "H"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "top()",
+                "subitems": [
+                  {
+                    "name": "built-in function",
+                    "targets": [
+                      [
+                        "",
+                        "#top"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "T"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "index": [
+            [
+              "pair",
+              "built-in function; top()",
+              "top",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "built-in function; f()",
+              "f",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "built-in function; g()",
+              "g",
+              "",
+              null
+            ],
+            [
+              "single",
+              "d (built-in variable)",
+              "d",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "built-in function; h()",
+              "h",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "top",
+            "node_id": "top",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "f",
+            "node_id": "f",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "g",
+            "node_id": "g",
+            "objtype": "function"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "d",
+            "node_id": "d",
+            "objtype": "data"
+          },
+          {
+            "aliased": false,
+            "docname": "index",
+            "name": "h",
+            "node_id": "h",
+            "objtype": "function"
+          }
+        ],
+        "relations": {
+          "index": [
+            null,
+            null,
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <index entries=\"('pair',\\ 'built-in\\ function;\\ top()',\\ 'top',\\ '',\\ None)\">\n    <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n        <desc_signature _toc_name=\"top()\" _toc_parts=\"('top',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"top\" ids=\"top\" module=\"True\">\n            <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                top\n            <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                <desc_parameter xml:space=\"preserve\">\n                    <desc_sig_name classes=\"n\">\n                        q\n                    <desc_sig_punctuation classes=\"p\">\n                        :\n                    <desc_sig_space classes=\"w\">\n                         \n                    <desc_sig_name classes=\"n\">\n                        nosuch_top\n        <desc_content>\n            <field_list>\n                <field>\n                    <field_name>\n                        Parameters\n                    <field_body>\n                        <paragraph>\n                            <literal_strong>\n                                q\n                             (\n                            <literal_emphasis>\n                                nosuch_top_field\n                            )\n                             -- \n                            q\n    <section ids=\"id1\" names=\"top\">\n        <title>\n            Top\n        <index entries=\"('pair',\\ 'built-in\\ function;\\ f()',\\ 'f',\\ '',\\ None)\">\n        <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n            <desc_signature _toc_name=\"f()\" _toc_parts=\"('f',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"f\" ids=\"f\" module=\"True\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    f\n                <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                    <desc_parameter xml:space=\"preserve\">\n                        <desc_sig_name classes=\"n\">\n                            x\n                        <desc_sig_punctuation classes=\"p\">\n                            :\n                        <desc_sig_space classes=\"w\">\n                             \n                        <desc_sig_name classes=\"n\">\n                            missingtype\n            <desc_content>\n                <field_list>\n                    <field>\n                        <field_name>\n                            Parameters\n                        <field_body>\n                            <paragraph>\n                                <literal_strong>\n                                    z\n                                 (\n                                <literal_emphasis>\n                                    nosuch_inc\n                                )\n                                 -- \n                                q\n        <section ids=\"sec\" names=\"sec\">\n            <title>\n                Sec\n            <index entries=\"('pair',\\ 'built-in\\ function;\\ g()',\\ 'g',\\ '',\\ None)\">\n            <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n                <desc_signature _toc_name=\"g()\" _toc_parts=\"('g',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"g\" ids=\"g\" module=\"True\">\n                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                        g\n                    <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                        <desc_parameter xml:space=\"preserve\">\n                            <desc_sig_name classes=\"n\">\n                                y\n                            <desc_sig_punctuation classes=\"p\">\n                                :\n                            <desc_sig_space classes=\"w\">\n                                 \n                            <desc_sig_name classes=\"n\">\n                                alsomissing\n                    <desc_returns xml:space=\"preserve\">\n                        retmissing\n                <desc_content>\n                    <field_list>\n                        <field>\n                            <field_name>\n                                Parameters\n                            <field_body>\n                                <bullet_list>\n                                    <list_item>\n                                        <paragraph>\n                                            <literal_strong>\n                                                y\n                                             (\n                                            <literal_emphasis>\n                                                nosuch_doc\n                                            )\n                                             -- \n                                            d\n                                    <list_item>\n                                        <paragraph>\n                                            <literal_strong>\n                                                k\n                                             -- \n                                            see \n                                            <literal classes=\"xref py py-class\">\n                                                nosuch_inline\n                        <field>\n                            <field_name>\n                                Return type\n                            <field_body>\n                                <paragraph>\n                                    nosuch_rt\n            <index entries=\"('single',\\ 'd\\ (built-in\\ variable)',\\ 'd',\\ '',\\ None)\">\n            <desc classes=\"py data\" desctype=\"data\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"data\">\n                <desc_signature _toc_name=\"d\" _toc_parts=\"('d',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"d\" ids=\"d\" module=\"True\">\n                    <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                        d\n                    <desc_annotation xml:space=\"preserve\">\n                        <desc_sig_punctuation classes=\"p\">\n                            :\n                        <desc_sig_space classes=\"w\">\n                             \n                        typemissing\n                <desc_content>\n            <note>\n                <index entries=\"('pair',\\ 'built-in\\ function;\\ h()',\\ 'h',\\ '',\\ None)\">\n                <desc classes=\"py function\" desctype=\"function\" domain=\"py\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"function\">\n                    <desc_signature _toc_name=\"h()\" _toc_parts=\"('h',)\" class=\"\" classes=\"sig sig-object py\" fullname=\"h\" ids=\"h\" module=\"True\">\n                        <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                            h\n                        <desc_parameterlist multi_line_parameter_list=\"0\" multi_line_trailing_comma=\"1\" xml:space=\"preserve\">\n                            <desc_parameter xml:space=\"preserve\">\n                                <desc_sig_name classes=\"n\">\n                                    z\n                    <desc_content>\n                        <field_list>\n                            <field>\n                                <field_name>\n                                    Parameters\n                                <field_body>\n                                    <paragraph>\n                                        <literal_strong>\n                                            z\n                                         (\n                                        <literal_emphasis>\n                                            nosuch_note\n                                        )\n                                         -- \n                                        q\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 7
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph skip_section_number=\"1\">\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                <literal>\n                    top()\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"#id1\" internal=\"1\" refuri=\"index\">\n                Top\n        <bullet_list>\n            <list_item>\n                <compact_paragraph skip_section_number=\"1\">\n                    <reference anchorname=\"#f\" internal=\"1\" refuri=\"index\">\n                        <literal>\n                            f()\n            <list_item>\n                <compact_paragraph>\n                    <reference anchorname=\"#sec\" internal=\"1\" refuri=\"index\">\n                        Sec\n                <bullet_list>\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#g\" internal=\"1\" refuri=\"index\">\n                                <literal>\n                                    g()\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#d\" internal=\"1\" refuri=\"index\">\n                                <literal>\n                                    d\n                    <list_item>\n                        <compact_paragraph skip_section_number=\"1\">\n                            <reference anchorname=\"#h\" internal=\"1\" refuri=\"index\">\n                                <literal>\n                                    h()\n"
+        },
+        "toctree_includes": {},
+        "warnings": [
+          "<project>/index.rst:1: WARNING: py:class reference target not found: nosuch_top [ref.class]",
+          "WARNING: py:class reference target not found: nosuch_top_field [ref.class]",
+          "<project>/part.inc:1: WARNING: py:class reference target not found: missingtype [ref.class]",
+          "<project>/index.rst:6: WARNING: py:class reference target not found: nosuch_inc [ref.class]",
+          "<project>/index.rst:13: WARNING: py:class reference target not found: alsomissing [ref.class]",
+          "<project>/index.rst:13: WARNING: py:class reference target not found: retmissing [ref.class]",
+          "<project>/index.rst:11: WARNING: py:class reference target not found: nosuch_doc [ref.class]",
+          "<project>/index.rst:16: WARNING: py:class reference target not found: nosuch_inline [ref.class]",
+          "<project>/index.rst:11: WARNING: py:class reference target not found: nosuch_rt [ref.class]",
+          "<project>/index.rst:19: WARNING: py:class reference target not found: typemissing [ref.class]",
+          "<project>/index.rst:22: WARNING: py:class reference target not found: nosuch_note [ref.class]"
+        ]
+      },
+      "files": {
+        "index": ".. py:function:: top(q: nosuch_top)\n\n   :param nosuch_top_field q: q\n\nTop\n===\n\n.. include:: part.inc\n\nSec\n---\n\n.. py:function:: g(y: alsomissing) -> retmissing\n\n   :param nosuch_doc y: d\n   :param k: see :py:class:`nosuch_inline`\n   :rtype: nosuch_rt\n\n.. py:data:: d\n   :type: typemissing\n\n.. note::\n\n   .. py:function:: h(z)\n\n      :param nosuch_note z: q\n"
+      },
+      "name": "py_locations"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "data_files": {
+        "example.py": "\"\"\"Example module.\"\"\"\n\nCONST = 1\n\n\ndef top(x):\n    \"\"\"Top function.\"\"\"\n    return x + 1\n\n\nclass Foo:\n    \"\"\"A class.\"\"\"\n\n    attr = 2\n\n    def method(self):\n        return self.attr\n\n\ndef tail():\n    pass\n"
+      },
+      "expect": {
+        "dependencies": {
+          "index": [
+            "<project>/example.py"
+          ]
+        },
+        "files_to_rebuild": {},
+        "genindex": [],
+        "included": {},
+        "index_entries": {
+          "index": []
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "index": [
+            null,
+            null,
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"index\" names=\"index\">\n        <title>\n            Index\n        <literal_block force=\"0\" highlight_args=\"{'linenostart': 1}\" language=\"python\" linenos=\"1\" source=\"<project>/example.py\" xml:space=\"preserve\">\n            \"\"\"Example module.\"\"\"\n            \n            CONST = 1\n        <literal_block force=\"1\" highlight_args=\"{'linenostart': 5}\" language=\"text\" linenos=\"1\" source=\"<project>/example.py\" xml:space=\"preserve\">\n            \n            \n        <literal_block force=\"0\" highlight_args=\"{}\" language=\"python\" linenos=\"1\" xml:space=\"preserve\">\n            x = 1\n"
+        },
+        "std": {
+          "anonlabels": {
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [],
+          "progoptions": [],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Index\n"
+        },
+        "toctree_includes": {},
+        "warnings": []
+      },
+      "files": {
+        "index": "Index\n=====\n\n.. literalinclude:: example.py\n   :language: python\n   :linenos:\n   :lines: 1-3\n\n.. literalinclude:: example.py\n   :language: text\n   :lineno-start: 5\n   :force:\n   :lines: 4-5\n\n.. code-block:: python\n   :linenos:\n\n   x = 1\n"
+      },
+      "name": "inc_highlight"
+    },
+    {
+      "conf": {
+        "smartquotes": false
+      },
+      "expect": {
+        "dependencies": {},
+        "files_to_rebuild": {},
+        "genindex": [
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "-x",
+                "subitems": [
+                  {
+                    "name": "git-add command line option",
+                    "targets": [
+                      [
+                        "",
+                        "#cmdoption-git-add-x"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "Symbols"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "environment variable",
+                "subitems": [
+                  {
+                    "name": "FOO BAR",
+                    "targets": [
+                      [
+                        "",
+                        "#envvar-FOO-BAR"
+                      ],
+                      [
+                        "",
+                        "#index-0"
+                      ],
+                      [
+                        "",
+                        "#index-1"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "E"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "FOO BAR",
+                "subitems": [],
+                "targets": [
+                  [
+                    "",
+                    "#index-0"
+                  ],
+                  [
+                    "",
+                    "#index-1"
+                  ]
+                ]
+              }
+            ],
+            "group": "F"
+          },
+          {
+            "entries": [
+              {
+                "category_key": null,
+                "name": "git-add command line option",
+                "subitems": [
+                  {
+                    "name": "-x",
+                    "targets": [
+                      [
+                        "",
+                        "#cmdoption-git-add-x"
+                      ]
+                    ]
+                  }
+                ],
+                "targets": []
+              }
+            ],
+            "group": "G"
+          }
+        ],
+        "included": {},
+        "index_entries": {
+          "index": [
+            [
+              "single",
+              "FOO BAR",
+              "index-0",
+              "",
+              null
+            ],
+            [
+              "single",
+              "environment variable; FOO BAR",
+              "index-0",
+              "",
+              null
+            ],
+            [
+              "single",
+              "FOO BAR",
+              "index-1",
+              "",
+              null
+            ],
+            [
+              "single",
+              "environment variable; FOO BAR",
+              "index-1",
+              "",
+              null
+            ],
+            [
+              "single",
+              "environment variable; FOO BAR",
+              "envvar-FOO-BAR",
+              "",
+              null
+            ],
+            [
+              "pair",
+              "git-add command line option; -x",
+              "cmdoption-git-add-x",
+              "",
+              null
+            ]
+          ]
+        },
+        "py_modindex": {
+          "collapse": false,
+          "groups": []
+        },
+        "py_modules": [],
+        "py_objects": [],
+        "relations": {
+          "index": [
+            null,
+            null,
+            null
+          ]
+        },
+        "resolved_pformat": {
+          "index": "<document source=\"<project>/index.rst\" translation_progress=\"{'total': 0, 'translated': 0}\">\n    <section ids=\"round-d-names\" names=\"round\\ d\\ names\">\n        <title>\n            Round D names\n        <paragraph>\n            Labels: \n            <reference internal=\"1\" refid=\"pad-lbl\">\n                <inline classes=\"std std-ref\">\n                    Pad\n            , \n            <reference internal=\"1\" refid=\"a-b\">\n                <inline classes=\"std std-ref\">\n                    AB\n             and \n            <reference internal=\"1\" refid=\"a-b\">\n                <inline classes=\"std std-ref\">\n                    AB2\n            .\n        <paragraph>\n            Dangling: \n            <inline classes=\"xref std std-ref\">\n                X\n             and \n            <inline classes=\"xref std std-ref\">\n                only comment\n            .\n        <paragraph>\n            Environment: \n            <index entries=\"('single',\\ 'FOO\\ BAR',\\ 'index-0',\\ '',\\ None) ('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'index-0',\\ '',\\ None)\">\n            <target ids=\"index-0\">\n            <reference internal=\"1\" refid=\"envvar-FOO-BAR\">\n                <literal classes=\"xref std std-envvar\">\n                    FOO BAR\n             and \n            <index entries=\"('single',\\ 'FOO\\ BAR',\\ 'index-1',\\ '',\\ None) ('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'index-1',\\ '',\\ None)\">\n            <target ids=\"index-1\">\n            <reference internal=\"1\" refid=\"envvar-FOO-BAR\">\n                <literal classes=\"xref std std-envvar\">\n                    FOO\u001fBAR\n            .\n        <paragraph>\n            Option: \n            <reference internal=\"1\" refid=\"cmdoption-git-add-x\">\n                <literal classes=\"xref std std-option\">\n                    git\u001fadd -x\n             and \n            <reference internal=\"1\" refid=\"cmdoption-git-add-x\">\n                <literal classes=\"xref std std-option\">\n                    git-add -x\n            .\n        <index entries=\"('single',\\ 'environment\\ variable;\\ FOO\\ BAR',\\ 'envvar-FOO-BAR',\\ '',\\ None)\">\n        <desc classes=\"std envvar\" desctype=\"envvar\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"envvar\">\n            <desc_signature _toc_name=\"\" _toc_parts=\"()\" classes=\"sig sig-object std\" ids=\"envvar-FOO-BAR\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    FOO\u001fBAR\n            <desc_content>\n                <paragraph>\n                    Variable.\n        <index entries=\"('pair',\\ 'git-add\\ command\\ line\\ option;\\ -x',\\ 'cmdoption-git-add-x',\\ '',\\ None)\">\n        <desc classes=\"std option\" desctype=\"option\" domain=\"std\" no-contents-entry=\"0\" no-index=\"0\" no-index-entry=\"0\" no-typesetting=\"0\" nocontentsentry=\"0\" noindex=\"0\" noindexentry=\"0\" objtype=\"option\">\n            <desc_signature _toc_name=\"\" _toc_parts=\"()\" allnames=\"-x\" classes=\"sig sig-object std\" ids=\"cmdoption-git-add-x\">\n                <desc_name classes=\"sig-name descname\" xml:space=\"preserve\">\n                    -x\n                <desc_addname classes=\"sig-prename descclassname\" xml:space=\"preserve\">\n            <desc_content>\n                <paragraph>\n                    Option.\n        <target ids=\"pad-lbl\" names=\"pad\\ lbl\">\n        <comment xml:space=\"preserve\">\n            _ pad  lbl :\n        <target ids=\"a-b\" names=\"a\\ b\">\n        <comment xml:space=\"preserve\">\n            _ a b :\n        <comment xml:space=\"preserve\">\n            _ only comment :\n"
+        },
+        "std": {
+          "anonlabels": {
+            "a b": [
+              "index",
+              "a-b"
+            ],
+            "genindex": [
+              "genindex",
+              ""
+            ],
+            "modindex": [
+              "py-modindex",
+              ""
+            ],
+            "pad lbl": [
+              "index",
+              "pad-lbl"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              ""
+            ],
+            "search": [
+              "search",
+              ""
+            ]
+          },
+          "labels": {
+            "genindex": [
+              "genindex",
+              "",
+              "Index"
+            ],
+            "modindex": [
+              "py-modindex",
+              "",
+              "Module Index"
+            ],
+            "py-modindex": [
+              "py-modindex",
+              "",
+              "Python Module Index"
+            ],
+            "search": [
+              "search",
+              "",
+              "Search Page"
+            ]
+          },
+          "objects": [
+            {
+              "docname": "index",
+              "labelid": "envvar-FOO-BAR",
+              "name": "FOO BAR",
+              "objtype": "envvar"
+            }
+          ],
+          "progoptions": [
+            {
+              "docname": "index",
+              "labelid": "cmdoption-git-add-x",
+              "name": "-x",
+              "program": "git-add"
+            }
+          ],
+          "terms": {}
+        },
+        "toc_fignumbers": {},
+        "toc_num_entries": {
+          "index": 1
+        },
+        "toc_secnumbers": {},
+        "tocs_pformat": {
+          "index": "<bullet_list>\n    <list_item>\n        <compact_paragraph>\n            <reference anchorname=\"\" internal=\"1\" refuri=\"index\">\n                Round D names\n"
+        },
+        "toctree_includes": {},
+        "warnings": [
+          "<project>/index.rst:6: WARNING: undefined label: 'only comment' [ref.ref]",
+          "<project>/index.rst:6: WARNING: undefined label: 'only comment' [ref.ref]"
+        ]
+      },
+      "files": {
+        "index": "Round D names\n=============\n\nLabels: :ref:`Pad <pad lbl>`, :ref:`AB <a b>` and :ref:`AB2 <a\u001fb>`.\n\nDangling: :ref:`X <only comment>` and :ref:`only comment`.\n\nEnvironment: :envvar:`FOO BAR` and :envvar:`FOO\u001fBAR`.\n\nOption: :option:`git\u001fadd -x` and :option:`git-add -x`.\n\n.. envvar:: FOO\u001fBAR\n\n   Variable.\n\n.. program:: git\u001fadd\n\n.. option:: -x\n\n   Option.\n\n.. _pad  lbl:\n.. _ pad  lbl :\n\n.. _a\u001fb:\n.. _ a b :\n\n.. _ only comment :\n"
+      },
+      "name": "names_round_d"
     }
   ],
   "sphinx_version": "9.1.0"

@@ -4,7 +4,7 @@
 //! deterministic corpus through sphinx.util.matching.patmatch and records
 //! every verdict. Regenerate with:
 //!
-//!     uv run --python 3.12 --with 'sphinx>=9.1,<9.2' python tools/gen_pattern_fixture.py
+//!     PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx>=9.1,<9.2' python tools/gen_pattern_fixture.py
 
 use sphinx_ultra::matching::pattern_match;
 

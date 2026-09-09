@@ -42,14 +42,13 @@
 //!   general-category table this crate does not carry.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use log::warn;
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::doctree::{AttrValue, Doctree, Node};
-use crate::env::std_domain::node_line;
 use crate::env::{BuildEnvironment, IndexEntryRecord};
 use crate::error::{BuildWarning, WarningType};
 use crate::rst::block::py_repr;
@@ -84,19 +83,25 @@ pub fn process_doc(
     docname: &str,
     doctree: &mut Doctree,
     path: &Path,
-    text: &str,
     warnings: &mut Vec<BuildWarning>,
 ) {
     let mut collected: Vec<IndexEntryRecord> = Vec::new();
+    // Split borrow: the walk mutates `root` while the warning callback
+    // reads the `sources` table for each node's `(source, line)`.
+    let sources = std::mem::take(&mut doctree.sources);
     visit(
         &mut doctree.root,
         docname,
         &mut collected,
         &mut |message, node| {
+            let source_path = sources
+                .get(node.span.source as usize)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| path.to_path_buf());
             warnings.push(
                 BuildWarning::new(
-                    path.to_path_buf(),
-                    Some(node_line(node, text)),
+                    source_path,
+                    Some(node.span.line as usize),
                     message,
                     WarningType::Other,
                 )
@@ -104,6 +109,7 @@ pub fn process_doc(
             );
         },
     );
+    doctree.sources = sources;
     env.index_entries
         .entry(docname.to_string())
         .or_default()
@@ -779,7 +785,6 @@ mod tests {
             "a",
             &mut doctree,
             Path::new("a.rst"),
-            "",
             &mut warnings,
         );
 

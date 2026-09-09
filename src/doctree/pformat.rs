@@ -31,13 +31,14 @@ fn write_node(node: &Node, depth: usize, out: &mut String) {
     let indent = "    ".repeat(depth);
     if node.kind == kinds::TEXT {
         if let Some(text) = &node.text {
-            // Python str.splitlines() semantics: a trailing newline does
-            // NOT produce a final empty line (interior empties are kept).
-            let mut lines: Vec<&str> = text.split('\n').collect();
-            if lines.len() > 1 && lines.last() == Some(&"") {
-                lines.pop();
-            }
-            for line in lines {
+            // `Text.pformat`: `lines = [indent*level + v for v in
+            // self.astext().splitlines()]`, then `if not lines: return ''`.
+            // It is Python's FULL `splitlines()` — `\v`, `\f`, `\x1c`-`\x1e`,
+            // U+0085, U+2028 and U+2029 all break a line, which matters for
+            // the raw file bytes `include :literal:` puts in a Text node —
+            // and an EMPTY Text contributes nothing at all, not an
+            // indent-only line.
+            for line in crate::utils::py_splitlines(text) {
                 out.push_str(&indent);
                 out.push_str(line);
                 out.push('\n');
@@ -224,5 +225,65 @@ mod tests {
         assert_eq!(li.pformat(), "<list_item>\n");
         let t = Node::elem(kinds::TRANSITION, Span::ZERO);
         assert_eq!(t.pformat(), "<transition>\n");
+    }
+    /// `Text.pformat` splits on Python's FULL `splitlines()` boundary set
+    /// and drops an empty Text node entirely — reachable since wave 4.5,
+    /// because `include :literal:` puts raw file bytes into a Text node
+    /// without routing them through `string2lines` (which would have
+    /// turned `\v`/`\f` into spaces).
+    ///
+    // oracle (docutils 0.22.4, scratchpad A/pf.py):
+    //   literal_block('', '', Text('a'), Text(''), Text('p1\fp2')).pformat()
+    //     == '<literal_block xml:space="preserve">\n    a\n    p1\n    p2\n'
+    //   literal_block('', '', Text('a\x0bb\x85c d')).pformat()
+    //     == '<literal_block xml:space="preserve">\n    a\n    b\n    c d\n'
+    //   paragraph('', '', Text('x y'), Text('t\rs'), Text('k\x1cj')).pformat()
+    //     == '<paragraph>\n    x y\n    t\n    s\n    k\n    j\n'
+    #[test]
+    fn pformat_text_uses_python_splitlines_and_skips_empty_text() {
+        let mut lb = Node::elem(kinds::LITERAL_BLOCK, Span::ZERO);
+        lb.set("xml:space", AttrValue::Str("preserve".into()));
+        lb.children.push(Node::text_node("a", Span::ZERO));
+        lb.children.push(Node::text_node("", Span::ZERO));
+        lb.children.push(Node::text_node("p1\u{c}p2", Span::ZERO));
+        assert_eq!(
+            lb.pformat(),
+            "<literal_block xml:space=\"preserve\">\n    a\n    p1\n    p2\n"
+        );
+
+        let mut vt = Node::elem(kinds::LITERAL_BLOCK, Span::ZERO);
+        vt.set("xml:space", AttrValue::Str("preserve".into()));
+        vt.children
+            .push(Node::text_node("a\u{b}b\u{85}c d", Span::ZERO));
+        assert_eq!(
+            vt.pformat(),
+            "<literal_block xml:space=\"preserve\">\n    a\n    b\n    c d\n"
+        );
+
+        let mut p = Node::elem(kinds::PARAGRAPH, Span::ZERO);
+        p.children.push(Node::text_node("x y", Span::ZERO));
+        p.children.push(Node::text_node("t\rs", Span::ZERO));
+        p.children.push(Node::text_node("k\u{1c}j", Span::ZERO));
+        assert_eq!(
+            p.pformat(),
+            "<paragraph>\n    x y\n    t\n    s\n    k\n    j\n"
+        );
+    }
+
+    /// A trailing newline still yields no extra line, and a Text holding
+    /// only a newline still yields one (indent-only) line.
+    ///
+    // oracle: literal_block('', '', Text('one\ntwo\n'), Text('\n')).pformat()
+    //   == '<literal_block xml:space="preserve">\n    one\n    two\n    \n'
+    #[test]
+    fn pformat_text_trailing_newline_rules() {
+        let mut lb = Node::elem(kinds::LITERAL_BLOCK, Span::ZERO);
+        lb.set("xml:space", AttrValue::Str("preserve".into()));
+        lb.children.push(Node::text_node("one\ntwo\n", Span::ZERO));
+        lb.children.push(Node::text_node("\n", Span::ZERO));
+        assert_eq!(
+            lb.pformat(),
+            "<literal_block xml:space=\"preserve\">\n    one\n    two\n    \n"
+        );
     }
 }

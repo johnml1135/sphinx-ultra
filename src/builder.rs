@@ -16,10 +16,11 @@ use crate::env::dependencies as env_dependencies;
 use crate::env::genindex as env_genindex;
 use crate::env::metadata as env_metadata;
 use crate::env::numbers as env_numbers;
+use crate::env::py_domain as env_py_domain;
 use crate::env::resolve as env_resolve;
 use crate::env::std_domain as env_std;
 use crate::env::toctree as env_toctree;
-use crate::env::toctree::{py_repr_str, ConsistencyLevel, ToctreeWarningKind};
+use crate::env::toctree::{ConsistencyLevel, ToctreeWarningKind};
 use crate::env::BuildEnvironment;
 use crate::error::{BuildErrorReport, BuildWarning, ErrorType, WarningType};
 use crate::extensions::{ExtensionLoader, SphinxApp};
@@ -27,6 +28,7 @@ use crate::intersphinx::{self, HttpConfig, Intersphinx, LoadRequest, UreqFetcher
 use crate::matching;
 use crate::parser::Parser;
 use crate::utils;
+use crate::utils::py_repr_str;
 
 /// Subdirectory of the cache dir holding one bincode doctree per document.
 /// It lives inside the `.config-fingerprint`-governed cache directory, so a
@@ -55,7 +57,11 @@ const DOCTREE_MAGIC: &[u8; 4] = b"SUDT";
 ///   not. Wave 4's index-entry attribute moving from `AttrValue::Str` to
 ///   `AttrValue::List` is the worked example: both variants decode, and an
 ///   old blob then harvests the wrong index entries.
-const DOCTREE_FORMAT_VERSION: u32 = 1;
+///
+/// Version 2: wave 4.5's provenance change — `Span` gained a `line` field
+/// (and its byte range now indexes the parser's processed source text),
+/// so version-1 blobs no longer decode as written.
+const DOCTREE_FORMAT_VERSION: u32 = 2;
 
 /// Bytes of the [`DOCTREE_MAGIC`] + [`DOCTREE_FORMAT_VERSION`] header.
 const DOCTREE_HEADER_LEN: usize = DOCTREE_MAGIC.len() + std::mem::size_of::<u32>();
@@ -135,6 +141,10 @@ pub struct SphinxBuilder {
     /// output derived from the environment plus the builder's own uri
     /// scheme, not environment state.
     genindex: Mutex<Vec<env_genindex::IndexGroup>>,
+    /// The Python module index (`PythonModuleIndex.generate`), build output
+    /// exactly like [`Self::genindex`] — sphinx assembles it while the HTML
+    /// builder writes the `py-modindex` page.
+    py_modindex: Mutex<env_py_domain::PyModindex>,
     /// The cross-project inventories `intersphinx_mapping` names, loaded
     /// once per build. Empty (and inert) unless a mapping is configured.
     intersphinx: Intersphinx,
@@ -244,9 +254,9 @@ impl SphinxBuilder {
         // Canonicalize source_dir so it matches the canonicalized absolute paths
         // returned by matching::get_matching_files; without this, relative
         // --source paths (including the default ".") fail strip_prefix later.
-        let source_dir = source_dir.canonicalize().unwrap_or(source_dir);
+        let source_dir = crate::utils::canonicalize_simplified(&source_dir).unwrap_or(source_dir);
 
-        let parser = Parser::new(&config)?;
+        let parser = Parser::new(&config)?.with_srcdir(source_dir.clone());
 
         let parallel_jobs = config.parallel_jobs.unwrap_or_else(|| {
             std::thread::available_parallelism()
@@ -287,6 +297,7 @@ impl SphinxBuilder {
             env,
             resolved: Mutex::new(BTreeMap::new()),
             genindex: Mutex::new(Vec::new()),
+            py_modindex: Mutex::new(env_py_domain::PyModindex::default()),
             intersphinx: Intersphinx::default(),
         })
     }
@@ -453,17 +464,19 @@ impl SphinxBuilder {
 
         // Keep documents in discovery order (the merge phase iterates a
         // docname-sorted view of its own): the write and validation phases
-        // below produce warnings in this order, which is user-visible.
-        let processed_docs: Vec<Document> = read_results
+        // below produce warnings in this order, which is user-visible. The
+        // doctrees ride along for their source tables, which the
+        // validation pass needs to spell an included file's path.
+        let (processed_docs, doctrees): (Vec<Document>, Vec<Doctree>) = read_results
             .into_iter()
-            .map(|result| result.document)
-            .collect();
+            .map(|result| (result.document, result.doctree))
+            .unzip();
 
         self.write_phase(&processed_docs);
 
         // Directive/role validation runs in every build unless disabled
         if self.config.validate_directives {
-            self.validate_directives_and_roles(&processed_docs);
+            self.validate_directives_and_roles(&processed_docs, &doctrees);
         }
 
         // Generate cross-references and indices
@@ -976,8 +989,24 @@ impl SphinxBuilder {
             );
 
             // The files this document pulls in, which is what makes it
-            // outdated when one of *them* changes.
-            env_dependencies::process_doc(env, docname, &result.doctree, &self.source_dir);
+            // outdated when one of *them* changes: image uris from the
+            // doctree walk plus the parse-recorded include targets.
+            env_dependencies::process_doc(
+                env,
+                docname,
+                &result.doctree,
+                &self.source_dir,
+                &result.document.registry.dependencies,
+            );
+
+            // The docnames it textually includes (`env.note_included`
+            // replayed from the parse records): the orphan check in
+            // `check_consistency` is the one consumer.
+            let included: std::collections::BTreeSet<String> =
+                result.document.registry.included.iter().cloned().collect();
+            if !included.is_empty() {
+                env.included.insert(docname.to_string(), included);
+            }
 
             let (toc, num_entries) = env_toctree::build_toc(&result.doctree, docname);
             // Each toctree node copied into the toc is noted, in the order
@@ -1007,20 +1036,26 @@ impl SphinxBuilder {
             // The document's toctree diagnostics, produced when its entries
             // were resolved. Sphinx logs them during the read phase, which
             // walks documents in this same sorted order.
-            self.report_parse_warnings(&result.document);
+            self.report_parse_warnings(&result.document, &result.doctree);
 
             // The domains' read-phase hooks, dispatched in the order
-            // `_DomainsContainer._process_doc` walks them — `index` before
-            // `std` — and after the parse diagnostics above, which Sphinx
-            // logs while reading.
-            let text = result.document.content.to_string();
+            // `_DomainsContainer._process_doc` walks them — `c, changeset,
+            // citation, cpp, index, js, math, py, rst, std`, so `index`
+            // before `std` with `py` in between — and after the parse
+            // diagnostics above, which Sphinx logs while reading.
+            // `PythonDomain` defines no `process_doc` hook, so its slot in
+            // that walk is a no-op: the py registrations (and their
+            // duplicate warnings, which are parse-time in Sphinx and
+            // interleave with std's in document order) replay inside
+            // `env_std::process_doc`'s parse-time pass below. Warning
+            // locations come from node spans and the doctree's source
+            // table, not the document text.
             let mut index_warnings = Vec::new();
             env_genindex::process_doc(
                 env,
                 docname,
                 &mut result.doctree,
                 &result.document.source_path,
-                &text,
                 &mut index_warnings,
             );
             for warning in index_warnings {
@@ -1034,7 +1069,6 @@ impl SphinxBuilder {
                     docname,
                     doctree: &result.doctree,
                     registry: &result.document.registry,
-                    text: &text,
                     path: &result.document.source_path,
                 },
                 &doc2path,
@@ -1076,11 +1110,20 @@ impl SphinxBuilder {
     /// records rather than raised as they happen, so that a cache hit — which
     /// skips the parse entirely — still reproduces them.
     ///
-    /// Sphinx logs both as the parse reaches them, so they interleave by
-    /// source position; the two record streams are each in document order,
-    /// and a stable sort by line merges them back into that one order.
-    fn report_parse_warnings(&self, document: &Document) {
-        let mut ordered: Vec<(u32, BuildWarning)> = Vec::new();
+    /// Each stream replays in its own record sequence — the order the parse
+    /// produced. (The old stable sort by line only reproduced document
+    /// order while every record came from one source; an included file's
+    /// warnings would be shuffled into the includer's. A warning's line is
+    /// display data, not an ordering key.) A document carrying both kinds
+    /// emits all toctree warnings before all log warnings rather than
+    /// interleaved by position — the same cross-category simplification
+    /// `std_domain::process_doc` documents.
+    ///
+    /// `doctree` supplies the source table: a warning raised inside an
+    /// included file — a toctree's `location=toctree` or a log warning's
+    /// `location=node` — renders that file's path, not the document's.
+    fn report_parse_warnings(&self, document: &Document, doctree: &Doctree) {
+        let mut ordered: Vec<BuildWarning> = Vec::new();
         for toctree in &document.toctrees {
             for warning in &toctree.warnings {
                 let warning_type = match warning.kind {
@@ -1090,34 +1133,42 @@ impl SphinxBuilder {
                     }
                     ToctreeWarningKind::DuplicateEntry => WarningType::Other,
                 };
-                ordered.push((
-                    warning.line,
+                let source_path = doctree
+                    .sources
+                    .get(warning.source as usize)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| document.source_path.clone());
+                ordered.push(
                     BuildWarning::new(
-                        document.source_path.clone(),
+                        source_path,
                         Some(warning.line as usize),
                         warning.message.clone(),
                         warning_type,
                     )
                     .with_category(warning.category.clone()),
-                ));
+                );
             }
         }
         for warning in &document.registry.log_warnings {
+            // `rendered_path` reproduces sphinx's tuple-location doc2path
+            // append (the doubled `.rst.rst` quirk) for the records that
+            // carry it — see `ParseLogWarning::rendered_path` for WHY.
+            let source_path = doctree
+                .sources
+                .get(warning.source as usize)
+                .map(|path| PathBuf::from(warning.rendered_path(path)))
+                .unwrap_or_else(|| document.source_path.clone());
             // Sphinx logs these with no `type`/`subtype`, so they render
             // with no `[category]` suffix.
-            ordered.push((
-                warning.line,
-                BuildWarning::new(
-                    document.source_path.clone(),
-                    Some(warning.line as usize),
-                    warning.message.clone(),
-                    WarningType::Other,
-                ),
+            ordered.push(BuildWarning::new(
+                source_path,
+                Some(warning.line as usize),
+                warning.message.clone(),
+                WarningType::Other,
             ));
         }
-        ordered.sort_by_key(|(line, _)| *line);
         let mut warnings = self.warnings.lock().unwrap();
-        warnings.extend(ordered.into_iter().map(|(_, warning)| warning));
+        warnings.extend(ordered);
     }
 
     /// Resolve phase: whole-project state that only exists once every
@@ -1183,6 +1234,7 @@ impl SphinxBuilder {
 
         self.xref_phase(env, results);
         self.genindex_phase(env, &sources);
+        self.py_modindex_phase(env);
 
         if let Err(e) = env.save(self.cache.cache_dir()) {
             log::warn!(
@@ -1217,6 +1269,18 @@ impl SphinxBuilder {
             self.add_warning(message.into_warning(&source));
         }
         *self.genindex.lock().unwrap() = groups;
+    }
+
+    /// Assemble the Python module index (`PythonModuleIndex.generate`).
+    ///
+    /// Like [`Self::genindex_phase`], Sphinx only runs this from an HTML
+    /// build (`write_domain_indices`) — the environment oracle calls
+    /// `generate()` explicitly after its dummy build, so this too runs
+    /// unconditionally at the end of the resolve phase. It raises no
+    /// diagnostics of its own.
+    fn py_modindex_phase(&self, env: &BuildEnvironment) {
+        *self.py_modindex.lock().unwrap() =
+            env_py_domain::generate_modindex(&env.py, &self.config.modindex_common_prefix);
     }
 
     /// Cross-reference resolution (`ReferencesResolver`, run per document as
@@ -1271,7 +1335,6 @@ impl SphinxBuilder {
                 &nitpick,
                 &result.docname,
                 &mut doctree,
-                &result.document.content.to_string(),
                 &result.document.source_path,
             );
             unresolvable_domain_refs += resolution.unresolvable_domain_refs;
@@ -1285,9 +1348,12 @@ impl SphinxBuilder {
         }
 
         if unresolvable_domain_refs > 0 {
+            // References into domains this build has no resolver for —
+            // `refdomain` outside `{"", "std", "py"}` (`c:`, `cpp:`, `js:`,
+            // ...) — counted by the resolver rather than warned about.
             info!(
-                "{unresolvable_domain_refs} python-domain reference(s) not validated \
-                 (no object inventory until M5)"
+                "{unresolvable_domain_refs} cross-domain reference(s) not validated \
+                 (domain not implemented until M5)"
             );
         }
     }
@@ -1336,23 +1402,32 @@ impl SphinxBuilder {
     }
 
     /// Surface one numbering diagnostic at the location Sphinx logs it —
-    /// the source line of the `toctree` node it names, which the parse
-    /// record for that document's Nth toctree carries.
+    /// the `(source, line)` of the `toctree` node it names
+    /// (`location=toctreenode`), which the parse record for that
+    /// document's Nth toctree carries; a toctree spliced in from an
+    /// included file names that file through the doctree's source table.
     fn report_numbering_warning(
         &self,
         warning: &env_numbers::NumberingWarning,
         results: &[ReadResult],
     ) {
-        let document = results
+        let result = results
             .iter()
-            .find(|result| result.docname == warning.docname)
-            .map(|result| &result.document);
-        let source = document
-            .map(|document| document.source_path.clone())
+            .find(|result| result.docname == warning.docname);
+        let document = result.map(|result| &result.document);
+        let toctree = document.and_then(|document| document.toctrees.get(warning.toctree_index));
+        let source = result
+            .and_then(|result| {
+                let toctree = toctree?;
+                result
+                    .doctree
+                    .sources
+                    .get(toctree.source as usize)
+                    .map(PathBuf::from)
+            })
+            .or_else(|| document.map(|document| document.source_path.clone()))
             .unwrap_or_else(|| PathBuf::from(&warning.docname));
-        let line = document
-            .and_then(|document| document.toctrees.get(warning.toctree_index))
-            .map(|toctree| toctree.line as usize);
+        let line = toctree.map(|toctree| toctree.line as usize);
         self.warnings.lock().unwrap().push(
             BuildWarning::new(
                 source,
@@ -1576,16 +1651,18 @@ impl SphinxBuilder {
     /// `Unknown` results stay silent — the built-in validators cover a
     /// fraction of real Sphinx, and reporting the rest would drown every
     /// real project in noise.
-    fn validate_directives_and_roles(&self, processed_docs: &[Document]) {
+    fn validate_directives_and_roles(&self, processed_docs: &[Document], doctrees: &[Doctree]) {
         use crate::directives::validation::{
             DirectiveValidationResult, DirectiveValidationSystem, ParsedDirective, ParsedRole,
             RoleValidationResult, SourceLocation,
         };
         use crate::document::DocumentContent;
 
+        debug_assert_eq!(processed_docs.len(), doctrees.len());
         let results: Vec<(Vec<BuildWarning>, usize)> = processed_docs
             .par_iter()
-            .filter_map(|doc| {
+            .zip(doctrees.par_iter())
+            .filter_map(|(doc, doctree)| {
                 if !matches!(&doc.content, DocumentContent::RestructuredText(_)) {
                     return None;
                 }
@@ -1596,8 +1673,17 @@ impl SphinxBuilder {
                 // gets its own (cheap) system instance for the parallel pass.
                 let mut system = DirectiveValidationSystem::new();
                 // Since wave 3 the feed comes from the parse-time records
-                // (M1-scanner-compatible tuples), not a raw re-scan.
-                let file = doc.source_path.display().to_string();
+                // (M1-scanner-compatible tuples), not a raw re-scan. Each
+                // record's `line` is numbered within its own source, so the
+                // path comes from the doctree's source table: a directive
+                // inside an included file is reported against that file.
+                let file_of = |source: u16| -> String {
+                    doctree
+                        .sources
+                        .get(source as usize)
+                        .cloned()
+                        .unwrap_or_else(|| doc.source_path.display().to_string())
+                };
                 let directives: Vec<ParsedDirective> = doc
                     .directive_records
                     .iter()
@@ -1607,7 +1693,7 @@ impl SphinxBuilder {
                         options: r.options.iter().cloned().collect(),
                         content: r.content.clone(),
                         location: SourceLocation {
-                            file: file.clone(),
+                            file: file_of(r.source),
                             line: r.line as usize,
                             column: 0,
                         },
@@ -1621,7 +1707,7 @@ impl SphinxBuilder {
                         target: r.target.clone(),
                         display_text: r.display.clone(),
                         location: SourceLocation {
-                            file: file.clone(),
+                            file: file_of(r.source),
                             line: r.line as usize,
                             column: 0,
                         },
@@ -1635,7 +1721,7 @@ impl SphinxBuilder {
                         DirectiveValidationResult::Warning(msg)
                         | DirectiveValidationResult::Error(msg) => {
                             warnings.push(BuildWarning::new(
-                                doc.source_path.clone(),
+                                PathBuf::from(&directive.location.file),
                                 Some(directive.location.line),
                                 msg,
                                 crate::error::WarningType::Other,
@@ -1650,7 +1736,7 @@ impl SphinxBuilder {
                         RoleValidationResult::Unknown => unknown += 1,
                         RoleValidationResult::Warning(msg) | RoleValidationResult::Error(msg) => {
                             warnings.push(BuildWarning::new(
-                                doc.source_path.clone(),
+                                PathBuf::from(&role.location.file),
                                 Some(role.location.line),
                                 msg,
                                 crate::error::WarningType::Other,
@@ -1711,6 +1797,10 @@ impl SphinxBuilder {
             object.insert(
                 "genindex".to_string(),
                 env_genindex::snapshot(&self.genindex.lock().unwrap()),
+            );
+            object.insert(
+                "py_modindex".to_string(),
+                env_py_domain::modindex_snapshot(&self.py_modindex.lock().unwrap()),
             );
         }
         snapshot
@@ -1823,6 +1913,26 @@ mod tests {
         tagged.tags = vec!["draft".to_string()];
         assert_ne!(config_fingerprint(&tagged).unwrap(), baseline, "tags");
 
+        // `source_encoding` is rebuild class `'env'` (`config.py:244`): a
+        // change must re-read every document.
+        let mut encoded = base.clone();
+        encoded.source_encoding = "latin-1".to_string();
+        assert_ne!(
+            config_fingerprint(&encoded).unwrap(),
+            baseline,
+            "source_encoding"
+        );
+
+        // ...while the config-inited diagnostic record is not configuration
+        // at all, and must not invalidate anything.
+        let mut mismatched = base.clone();
+        mismatched.note_confval_type_mismatch("maximum_signature_line_length", "str");
+        assert_eq!(
+            config_fingerprint(&mismatched).unwrap(),
+            baseline,
+            "confval_type_mismatches"
+        );
+
         let mut nitpick_ignore = base.clone();
         nitpick_ignore.nitpick_ignore = vec![("ref".to_string(), "x".to_string())];
         assert_ne!(
@@ -1860,6 +1970,71 @@ mod tests {
             .html_context
             .insert("a".to_string(), serde_json::Value::String("Z".to_string()));
         assert_ne!(config_fingerprint(&changed).unwrap(), first);
+    }
+
+    /// Row 9 of the include checklist: the parse-time records replay
+    /// into `env.included`/`env.dependencies` on merge, and the orphan
+    /// warning consults `env.included` (src/env/toctree.rs check) — a doc
+    /// reachable only through an `include` stays silent while a genuinely
+    /// unlinked one still warns.
+    #[test]
+    fn include_records_replay_into_the_environment_and_suppress_the_orphan() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        let output_dir = tmp.path().join("build");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(
+            source_dir.join("index.rst"),
+            "Index\n=====\n\n.. toctree::\n\n   a\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source_dir.join("a.rst"),
+            "A\n=\n\n.. include:: part.rst\n\n.. include:: snippet.txt\n",
+        )
+        .unwrap();
+        std::fs::write(source_dir.join("part.rst"), "part para\n").unwrap();
+        std::fs::write(source_dir.join("snippet.txt"), "plain snippet\n").unwrap();
+        std::fs::write(
+            source_dir.join("not_linked.rst"),
+            "Not Linked\n==========\n\nOrphan candidate.\n",
+        )
+        .unwrap();
+
+        let (stats, builder) = build_incrementally(&source_dir, &output_dir);
+
+        // Canonicalized like the builder's own source_dir.
+        let src = crate::utils::canonicalize_simplified(&source_dir).unwrap();
+        assert_eq!(
+            builder.env.included.get("a"),
+            Some(&std::collections::BTreeSet::from(["part".to_string()])),
+            "only the docname-mapping include registers (snippet.txt maps to no docname)"
+        );
+        assert_eq!(
+            builder
+                .env
+                .dependencies
+                .get("a")
+                .map(|set| set.iter().cloned().collect::<Vec<_>>()),
+            Some(vec![src.join("part.rst"), src.join("snippet.txt")]),
+            "every opened include target is a dependency, the non-doc file too"
+        );
+
+        let orphan_warnings: Vec<String> = stats
+            .warning_details
+            .iter()
+            .filter(|w| w.message.contains("isn't included in any toctree"))
+            .map(|w| w.file.display().to_string())
+            .collect();
+        assert_eq!(
+            orphan_warnings.len(),
+            1,
+            "exactly the genuinely unlinked doc warns: {orphan_warnings:?}"
+        );
+        assert!(
+            orphan_warnings[0].ends_with("not_linked.rst"),
+            "{orphan_warnings:?}"
+        );
     }
 
     #[test]

@@ -315,6 +315,14 @@ async fn run_build(args: RunArgs) -> Result<i32> {
         config.fail_on_warning = true;
     }
 
+    // Sphinx type-checks the finished configuration once at `config-inited`,
+    // i.e. after conf.py AND after every override — a rejected value only
+    // warns, and the build continues with it.
+    for message in config.validate() {
+        warn!("{}", message);
+        config_warnings.push(message);
+    }
+
     // Save the fail_on_warning flag before moving config
     let should_fail_on_warning = config.fail_on_warning;
 
@@ -593,8 +601,8 @@ async fn run_sphinx_build_mode(sb: SphinxBuildCli) -> i32 {
 /// so `docs` vs `./docs/` still match; a nonexistent output dir cannot
 /// overlap an existing source.
 fn output_overlaps_source(source: &std::path::Path, output: &std::path::Path) -> Option<String> {
-    let source = source.canonicalize().ok()?;
-    let output = output.canonicalize().ok()?;
+    let source = sphinx_ultra::utils::canonicalize_simplified(source).ok()?;
+    let output = sphinx_ultra::utils::canonicalize_simplified(output).ok()?;
     if source == output {
         Some(format!(
             "'{}' is same as source directory!",

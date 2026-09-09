@@ -12,6 +12,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use super::messages;
 use super::Node;
+use crate::utils::py_isspace;
 
 /// docutils `_non_id_translate_digraphs` (applied after lowercasing).
 fn translate_digraph(c: char) -> Option<&'static str> {
@@ -82,8 +83,9 @@ pub fn make_id(s: &str) -> String {
     }
     // 3. NFKD-normalize, drop remaining non-ASCII.
     let ascii: String = translated.nfkd().filter(char::is_ascii).collect();
-    // 4. collapse whitespace runs (' '.join(s.split())).
-    let collapsed = ascii.split_whitespace().collect::<Vec<_>>().join(" ");
+    // 4. collapse whitespace runs (' '.join(s.split()) — Python's
+    //    `str.split()`, i.e. [`py_isspace`] runs).
+    let collapsed = py_split_join(&ascii);
     // 5. every [^a-z0-9]+ run -> single '-'.
     let mut out = String::with_capacity(collapsed.len());
     let mut in_run = false;
@@ -132,7 +134,7 @@ pub fn sphinx_make_id(s: &str) -> String {
     // 2. NFKD-normalize, drop remaining non-ASCII.
     let ascii: String = translated.nfkd().filter(char::is_ascii).collect();
     // 3. collapse whitespace runs (' '.join(s.split())).
-    let collapsed = ascii.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = py_split_join(&ascii);
     // 4. every [^a-zA-Z0-9._]+ run -> single '-'.
     let mut out = String::with_capacity(collapsed.len());
     let mut in_run = false;
@@ -158,17 +160,27 @@ pub fn sphinx_make_id(s: &str) -> String {
     out[start..end].to_string()
 }
 
-/// docutils `fully_normalize_name`: lowercase + collapse whitespace.
-pub fn fully_normalize_name(s: &str) -> String {
-    s.to_lowercase()
-        .split_whitespace()
+/// Python `' '.join(s.split())`: strip the ends and collapse every run of
+/// `str.isspace` characters to one space. `str.split()` splits on
+/// [`py_isspace`], which admits `\x1c`-`\x1f` where Rust's
+/// `split_whitespace` (Unicode White_Space) does not — so `a\x1fb` is the
+/// name `a b` under docutils (`nodes.py:3044-3050`; probed: `.. _a\x1fb:`
+/// yields `names="a\ b"`, a `Sec\x1fC` title `names="sec\ c"`).
+fn py_split_join(s: &str) -> String {
+    s.split(py_isspace)
+        .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
 
+/// docutils `fully_normalize_name`: lowercase + collapse whitespace.
+pub fn fully_normalize_name(s: &str) -> String {
+    py_split_join(&s.to_lowercase())
+}
+
 /// docutils `whitespace_normalize_name`: collapse whitespace, keep case.
 pub fn whitespace_normalize_name(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    py_split_join(s)
 }
 
 /// A deferred "first node loses its name too" fixup: on a duplicate name,
@@ -223,16 +235,30 @@ impl IdRegistry {
         n
     }
 
-    /// sphinx `util.nodes.make_id(env, document, prefix, term)` (`:610-637`)
-    /// with `prefix` always non-empty (every caller in this crate names one):
-    /// `_make_id(f'{prefix}-{term}')`, rejected when it collapses to just the
-    /// prefix, then `f'{prefix}-{env.new_serialno(prefix)}'` until the id is
-    /// free. Sphinx does NOT register the result in `document.ids` here —
+    /// sphinx `util.nodes.make_id(env, document, prefix, term)` (`:610-637`),
+    /// both prefix regimes:
+    ///
+    /// - non-empty prefix: candidate `_make_id(f'{prefix}-{term}')`, rejected
+    ///   when it collapses to just the prefix, then serial fallback
+    ///   `f'{prefix}-{env.new_serialno(prefix)}'` until the id is free;
+    /// - EMPTY prefix (the py domain's object ids, `domains/python/
+    ///   _object.py:420`): `idformat` becomes `(id_prefix or 'id') + '%s'`
+    ///   with the Sphinx-pinned `id_prefix=''`, so the candidate is the bare
+    ///   `_make_id(term)` — dots, underscores and capitals survive, making
+    ///   `mymod.C.meth` its own node id — rejected when empty, and the
+    ///   serial fallback is `id{n}` (`id0`, `id1`, …) with the counter still
+    ///   keyed by the empty prefix.
+    ///
+    /// Sphinx does NOT register the result in `document.ids` here —
     /// `note_explicit_target` → `document.set_id` does, which is
     /// [`Self::note_explicit_id`].
     pub fn sphinx_make_id(&mut self, prefix: &str, term: &str) -> String {
         let mut node_id = if term.is_empty() {
             None
+        } else if prefix.is_empty() {
+            let candidate = sphinx_make_id(term);
+            // `if not node_id: node_id = None` — empty term hash.
+            (!candidate.is_empty()).then_some(candidate)
         } else {
             let candidate = sphinx_make_id(&format!("{prefix}-{term}"));
             // "*term* is not good to generate a node_id."
@@ -246,7 +272,11 @@ impl IdRegistry {
             let counter = self.serialnos.entry(prefix.to_string()).or_insert(0);
             let serial = *counter;
             *counter += 1;
-            node_id = Some(format!("{prefix}-{serial}"));
+            node_id = Some(if prefix.is_empty() {
+                format!("id{serial}")
+            } else {
+                format!("{prefix}-{serial}")
+            });
         }
     }
 
@@ -498,6 +528,25 @@ mod tests {
     use super::*;
     use crate::doctree::{kinds, AttrValue, Node, Span};
 
+    /// Python's `str.split()` (what every docutils name normalizer and
+    /// `make_id` collapse with) splits on `str.isspace`, which admits the
+    /// C0 separators `\x1c`-`\x1f`; Rust's `split_whitespace` does not.
+    /// Probed on docutils 0.22.4 (panel fix round D): `.. _a\x1fb:` is the
+    /// label `a b` with id `a-b`, and a `Sec\x1fC` title has
+    /// `names="sec\ c"`.
+    #[test]
+    fn name_normalizers_split_on_python_whitespace() {
+        assert_eq!(fully_normalize_name("a\x1fb"), "a b");
+        assert_eq!(fully_normalize_name("Sec\x1fC"), "sec c");
+        assert_eq!(fully_normalize_name("\x1f a \x1c\x1d\x1e b \x1f"), "a b");
+        assert_eq!(whitespace_normalize_name("A\x1fB"), "A B");
+        assert_eq!(whitespace_normalize_name("\x1fA  B\x1f"), "A B");
+        assert_eq!(make_id("a\x1fb"), "a-b");
+        assert_eq!(make_id("\x1fa\x1f"), "a");
+        assert_eq!(sphinx_make_id("envvar-FOO\x1fBAR"), "envvar-FOO-BAR");
+        assert_eq!(sphinx_make_id("\x1fA.b\x1f"), "A.b");
+    }
+
     #[test]
     fn make_id_basics() {
         assert_eq!(make_id("My  Section    Title!"), "my-section-title");
@@ -548,6 +597,28 @@ mod tests {
         // generate a node_id" and goes straight to the serial; the counter
         // is per prefix.
         assert_eq!(reg.sphinx_make_id("cmdoption", "!!!"), "cmdoption-0");
+    }
+
+    /// The empty-prefix regime the py domain's `make_id(env, doc, '',
+    /// fullname)` calls hit (research spec [PY §1.5]): the candidate is the
+    /// bare `_make_id(term)` — dots and capitals survive, so the id IS the
+    /// fullname — and the serial fallback switches to `id{n}` starting at
+    /// `id0` (probe `duplicate_functions`: second `dup` gets `id0`).
+    #[test]
+    fn sphinx_registry_make_id_empty_prefix_keeps_fullname_and_serials_as_id_n() {
+        let mut reg = IdRegistry::new();
+        assert_eq!(reg.sphinx_make_id("", "mymod.C.meth"), "mymod.C.meth");
+        reg.note_explicit_id("mymod.C.meth");
+        assert_eq!(reg.sphinx_make_id("", "mymod.C.meth"), "id0");
+        reg.note_explicit_id("id0");
+        assert_eq!(reg.sphinx_make_id("", "mymod.C.meth"), "id1");
+        // A term whose hash is empty goes straight to the serial; the
+        // counter is shared per prefix ('' here), not per term.
+        reg.note_explicit_id("id1");
+        assert_eq!(reg.sphinx_make_id("", "!!!"), "id2");
+        // Empty term likewise.
+        reg.note_explicit_id("id2");
+        assert_eq!(reg.sphinx_make_id("", ""), "id3");
     }
 
     #[test]

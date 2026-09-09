@@ -126,10 +126,18 @@ pub struct DocumentSource<'a> {
     /// docutils `document.nameids`/`nametypes`, harvested at the end of the
     /// parse.
     pub registry: &'a RegistryExport,
-    /// The document's rST source: docutils node lines are derived from it
-    /// (a [`crate::doctree::Span`] is a byte range, not a line).
-    pub text: &'a str,
     pub path: &'a Path,
+}
+
+/// The path a warning about source-table entry `source` should name —
+/// resolved through the doctree's table, falling back to the document's
+/// own path for an id the table doesn't know.
+pub(crate) fn source_path_of(doc: &DocumentSource<'_>, source: u16) -> PathBuf {
+    doc.doctree
+        .sources
+        .get(source as usize)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| doc.path.to_path_buf())
 }
 
 /// `StandardDomain.process_doc` (`domains/std/__init__.py:937-993`) plus the
@@ -139,7 +147,10 @@ pub struct DocumentSource<'a> {
 /// `option`/`envvar`/`confval` registrations
 /// (`ObjectDescription.add_target_and_index`) from the records the parse
 /// layer kept — see [`RegistryExport::program_options`] for why the doctree
-/// cannot carry those.
+/// cannot carry those. The **py domain's** registrations
+/// ([`crate::env::py_domain::collect_registrations`]) replay in the same
+/// parse-time pass, because that is where they fire in Sphinx — their
+/// duplicate warnings interleave with std's in document order.
 ///
 /// `doc2path` renders another document's source path for the duplicate-label
 /// warning [ENV §8 #1], which names the *path*, not the docname.
@@ -151,25 +162,37 @@ pub fn process_doc(
 ) {
     let ids = DocumentIds::of(doc.doctree);
     // Order matters, and it is Sphinx's. Glossary terms and object
-    // descriptions register *during the parse* (`make_glossary_term` ->
-    // `_note_term`, `ObjectDescription.add_target_and_index` ->
-    // `note_object`), while `StandardDomain.process_doc`'s label pass runs
-    // only once the parse has finished. So Sphinx's duplicate-term and
-    // duplicate-object warnings always precede the same document's
-    // duplicate-label warnings, and come out interleaved with each other in
-    // document order. This crate has no domain callbacks in the parse, so
-    // both registration passes run here: collected together, put back into
-    // source order, and emitted ahead of the label pass.
+    // descriptions — the py domain's included — register *during the
+    // parse* (`make_glossary_term` -> `_note_term`,
+    // `ObjectDescription.add_target_and_index` -> `note_object`), while
+    // `StandardDomain.process_doc`'s label pass runs only once the parse
+    // has finished. So Sphinx's duplicate-term and duplicate-object
+    // warnings always precede the same document's duplicate-label
+    // warnings, and come out interleaved with each other in document
+    // order — across domains too: a document carrying an envvar
+    // duplicate, a py duplicate and a term duplicate warns in document
+    // position order, not grouped by domain (probe-verified against
+    // sphinx 9.1.0; see `py_domain`'s
+    // `py_duplicate_warnings_interleave_with_std_s_in_document_order`).
+    // This crate has no domain callbacks in the parse, so every
+    // registration pass runs here: each replays in its own record
+    // sequence, and the warning streams merge on DOCTREE order — where
+    // each registration's node sits in the finished tree. (The old merge
+    // sorted by line, which only reproduced document order while every
+    // line came from one source; an included file's registrations would
+    // be shuffled into the includer's. Tree order is document order
+    // whatever the source, and a warning's line stays display data.)
     //
     // Still not Sphinx: these warnings interleave with the document's
     // *parse* warnings there, where the builder emits the whole parse
     // stream before calling this. That is the cross-category ordering the
     // ledger defers to a later wave.
-    let mut parse_time = Vec::new();
-    collect_glossary_terms(env, doc, &mut parse_time);
-    collect_descriptions(env, doc, &mut parse_time);
-    parse_time.sort_by_key(|warning| warning.line);
-    warnings.append(&mut parse_time);
+    let mut parse_time: Vec<(usize, BuildWarning)> = Vec::new();
+    collect_glossary_terms(env, doc, &ids, &mut parse_time);
+    collect_descriptions(env, doc, &ids, &mut parse_time);
+    crate::env::py_domain::collect_registrations(env, doc, &ids, &mut parse_time);
+    parse_time.sort_by_key(|(order, _)| *order);
+    warnings.extend(parse_time.into_iter().map(|(_, warning)| warning));
     collect_labels(env, doc, &ids, doc2path, warnings);
 }
 
@@ -213,10 +236,11 @@ fn collect_labels(
             continue;
         }
         if let Some((other, _, _)) = env.std.labels.get(name) {
+            let (source_path, line) = doc.doctree.source_and_line(node.span);
             warnings.push(
                 BuildWarning::new(
-                    doc.path.to_path_buf(),
-                    Some(node_line(node, doc.text)),
+                    PathBuf::from(source_path),
+                    Some(line as usize),
                     format!(
                         "duplicate label {name}, other instance in {}",
                         doc2path(other).display()
@@ -330,7 +354,8 @@ fn numfig_title(node: &Node) -> Option<String> {
 fn collect_glossary_terms(
     env: &mut BuildEnvironment,
     doc: &DocumentSource<'_>,
-    warnings: &mut Vec<BuildWarning>,
+    ids: &DocumentIds<'_>,
+    warnings: &mut Vec<(usize, BuildWarning)>,
 ) {
     let mut terms: Vec<&Node> = Vec::new();
     collect_glossary_term_nodes(&doc.doctree.root, &mut terms);
@@ -342,12 +367,20 @@ fn collect_glossary_terms(
         // appended; an `index` node contributes no text either way.
         let text = term.astext();
         if let Some(other) = env.std.note_term(&text, doc.docname, node_id) {
-            warnings.push(duplicate_object_warning(
-                doc,
-                glossary_term_line(term, doc.text),
-                "term",
-                &text,
-                &other,
+            let (source_path, _) = doc.doctree.source_and_line(term.span);
+            let order = ids
+                .get(node_id)
+                .map(|(order, _)| order)
+                .unwrap_or(usize::MAX);
+            warnings.push((
+                order,
+                duplicate_object_warning(
+                    PathBuf::from(source_path),
+                    glossary_term_line(term),
+                    "term",
+                    &text,
+                    &other,
+                ),
             ));
         }
     }
@@ -384,7 +417,8 @@ fn collect_glossary_term_nodes<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
 fn collect_descriptions(
     env: &mut BuildEnvironment,
     doc: &DocumentSource<'_>,
-    warnings: &mut Vec<BuildWarning>,
+    ids: &DocumentIds<'_>,
+    warnings: &mut Vec<(usize, BuildWarning)>,
 ) {
     for record in &doc.registry.program_options {
         env.std.add_program_option(
@@ -399,12 +433,22 @@ fn collect_descriptions(
             env.std
                 .note_object(&record.objtype, &record.name, doc.docname, &record.node_id)
         {
-            warnings.push(duplicate_object_warning(
-                doc,
-                record.line as usize,
-                &record.objtype,
-                &record.name,
-                &other,
+            // Tree position of the registered id (the signature node — or,
+            // for `:no-typesetting:`, the target that replaced the desc):
+            // the document-order merge key shared with the glossary pass.
+            let order = ids
+                .get(&record.node_id)
+                .map(|(order, _)| order)
+                .unwrap_or(usize::MAX);
+            warnings.push((
+                order,
+                duplicate_object_warning(
+                    source_path_of(doc, record.source),
+                    record.line as usize,
+                    &record.objtype,
+                    &record.name,
+                    &other,
+                ),
             ));
         }
     }
@@ -417,20 +461,20 @@ fn collect_descriptions(
 /// `abs_line_offset()`), while everything else in a warning location is
 /// 1-based. Verified against sphinx 9.1.0: a term on source line 8 reports
 /// `b.rst:7`, one on line 11 reports `b.rst:10`.
-fn glossary_term_line(term: &Node, text: &str) -> usize {
-    node_line(term, text).saturating_sub(1)
+fn glossary_term_line(term: &Node) -> usize {
+    (term.span.line as usize).saturating_sub(1)
 }
 
 /// Warning [ENV §8 #2]: `duplicate %s description of %s, other instance in %s`.
 fn duplicate_object_warning(
-    doc: &DocumentSource<'_>,
+    source_path: PathBuf,
     line: usize,
     objtype: &str,
     name: &str,
     other: &str,
 ) -> BuildWarning {
     BuildWarning::new(
-        doc.path.to_path_buf(),
+        source_path,
         Some(line),
         format!("duplicate {objtype} description of {name}, other instance in {other}"),
         WarningType::DuplicateLabel,
@@ -482,7 +526,7 @@ impl<'a> DocumentIds<'a> {
         Self { map }
     }
 
-    fn get(&self, id: &str) -> Option<(usize, &'a Node)> {
+    pub(crate) fn get(&self, id: &str) -> Option<(usize, &'a Node)> {
         self.map.get(id).copied()
     }
 
@@ -658,29 +702,6 @@ fn find_first<'a>(node: &'a Node, kind: &str) -> Option<&'a Node> {
         .find_map(|child| find_first(child, kind))
 }
 
-/// The 1-based source line docutils would report for `node` — what
-/// `logger.warning(..., location=node)` renders after the colon.
-///
-/// A node's line is the first line of its source span, with one exception:
-/// docutils creates a `section` only once the state machine has consumed
-/// the title's *underline*, so a section's line is one past its title
-/// (verified against docutils 0.22.4 for both the underline and
-/// overline+underline forms).
-pub(crate) fn node_line(node: &Node, text: &str) -> usize {
-    let line = line_of(text, node.span.start);
-    if node.kind == kinds::SECTION {
-        line + 1
-    } else {
-        line
-    }
-}
-
-/// The 1-based line containing byte `offset`.
-pub(crate) fn line_of(text: &str, offset: u32) -> usize {
-    let end = (offset as usize).min(text.len());
-    1 + text[..end].bytes().filter(|byte| *byte == b'\n').count()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,6 +716,9 @@ mod tests {
                 docname: docname.to_string(),
                 found_docs: None,
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
+                srcdir: None,
+                ..Default::default()
             },
         )
     }
@@ -713,7 +737,6 @@ mod tests {
                     docname,
                     doctree: &parsed.doctree,
                     registry: &parsed.registry,
-                    text: source,
                     path: &path,
                 },
                 &doc2path,
@@ -871,7 +894,12 @@ mod tests {
         assert_eq!(
             warnings.iter().map(|w| w.render()).collect::<Vec<_>>(),
             vec![
-                "/src/b.rst:4: WARNING: duplicate envvar description of HOME, \
+                // The location's path comes from the doctree's source
+                // table (the `<b>` the parse stamped), not the document
+                // path handed to `process_doc` — in the real pipeline the
+                // two are the same string; here they differ to pin which
+                // one the warning reads.
+                "<b>:4: WARNING: duplicate envvar description of HOME, \
                  other instance in a"
             ]
         );
@@ -947,9 +975,10 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert_eq!(
             warnings[0].render(),
-            "/src/b.rst:7: WARNING: duplicate label dup-label, other instance in /src/a.rst",
+            "<b>:7: WARNING: duplicate label dup-label, other instance in /src/a.rst",
             "the location is the *section* the target propagated onto, whose \
-             docutils line is its title underline"
+             docutils line is its title underline; its path is the doctree \
+             source table's, not the document path handed to process_doc"
         );
         // Last definition wins.
         assert_eq!(
@@ -1037,7 +1066,7 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert_eq!(
             warnings[0].render(),
-            "/src/b.rst:5: WARNING: duplicate term description of environment, \
+            "<b>:5: WARNING: duplicate term description of environment, \
              other instance in a",
             "an object duplicate names the other *docname*, not its path — \
              and offers no `:no-index:` hint, unlike the py domain's"
@@ -1123,23 +1152,54 @@ mod tests {
         );
     }
 
+    /// The docutils location conventions the deleted `node_line` used to
+    /// derive by counting newlines are now STAMPED on `Span::line` by the
+    /// parser; this pins the stamped values to what `node_line` returned
+    /// for every kind it covered — plus the overline form, whose reported
+    /// line is the TITLE line (span first line + 1 = overline + 1),
+    /// matching the old `line_of(span.start) + 1` arithmetic.
     #[test]
     fn node_lines_follow_docutils_conventions() {
         let source = "Top\n===\n\nUnder\n-----\n\nBody.\n";
         let parsed = parse(source, "a");
-        let top = &parsed.doctree.root.children[0];
-        assert_eq!(node_line(top, source), 2, "section line = its underline");
+        let doctree = &parsed.doctree;
+        let top = &doctree.root.children[0];
+        assert_eq!(
+            doctree.source_and_line(top.span),
+            ("<a>", 2),
+            "section line = its underline"
+        );
         let under = top
             .children
             .iter()
             .find(|c| c.kind == kinds::SECTION)
             .unwrap();
-        assert_eq!(node_line(under, source), 5);
+        assert_eq!(doctree.source_and_line(under.span), ("<a>", 5));
         let body = under
             .children
             .iter()
             .find(|c| c.kind == kinds::PARAGRAPH)
             .unwrap();
-        assert_eq!(node_line(body, source), 7, "other nodes: their first line");
+        assert_eq!(
+            doctree.source_and_line(body.span),
+            ("<a>", 7),
+            "other nodes: their first line"
+        );
+
+        let overlined = parse(
+            "=====
+ Top 
+=====
+
+Body.
+",
+            "b",
+        );
+        let top = &overlined.doctree.root.children[0];
+        assert_eq!(
+            overlined.doctree.source_and_line(top.span),
+            ("<b>", 2),
+            "overline form: span first line + 1 = the title line"
+        );
     }
 }

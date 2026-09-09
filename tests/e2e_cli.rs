@@ -409,6 +409,89 @@ fn touching_an_embedded_image_re_reads_only_the_page_that_embeds_it() {
     );
 }
 
+/// The include dependency + orphan wiring, end to end (wave 4.5 T12,
+/// [INC PROBE 6] matrix): a cold build records the include targets as
+/// dependencies, a warm build reads nothing, touching an included `.rst`
+/// re-reads the includer AND the included doc (it is discovered and read
+/// standalone too), and an included-only doc never earns the orphan
+/// warning. Divergence note: touching an included `.txt` re-reads the
+/// includer and the `.txt`'s own document — sphinx's default
+/// `source_suffix` does not read `.txt` standalone, this crate's wider
+/// discovery does.
+#[test]
+fn touching_an_included_file_re_reads_the_documents_that_pull_it_in() {
+    let src = out_dir("deps-include-src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("index.rst"),
+        "Index\n=====\n\n.. toctree::\n\n   a\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("a.rst"),
+        "A\n=\n\n.. include:: part.rst\n\n.. include:: snippet.txt\n",
+    )
+    .unwrap();
+    std::fs::write(src.join("part.rst"), "part para\n").unwrap();
+    std::fs::write(src.join("snippet.txt"), "plain snippet\n").unwrap();
+    let out = out_dir("deps-include-out");
+
+    let run1 = build(&src, &out, &["--incremental"]);
+    assert!(run1.status.success(), "stderr: {}", stderr_of(&run1));
+    assert!(
+        !stderr_of(&run1).contains("isn't included in any toctree"),
+        "part.rst is reachable through the include; nothing is orphaned: {}",
+        stderr_of(&run1)
+    );
+
+    // Warm no-op: all four discovered documents (snippet.txt included —
+    // this crate's discovery is wider than sphinx's) hit the cache, and
+    // the orphan check replayed from the persisted env stays quiet.
+    let run2 = build(&src, &out, &["--incremental"]);
+    let stderr2 = stderr_of(&run2);
+    assert!(
+        stderr2.contains("Cache hits: 4"),
+        "an unchanged project reads nothing, stderr: {stderr2}"
+    );
+    assert!(
+        !stderr2.contains("isn't included in any toctree"),
+        "{stderr2}"
+    );
+
+    // Touch the included .rst: outdates the includer (via
+    // env.dependencies) and itself (its own document) — PROBE 6's
+    // changed={a, part}.
+    let part = src.join("part.rst");
+    let bytes = std::fs::read(&part).unwrap();
+    std::fs::write(&part, &bytes).unwrap();
+    let run3 = build(&src, &out, &["--incremental"]);
+    assert!(
+        stderr_of(&run3).contains("Cache hits: 2"),
+        "touch part.rst re-reads a + part, stderr: {}",
+        stderr_of(&run3)
+    );
+
+    // Touch the included .txt: outdates the includer; the .txt's own
+    // document is the divergence noted above.
+    let snippet = src.join("snippet.txt");
+    let bytes = std::fs::read(&snippet).unwrap();
+    std::fs::write(&snippet, &bytes).unwrap();
+    let run4 = build(&src, &out, &["--incremental"]);
+    assert!(
+        stderr_of(&run4).contains("Cache hits: 2"),
+        "touch snippet.txt re-reads a + snippet, stderr: {}",
+        stderr_of(&run4)
+    );
+
+    // The re-reads settled every dependency.
+    let run5 = build(&src, &out, &["--incremental"]);
+    assert!(
+        stderr_of(&run5).contains("Cache hits: 4"),
+        "stderr: {}",
+        stderr_of(&run5)
+    );
+}
+
 #[test]
 fn clean_incremental_build_produces_full_output() {
     let out = out_dir("clean-incremental");
@@ -875,6 +958,114 @@ fn sphinx_build_d_unknown_key_warns_and_continues() {
     );
 }
 
+/// The object-signature / py-domain config family is reachable from `-D`:
+/// the booleans land in the bool branch, the ENUM key keeps whatever
+/// string it is given while warning — exactly what sphinx's
+/// `check_confval_types` does (probe E, task-2 brief) — and the two
+/// `int | None` keys warn TOO: sphinx's `convert_overrides` keeps the raw
+/// string for a None-default key and `check_confval_types` rejects its
+/// type (probed, panel fix round B [18]; sphinx then crashes on the first
+/// py signature, which this crate replaces with "unset").
+#[test]
+fn sphinx_build_d_reaches_the_object_signature_config_family() {
+    let out = out_dir("sb-D-py-config");
+    let src = fixture("basic");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        out.to_str().unwrap(),
+        "-D",
+        "add_function_parentheses=0",
+        "-D",
+        "toc_object_entries_show_parents=hide",
+        "-D",
+        "modindex_common_prefix=mypkg.",
+    ]);
+
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    assert!(
+        !stderr_of(&result).contains("unknown config value")
+            && !stderr_of(&result).contains("The config value"),
+        "every key in the family must be a known, well-typed setting, stderr: {}",
+        stderr_of(&result)
+    );
+
+    // The `int | None` keys: sphinx's type warning, byte-exact, and the
+    // build carries on.
+    let typed = out_dir("sb-D-py-config-int-none");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        typed.to_str().unwrap(),
+        "-D",
+        "maximum_signature_line_length=88",
+        "-D",
+        "python_maximum_signature_line_length=0",
+    ]);
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    let stderr = stderr_of(&result);
+    assert!(
+        stderr.contains(
+            "The config value `maximum_signature_line_length' has type `str'; expected \
+             `NoneType' or `int'."
+        ),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "The config value `python_maximum_signature_line_length' has type `str'; \
+             expected `NoneType' or `int'."
+        ),
+        "stderr: {stderr}"
+    );
+    let typed_w = out_dir("sb-D-py-config-int-none-W");
+    let result_w = sphinx_build(&[
+        src.to_str().unwrap(),
+        typed_w.to_str().unwrap(),
+        "-D",
+        "maximum_signature_line_length=88",
+        "-W",
+    ]);
+    assert_eq!(
+        result_w.status.code(),
+        Some(1),
+        "-W must see the type warning, stderr: {}",
+        stderr_of(&result_w)
+    );
+
+    // An out-of-ENUM value warns and the build carries on with it.
+    let bad = out_dir("sb-D-py-config-enum");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        bad.to_str().unwrap(),
+        "-D",
+        "toc_object_entries_show_parents=bogus",
+    ]);
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    assert!(
+        stderr_of(&result).contains(
+            "The config value `toc_object_entries_show_parents` has to be a one of \
+             frozenset({'domain', 'all', 'hide'}), but `bogus` is given."
+        ),
+        "sphinx's ENUM rejection text, stderr: {}",
+        stderr_of(&result)
+    );
+
+    // ...and, being a config-time warning, it counts toward -W.
+    let bad_w = out_dir("sb-D-py-config-enum-W");
+    let result_w = sphinx_build(&[
+        src.to_str().unwrap(),
+        bad_w.to_str().unwrap(),
+        "-D",
+        "toc_object_entries_show_parents=bogus",
+        "-W",
+    ]);
+    assert_eq!(
+        result_w.status.code(),
+        Some(1),
+        "-W must see the ENUM warning, stderr: {}",
+        stderr_of(&result_w)
+    );
+}
+
 #[test]
 fn sphinx_build_w_exits_one_with_sphinx_message() {
     let out = out_dir("sb-W");
@@ -1230,29 +1421,52 @@ fn nitpicky_flags_broken_refs() {
 }
 
 #[test]
-fn nitpicky_skips_python_and_external_refs() {
+fn nitpicky_resolves_python_refs_and_counts_cross_domain_ones() {
     let src = temp_source(
-        "nitpicky-skips",
+        "nitpicky-py-domain",
         &[(
             "index.rst",
-            "Title\n=====\n\nCall :py:func:`missing.fn` and :func:`also.missing`.\nSee `docs <https://example.com>`_ and :doc:`https://example.com/page`.\n",
+            "Title\n=====\n\n.. py:function:: real.fn()\n\nCall :py:func:`real.fn` and :py:func:`missing.fn` and :func:`also.missing` and :c:func:`cfn`.\nSee `docs <https://example.com>`_ and :doc:`https://example.com/page`.\n",
         )],
     );
-    let out = out_dir("nitpicky-skips");
+    let out = out_dir("nitpicky-py-domain");
     let result = sphinx_build(&[src.to_str().unwrap(), out.to_str().unwrap(), "-n"]);
 
     assert!(result.status.success(), "stderr: {}", stderr_of(&result));
     let stderr = stderr_of(&result);
+    // (a) A defined py ref RESOLVES: under -n an unresolved one would have
+    // to warn, so its absence from the warning stream is the proof.
     assert!(
-        !stderr.contains("unknown document") && !stderr.contains("undefined label"),
-        "python-domain and external refs must not be reported broken, stderr: {stderr}"
+        !stderr.contains("real.fn"),
+        "the defined py ref must resolve silently, stderr: {stderr}"
     );
-    let aggregate_count = stderr
-        .matches("python-domain reference(s) not validated")
-        .count();
+    // (b) A missing py ref warns in sphinx's exact non-std shape — through
+    // the domain-prefixed `:py:func:` role and the bare `:func:` role alike
+    // (primary_domain defaults to `py`).
+    assert!(
+        stderr.contains(
+            "index.rst:6: WARNING: py:func reference target not found: missing.fn [ref.func]"
+        ),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "index.rst:6: WARNING: py:func reference target not found: also.missing [ref.func]"
+        ),
+        "stderr: {stderr}"
+    );
+    // (c) A `:c:func:` ref trips the cross-domain counter exactly once, and
+    // the URL-shaped `:doc:` keeps the M1 carve-out (no `unknown document`).
+    assert!(
+        !stderr.contains("unknown document"),
+        "URL doc refs must stay exempt, stderr: {stderr}"
+    );
     assert_eq!(
-        aggregate_count, 1,
-        "the unvalidatable-python-refs notice appears exactly once, stderr: {stderr}"
+        stderr
+            .matches("1 cross-domain reference(s) not validated (domain not implemented until M5)")
+            .count(),
+        1,
+        "the cross-domain notice appears exactly once, stderr: {stderr}"
     );
 }
 
@@ -1484,4 +1698,54 @@ fn an_empty_inventory_location_tuple_exits_two_with_sphinxs_invariant_error() {
         stderr.contains("An invalid intersphinx_mapping entry was added after normalisation."),
         "stderr: {stderr}"
     );
+}
+
+/// `source_encoding` is a real key (panel fix round B, [19]): `-D` reaches
+/// it, a non-UTF-8 value prints sphinx's deprecation warning byte-exactly
+/// (probed), and the warning counts toward `-W`.
+#[test]
+fn sphinx_build_d_source_encoding_warns_about_deprecation_like_sphinx() {
+    let src = fixture("basic");
+    let out = out_dir("sb-D-source-encoding");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        out.to_str().unwrap(),
+        "-D",
+        "source_encoding=latin-1",
+    ]);
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    assert!(
+        stderr_of(&result).contains(
+            "Support for source encodings other than UTF-8 is deprecated and will be removed \
+             in Sphinx 10. Please comment at https://github.com/sphinx-doc/sphinx/issues/13665 \
+             if this causes a problem."
+        ),
+        "stderr: {}",
+        stderr_of(&result)
+    );
+    assert!(
+        !stderr_of(&result).contains("unknown config value"),
+        "stderr: {}",
+        stderr_of(&result)
+    );
+
+    let out_w = out_dir("sb-D-source-encoding-W");
+    let result_w = sphinx_build(&[
+        src.to_str().unwrap(),
+        out_w.to_str().unwrap(),
+        "-D",
+        "source_encoding=latin-1",
+        "-W",
+    ]);
+    assert_eq!(result_w.status.code(), Some(1));
+
+    let quiet = out_dir("sb-D-source-encoding-utf8");
+    let result = sphinx_build(&[
+        src.to_str().unwrap(),
+        quiet.to_str().unwrap(),
+        "-D",
+        "source_encoding=utf-8",
+    ]);
+    assert!(result.status.success());
+    assert!(!stderr_of(&result).contains("deprecated"));
 }

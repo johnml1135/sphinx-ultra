@@ -3,8 +3,13 @@
 
 Regenerate with:
 
-    uv run --python 3.12 --with 'sphinx==9.1.0' --with 'docutils==0.22.4' \
-        python tools/gen_env_fixture.py
+    PYTHONNOUSERSITE=1 uv run --python 3.12 --with 'sphinx==9.1.0' \
+        --with 'docutils==0.22.4' python tools/gen_env_fixture.py
+
+PYTHONNOUSERSITE=1 is NOT optional: `uv run` keeps the user's site-packages
+on sys.path, and a user-site Pygments there silently re-records every
+`code:: python` case as tokenized output. Regenerating without the flag
+produces spurious fixture churn.
 
 THE ENVIRONMENT-LAYER ORACLE. Where tools/gen_sphinx_fixture.py records
 per-SNIPPET read-phase pseudo-XML, this generator records per-PROJECT
@@ -15,6 +20,13 @@ multi-document srcdir (dict of docname -> rst source + conf overrides),
 built with a real `SphinxTestApp(buildername='dummy')` + `app.build()` --
 exactly what a real `sphinx-build` does for its read + resolve phases, minus
 writing output files.
+
+ORACLE VENUE NOTE (wave 4.5): projects here are ALSO the oracle venue for
+the file-inserting directives (`include`/`literalinclude`) -- the two
+doctree fixtures are string corpora that cannot carry the aux files those
+directives read, so their node shapes (`:literal:` with `:name:`/
+`:number-lines:`, `:code:`, SEVERE error shapes) belong to this fixture's
+inc_* projects (T14) plus unit/e2e tests.
 
 Design verified empirically in this session against sphinx 9.1.0 / docutils
 0.22.4 under the pinned uv invocation above; see
@@ -64,6 +76,15 @@ fails (assertion) if any occurrence of the raw srcdir path survives. Both the
 as-returned `mkdtemp()` path and its `.resolve()`d form are checked (macOS
 resolves `/var/...` to `/private/var/...`; Sphinx internally uses the
 resolved form, per the same gotcha documented in gen_sphinx_fixture.py).
+Since wave 4.5 (plan Scope-8) the CWD-RELATIVE spelling of the srcdir is
+replaced too: docutils' `adapt_path` spells every path of *included* content
+relative to the process cwd (node `source` attrs, circular-inclusion chain
+bodies, SEVERE error texts, the double-parse warning duplicates), which is
+environment-dependent in exactly the way the absolute path is. The consumer
+(tests/env_differential.rs) applies the mirror normalization to sphinx-ultra's
+own srcdir-relative spellings by collapsing `<project>/` on both sides of the
+warning and resolved-pformat comparisons, making "srcdir-relative" the
+canonical spelling for both.
 
 Value shapes: Python `tuple`s (relations entries excepted, which are already
 plain lists) are converted to JSON lists; `set`s (`files_to_rebuild` values)
@@ -84,6 +105,7 @@ Never remove or rename an existing project name; later tasks only extend.
 
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -123,10 +145,53 @@ CONF_PY = (
     "exclude_patterns = ['_build']\n"
 )
 
+# The `literalinclude` corpus's Python source, shipped through `data_files`
+# (same geometry as tests/fixtures/literalinclude/example.py, which the unit
+# tests use). Three properties are load-bearing and must survive edits:
+#
+#   * it PARSES (`ast.parse` clean). A file that tokenizes but does not parse
+#     yields `:pyobject:` tags here while Sphinx's own analyzer warns instead
+#     (wave-4.5 task 15 ruling) -- a divergence no oracle can express.
+#   * indentation is spaces only, uniformly 4. The one ledgered TAG-changing
+#     divergence is `:tab-width:` (!= 8) + `:pyobject:` + mixed indentation;
+#     keeping tabs out of the file keeps that trap unreachable.
+#   * `Foo.method` is a nested definition and `tail` follows the class, so
+#     `:pyobject: Foo.method` exercises the nested-def path and its end
+#     boundary is a real dedent rather than EOF.
+EXAMPLE_PY = '''\
+"""Example module."""
+
+CONST = 1
+
+
+def top(x):
+    """Top function."""
+    return x + 1
+
+
+class Foo:
+    """A class."""
+
+    attr = 2
+
+    def method(self):
+        return self.attr
+
+
+def tail():
+    pass
+'''
+
 # ---------------------------------------------------------------------------
 # Corpus: one project per axis. `conf` holds extra confoverrides merged over
 # BASE_CONFOVERRIDES; `files` maps docname -> rst source (nested docnames
-# like "sub/b" get written to sub/b.rst).
+# like "sub/b" get written to sub/b.rst). An optional `data_files` map
+# (relative path -> literal text) ships non-document members -- the .py /
+# .inc / .png files the include and literalinclude projects read. Data
+# files must NOT use the .rst/.md/.txt suffixes: sphinx-ultra's discovery
+# is wider than Sphinx's default `source_suffix` (it also admits .md and
+# .txt), so a .txt member would become a document on one side only and the
+# resolved-document key sets would diverge by construction.
 # ---------------------------------------------------------------------------
 
 PROJECTS = [
@@ -677,22 +742,736 @@ Leaf content for sub/c.
 """,
         },
     },
+    # -----------------------------------------------------------------------
+    # Wave 4.5: py-domain projects (plan Task 14). Documents that carry a
+    # `py:module` directive are PropagateTargets-visible (plan Scope-3: the
+    # module target's ids migrate onto the following node in Sphinx's tree,
+    # a transform this crate defers to wave 5), so their resolved_pformat is
+    # gap-tabled in the consumer while every other key — registration
+    # records, modindex, tocs, warnings, xref-bearing sibling documents —
+    # compares in full.
+    # -----------------------------------------------------------------------
+    {
+        # module + class + method + functions registered in NON-alphabetical
+        # order (zeta before alpha) so the registration-order semantics of
+        # py_objects/py_modules are pinned; doc b resolves xrefs against
+        # them, including the ambiguous fuzzy `.same` ref -> warning.
+        "name": "py_basic",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+.. py:module:: zmod
+
+.. py:class:: Widget
+
+   .. py:method:: render(x)
+
+.. py:function:: zeta.same()
+
+.. py:function:: alpha.same()
+
+.. py:function:: helper(arg=1)
+""",
+            "b": """\
+B
+=
+
+See :py:class:`zmod.Widget` and :py:meth:`~zmod.Widget.render` and
+:py:func:`zmod.helper` and :py:mod:`zmod` and :py:func:`.same`.
+""",
+        },
+    },
+    {
+        # Duplicate objects ACROSS documents (dupfn, dupmod: a then b,
+        # last-wins in a's insertion slot) plus a duplicate module WITHIN
+        # one document (b's second dupmod -> node id falls back to the
+        # `module-0` serial) — [PY spec section 8 item 3] warning bytes and
+        # the last-wins registry both land in the fixture.
+        "name": "py_dup",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+.. py:function:: dupfn()
+
+.. py:class:: Keeper
+
+.. py:module:: dupmod
+""",
+            "b": """\
+B
+=
+
+.. py:function:: dupfn()
+
+.. py:module:: dupmod
+
+.. py:module:: dupmod
+""",
+        },
+    },
+    {
+        # The [SIG A.2] toc-object-entries project, default config: the
+        # class/method/function entries join env.tocs with the shared
+        # anchorname counter and `skip_section_number` stamps.
+        "name": "py_toc",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   mod
+""",
+            "mod": """\
+Mod
+===
+
+.. py:module:: pkg.mymod
+
+.. py:class:: MyClass
+
+   Class body.
+
+   .. py:method:: my_method(arg)
+
+      Method body.
+
+.. py:function:: my_func(x)
+
+   Function body.
+""",
+        },
+    },
+    {
+        # The same files under `toc_object_entries_show_parents = 'all'`
+        # (an enum string, -D-expressible): every toc entry spells its full
+        # dotted path.
+        "name": "py_toc_parents",
+        "conf": {"toc_object_entries_show_parents": "all"},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   mod
+""",
+            "mod": """\
+Mod
+===
+
+.. py:module:: pkg.mymod
+
+.. py:class:: MyClass
+
+   Class body.
+
+   .. py:method:: my_method(arg)
+
+      Method body.
+
+.. py:function:: my_func(x)
+
+   Function body.
+""",
+        },
+    },
+    {
+        # The [PY section 4] modindex_shapes project: dummy parent (orphan,
+        # subtype 1 with empty fields), parent promotion (pkg -> subtype 1),
+        # submodules carrying platform / synopsis / deprecated fields, and
+        # collapse=False (3 submodules vs 2 top-levels: 5-2=3 < 2 is false).
+        "name": "py_modindex",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. py:module:: pkg
+
+.. py:module:: pkg.sub
+   :synopsis: Sub synopsis.
+
+.. py:module:: pkg.sub2
+   :platform: Windows
+
+.. py:module:: orphan.child
+
+.. py:module:: zzz
+   :deprecated:
+""",
+        },
+    },
+    {
+        # The [PY section 4] modindex_common_prefix project, exercising the
+        # array-conf harness extension: `pkg.` is stripped for sorting and
+        # bucketing while display names keep it, and every module counts as
+        # top-level -> collapse=True.
+        "name": "py_modindex_prefix",
+        "conf": {"modindex_common_prefix": ["pkg."]},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. py:module:: pkg.aaa
+
+.. py:module:: pkg.bbb
+
+.. py:module:: other
+""",
+        },
+    },
+    {
+        # nitpicky mode: missing py refs warn in the generic non-std shape
+        # with [ref.{typ}], while builtin_resolver silences `int` (no
+        # warning, literal kept with no reference wrapper). Offline —
+        # nitpicky only, no intersphinx.
+        "name": "py_nitpicky",
+        "conf": {"nitpicky": True},
+        "files": {
+            "index": """\
+Index
+=====
+
+Ref :py:func:`missing_fn` and :py:class:`int` and :py:class:`Missing`.
+""",
+        },
+    },
+    # -----------------------------------------------------------------------
+    # Wave 4.5: include / literalinclude projects (plan Task 14). These are
+    # the oracle venue for the file-inserting directives' node shapes — the
+    # doctree fixtures are string corpora that cannot carry aux files. Path
+    # spellings ride the Scope-8 normalization: srcdir-relative is the
+    # canonical form on both sides of the warning/resolved comparisons.
+    # -----------------------------------------------------------------------
+    {
+        # In-tree message and node shapes, under `keep_warnings=True` so the
+        # docutils reporter messages STAY in the resolved doctrees where both
+        # sides can compare them byte-for-byte: nested include chains, the
+        # srcdir-absolute form, a missing file (InputError SEVERE), a failed
+        # `:start-after:` clip (Text not found SEVERE), a circular include
+        # pair, `:literal:` with `:name:`/`:number-lines:`, the two
+        # language-less `:code:` forms (plain, and `:number-lines:` with
+        # docutils' width quirk), literalinclude `:pyobject:`/`:lineno-match:`,
+        # a `:pyobject:` miss (the T15 not-found text), and a captioned
+        # `:lines:`+`:emphasize-lines:` block. `sub/nested.rst` pins
+        # §Scope-2a docname-relative resolution: `shared/frag.rst` includes
+        # `frag2.rst`, which resolves against the CURRENT DOCUMENT's
+        # directory — `sub/frag2.rst` (exists) when included from
+        # `sub/nested`, `shared/frag2.rst` (missing -> SEVERE) when
+        # `shared/frag` is parsed standalone.
+        #
+        # The project's `warnings` are gap-tabled in the consumer: sphinx
+        # ALSO logs every reporter message to the warning stream with a
+        # `[docutils]` suffix, while this crate keeps reporter messages
+        # in-tree only (pre-existing project-wide divergence, T12 ledger).
+        "name": "inc_basic",
+        "conf": {"keep_warnings": True},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+   sub/nested
+""",
+            "a": """\
+A
+=
+
+.. include:: chain1.rst
+
+.. include:: /abs_part.rst
+
+.. include:: missing.rst
+
+.. include:: clip_part.inc
+   :start-after: nope-not-here
+
+.. include:: circ_a.rst
+
+.. literalinclude:: example.py
+   :pyobject: not_there
+""",
+            "b": """\
+B
+=
+
+.. include:: lit_part.inc
+   :literal:
+   :name: lit-block
+
+.. include:: numbered.inc
+   :literal:
+   :number-lines:
+
+.. include:: code_plain.inc
+   :code:
+
+.. include:: code_numbered.inc
+   :code:
+   :number-lines:
+
+.. literalinclude:: example.py
+   :pyobject: Foo.method
+   :lineno-match:
+
+.. literalinclude:: example.py
+   :lines: 6-8
+   :emphasize-lines: 2
+   :caption: Example tail
+""",
+            "sub/nested": """\
+Nested
+======
+
+.. include:: ../shared/frag.rst
+""",
+            "chain1": """\
+Chain one.
+
+.. include:: chain2.rst
+""",
+            "chain2": """\
+Chain two.
+""",
+            "abs_part": """\
+Absolute part.
+""",
+            "circ_a": """\
+Circ A.
+
+.. include:: circ_b.rst
+""",
+            "circ_b": """\
+Circ B.
+
+.. include:: circ_a.rst
+""",
+            "shared/frag": """\
+Frag paragraph one.
+
+.. include:: frag2.rst
+""",
+            "sub/frag2": """\
+Frag2 paragraph.
+""",
+        },
+        "data_files": {
+            "clip_part.inc": "clip alpha\nclip beta\n",
+            "lit_part.inc": "Literal alpha.\nLiteral beta.\n",
+            # Ten lines in BOTH numbered members, so the two number-column
+            # widths differ visibly: `:literal:` sizes the column from the
+            # real line count (width 2, `11`), while `:code:` goes through
+            # the `code` directive with `len(self.content) == 1` and sizes
+            # it from `startline + 1` -- docutils' single-element quirk,
+            # a ragged width-1 column running past `9`.
+            "numbered.inc": (
+                "num one\nnum two\nnum three\nnum four\nnum five\n"
+                "num six\nnum seven\nnum eight\nnum nine\nnum ten\n"
+            ),
+            "code_plain.inc": "plain code line\nsecond code line\n",
+            "code_numbered.inc": (
+                "line one\nline two\nline three\nline four\nline five\n"
+                "line six\nline seven\nline eight\nline nine\nline ten\n"
+            ),
+            "example.py": EXAMPLE_PY,
+        },
+    },
+    {
+        # The warning streams both sides CAN compare byte-for-byte: the
+        # three logger-channel literalinclude warnings (`:lines:` out of
+        # range, `:emphasize-lines:` out of range against the post-filter
+        # count, `non-whitespace stripped by dedent`) with their
+        # doc2path-doubled `.rst.rst` locations, plus the sphinx-channel
+        # warnings an INCLUDED .rst fires under both spellings: `part.rst`
+        # registers `partfn` via the include into `a` and again as its own
+        # standalone document (-> duplicate object warning naming `a`), and
+        # its dangling :ref: resolves — and warns — once per resolved
+        # document. The included file's orphan warning is suppressed
+        # (env.included consult), which this project also pins.
+        "name": "inc_warn",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+""",
+            "a": """\
+A
+=
+
+.. include:: part.rst
+
+.. literalinclude:: snippet.inc
+   :lines: 1-40
+
+.. literalinclude:: snippet.inc
+   :emphasize-lines: 9
+
+.. literalinclude:: snippet.inc
+   :dedent: 2
+""",
+            "part": """\
+Part
+----
+
+.. py:function:: partfn()
+
+See :ref:`missing-target`.
+""",
+        },
+        "data_files": {
+            "snippet.inc": "alpha\nbeta\ngamma\n",
+        },
+    },
+    {
+        # The [INC PROBE 6] project, COLD state: include + literalinclude +
+        # image dependencies land in env.dependencies (absolute, normalized
+        # to <project>/...), the included docname in env.included. The
+        # warm-rebuild/outdated matrix stays in e2e and the harness's own
+        # incremental tests — a fixture build is always cold.
+        #
+        # NOT here, deliberately: the standard-include (`<isogrk4.txt>`)
+        # no-record rule. Sphinx's Include hands the `<name>` form to the
+        # docutils base directive before reaching `note_included`, so
+        # `env.included` stays empty (probe-confirmed) — but docutils' own
+        # `record_dependencies` DOES take the file, and `note_dependency`
+        # resolves that against the srcdir, so `env.dependencies` ends up
+        # holding `<project>/../../…/site-packages/docutils/parsers/rst/
+        # include/isogrk4.txt`: an interpreter-installation path no
+        # normalization can canonicalize, which would make the committed
+        # fixture machine-specific. That rule stays with the unit tests.
+        "name": "inc_deps",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+.. include:: part.rst
+
+.. literalinclude:: example.py
+   :lines: 1-2
+
+.. image:: pic.png
+""",
+            "b": """\
+B
+=
+
+no deps here
+""",
+            "part": """\
+part para
+""",
+        },
+        "data_files": {
+            "example.py": EXAMPLE_PY,
+            "pic.png": "not really a png\n",
+        },
+    },
+    # -----------------------------------------------------------------------
+    # Panel fix round B additions.
+    # -----------------------------------------------------------------------
+    {
+        # [23] `:any:` resolution, the wave-4.5 deliverable that had no
+        # oracle coverage: a py:func hit (bare and with `()`, which
+        # `find_obj` strips), a py:mod hit, a py:data hit, a std label hit
+        # (lowercased ref lookup), a doc hit (std's doc-first branch), the
+        # winner's extended literal classes (`xref any py py-func`,
+        # `std std-ref`, `doc doc doc`), a std/py ambiguity — a label and a
+        # function both named `dup` — with its ` or `-joined `[ref.any]`
+        # warning, and a dangling target (`:any:` is warn_dangling, so it
+        # warns WITHOUT nitpicky). No `:module:` option and no py:module
+        # scope around the refs: the two shapes the T11 report keeps on the
+        # avoid-list (round A closed the py:module-None key edge in the
+        # sphinx doctree corpus) are not needed to pin any of this.
+        #
+        # Layout: every reference lives in `a`, which therefore compares at
+        # FULL strength; the definitions live in `b`, whose resolved tree
+        # is Scope-3 propagation-visible (the `.. _dup:` label's ids move
+        # onto its section, a KNOWN_RESOLVED_GAPS shape) — the module sits
+        # LAST in `b`, the py_dup shape, so its target has nothing to
+        # propagate onto, and the label's name differs from its section's
+        # slug so the section's FIRST id (the toc anchor) still agrees.
+        "name": "py_any",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. toctree::
+
+   a
+   b
+""",
+            "a": """\
+A
+=
+
+Hits: :any:`f` and :any:`f()` and :any:`mod` and :any:`item`
+and :any:`std-label` and :any:`index`.
+
+Ambiguous: :any:`dup`. Dangling: :any:`nosuch_any`.
+""",
+            "b": """\
+B
+=
+
+.. _dup:
+
+Dup Section
+-----------
+
+.. py:function:: mod.f()
+
+.. py:function:: mod.dup()
+
+.. py:data:: mod.item
+
+.. _std-label:
+
+Only Label
+----------
+
+Text.
+
+.. py:module:: mod
+""",
+        },
+    },
+    {
+        # [4]/[5] warning locations for the xrefs the py directives
+        # synthesize, under nitpicky: an annotation xref (parameter,
+        # return, `:type:` on py:data) locates at its signature's own
+        # file:line — the INCLUDED file's for a signature inside an include
+        # — while a doc-field xref locates through docutils'
+        # `get_source_line` ancestor walk (the synthesized nodes and the
+        # desc/desc_content above them carry no provenance): the
+        # enclosing section's underline, a `.. note::` line, or the
+        # INCLUDER's section for a field written in an included file — and
+        # NO location at all for a description that sits directly under
+        # the document (the first `WARNING:` line below has no prefix). An
+        # inline role in a field body keeps its own line. Single document,
+        # no toctree, so every key compares at full strength.
+        "name": "py_locations",
+        "conf": {"nitpicky": True},
+        "files": {
+            "index": """\
+.. py:function:: top(q: nosuch_top)
+
+   :param nosuch_top_field q: q
+
+Top
+===
+
+.. include:: part.inc
+
+Sec
+---
+
+.. py:function:: g(y: alsomissing) -> retmissing
+
+   :param nosuch_doc y: d
+   :param k: see :py:class:`nosuch_inline`
+   :rtype: nosuch_rt
+
+.. py:data:: d
+   :type: typemissing
+
+.. note::
+
+   .. py:function:: h(z)
+
+      :param nosuch_note z: q
+""",
+        },
+        "data_files": {
+            "part.inc": (
+                ".. py:function:: f(x: missingtype)\n"
+                "\n"
+                "   :param nosuch_inc z: q\n"
+            ),
+        },
+    },
+    {
+        # [21] literal_blocks whose `language`/`force`/`linenos` are ALL
+        # directive-set, in a document outside both exemption tables, so
+        # the three attributes are compared at full strength somewhere in
+        # the corpus (HighlightLanguageTransform stamps only what a
+        # directive left unset: `code.py:81-86`). literalinclude with
+        # `:language:` + `:linenos:`, with `:language:` + `:lineno-start:`
+        # + `:force:`, and a code-block with `:linenos:`. Single document,
+        # no toctree.
+        "name": "inc_highlight",
+        "conf": {},
+        "files": {
+            "index": """\
+Index
+=====
+
+.. literalinclude:: example.py
+   :language: python
+   :linenos:
+   :lines: 1-3
+
+.. literalinclude:: example.py
+   :language: text
+   :lineno-start: 5
+   :force:
+   :lines: 4-5
+
+.. code-block:: python
+   :linenos:
+
+   x = 1
+""",
+        },
+        "data_files": {
+            "example.py": EXAMPLE_PY,
+        },
+    },
+    # -----------------------------------------------------------------------
+    # Panel fix round D: the docutils target-marker name rule and Python's
+    # `\s` in every name/target normalizer, at environment level. Single
+    # document, no toctree. Every bare target is followed by a comment, so
+    # `PropagateTargets` donates nothing and the resolved doctree compares
+    # at full strength. What it pins:
+    #   - `.. _ pad  lbl :` / `.. _ a b :` / `.. _ only comment :` are
+    #     COMMENTS (`\.\.[ ]+_(?![ ]|$)`): no duplicate-target message
+    #     beside the real `.. _pad  lbl:`, and `only comment` registers
+    #     nothing, so both `:ref:` spellings of it warn `undefined label`.
+    #   - `.. _a\x1fb:` is the label `a b` (docutils `str.split()`), reached
+    #     by `:ref:`AB <a b>`` and by `:ref:`AB2 <a\x1fb>`` (sphinx `ws_re`).
+    #   - `.. envvar:: FOO\x1fBAR` registers `FOO BAR` (`ws_re.sub(' ', sig)`),
+    #     reached by both `:envvar:` spellings.
+    #   - `.. program:: git\x1fadd` scopes `-x` under `git-add`
+    #     (`ws_re.sub('-', …)`); `:option:`git\x1fadd -x`` folds the
+    #     subcommand off on the \x1f (`ws_re.split(target, maxsplit=1)`) and
+    #     resolves, as does the spelled-out `:option:`git-add -x``.
+    # -----------------------------------------------------------------------
+    {
+        "name": "names_round_d",
+        "conf": {},
+        "files": {
+            "index": """\
+Round D names
+=============
+
+Labels: :ref:`Pad <pad lbl>`, :ref:`AB <a b>` and :ref:`AB2 <a\x1fb>`.
+
+Dangling: :ref:`X <only comment>` and :ref:`only comment`.
+
+Environment: :envvar:`FOO BAR` and :envvar:`FOO\x1fBAR`.
+
+Option: :option:`git\x1fadd -x` and :option:`git-add -x`.
+
+.. envvar:: FOO\x1fBAR
+
+   Variable.
+
+.. program:: git\x1fadd
+
+.. option:: -x
+
+   Option.
+
+.. _pad  lbl:
+.. _ pad  lbl :
+
+.. _a\x1fb:
+.. _ a b :
+
+.. _ only comment :
+""",
+        },
+    },
 ]
 
 
-def write_project_files(base: Path, files: dict) -> None:
+def write_project_files(base: Path, files: dict, data_files: dict) -> None:
     for docname, text in files.items():
         path = base / f"{docname}.rst"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    for relpath, text in data_files.items():
+        path = base / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def srcdir_spellings(base: Path) -> list:
+    """Every spelling of the srcdir that can leak into captured text.
+
+    Absolute forms (raw + resolved) plus the CWD-RELATIVE forms (Scope-8):
+    docutils' `adapt_path` (`utils.relative_path(None, path)`) spells the
+    paths of included content relative to `os.getcwd()`, so an include
+    project's warnings, chain bodies and node `source` attributes carry a
+    `../../..`-style prefix down into the tmp srcdir. Longest-first so an
+    overlapping pair (`/var/...` inside macOS's resolved `/private/var/...`)
+    cannot leave a mangled half-replacement behind.
+    """
+    forms = {
+        str(base),
+        str(base.resolve()),
+        os.path.relpath(str(base)),
+        os.path.relpath(str(base.resolve())),
+    }
+    return sorted(forms, key=len, reverse=True)
 
 
 def normalize(text: str, base: Path) -> str:
-    for form in {str(base), str(base.resolve())}:
+    for form in srcdir_spellings(base):
         text = text.replace(form, SOURCE_TOKEN)
-    assert str(base) not in text and str(base.resolve()) not in text, (
-        f"srcdir path leaked into captured text:\n{text}"
-    )
+    for form in srcdir_spellings(base):
+        assert form not in text, f"srcdir path leaked into captured text:\n{text}"
     return text
 
 
@@ -746,6 +1525,92 @@ def dump_std(env) -> dict:
     }
 
 
+def dump_py(env) -> tuple:
+    """`domaindata['py']` as record lists, in REGISTRATION order.
+
+    The dict insertion order IS oracle data: `PythonDomain.objects` /
+    `.modules` iterate in registration order and the fuzzy resolution pass
+    (`find_obj` searchmode 1) takes the first match, so these lists must not
+    be sorted. Field names follow the `ObjectEntry` / `ModuleEntry`
+    NamedTuples (`sphinx/domains/python/__init__.py`).
+    """
+    data = env.domaindata.get("py", {})
+    py_objects = [
+        {
+            "name": name,
+            "docname": entry.docname,
+            "node_id": entry.node_id,
+            "objtype": entry.objtype,
+            "aliased": entry.aliased,
+        }
+        for name, entry in data.get("objects", {}).items()
+    ]
+    py_modules = [
+        {
+            "name": name,
+            "docname": entry.docname,
+            "node_id": entry.node_id,
+            "synopsis": entry.synopsis,
+            "platform": entry.platform,
+            "deprecated": entry.deprecated,
+        }
+        for name, entry in data.get("modules", {}).items()
+    ]
+    return py_objects, py_modules
+
+
+def dump_py_modindex(env) -> dict:
+    """`PythonModuleIndex(py_domain).generate()` -> `(content, collapse)`,
+    the exact tuples the py-modindex page is rendered from. Entries are the
+    7-field `IndexEntry` NamedTuple (`sphinx/domains/_index.py`)."""
+    from sphinx.domains.python import PythonModuleIndex
+
+    content, collapse = PythonModuleIndex(env.get_domain("py")).generate()
+    return {
+        "collapse": collapse,
+        "groups": [
+            {
+                "letter": letter,
+                "entries": [
+                    {
+                        "name": entry.name,
+                        "subtype": entry.subtype,
+                        "docname": entry.docname,
+                        "anchor": entry.anchor,
+                        "extra": str(entry.extra),
+                        "qualifier": str(entry.qualifier),
+                        "descr": str(entry.descr),
+                    }
+                    for entry in entries
+                ],
+            }
+            for letter, entries in content
+        ],
+    }
+
+
+def dump_dependencies(env, base: Path) -> dict:
+    """`env.dependencies` -- absolute `_StrPath`s under the srcdir,
+    normalized to `<project>/...` and sorted. Only documents that actually
+    have dependencies get an entry (Sphinx's defaultdict never holds an
+    empty set after `clear_doc`)."""
+    return {
+        docname: sorted(normalize(str(dep), base) for dep in deps)
+        for docname, deps in sorted(env.dependencies.items())
+        if deps
+    }
+
+
+def dump_included(env) -> dict:
+    """`env.included` -- docname -> the docnames it textually includes
+    (`note_included`), values sorted for a deterministic fixture."""
+    return {
+        docname: sorted(str(doc) for doc in docs)
+        for docname, docs in sorted(env.included.items())
+        if docs
+    }
+
+
 def dump_index_entries(env) -> dict:
     entries = env.domaindata.get("index", {}).get("entries", {})
     return {
@@ -778,7 +1643,7 @@ def build_project(entry: dict) -> dict:
     base = Path(tempfile.mkdtemp(prefix="env_oracle_srcdir_")).resolve() / "src"
     base.mkdir(parents=True)
     (base / "conf.py").write_text(CONF_PY, encoding="utf-8")
-    write_project_files(base, entry["files"])
+    write_project_files(base, entry["files"], entry.get("data_files", {}))
 
     confoverrides = {**BASE_CONFOVERRIDES, **entry.get("conf", {})}
 
@@ -841,6 +1706,7 @@ def build_project(entry: dict) -> dict:
                 docname: normalize(text, base)
                 for docname, text in resolved_raw.items()
             }
+            py_objects, py_modules = dump_py(env)
 
             expect = {
                 "toctree_includes": dict(env.toctree_includes),
@@ -869,6 +1735,11 @@ def build_project(entry: dict) -> dict:
                 "std": dump_std(env),
                 "index_entries": dump_index_entries(env),
                 "genindex": dump_genindex(genindex),
+                "py_objects": py_objects,
+                "py_modules": py_modules,
+                "py_modindex": dump_py_modindex(env),
+                "dependencies": dump_dependencies(env, base),
+                "included": dump_included(env),
                 "resolved_pformat": resolved_pformat,
                 "warnings": warnings,
             }
@@ -876,12 +1747,15 @@ def build_project(entry: dict) -> dict:
             app.cleanup()
             shutil.rmtree(base.parent, ignore_errors=True)
 
-    return {
+    out = {
         "name": entry["name"],
         "conf": confoverrides,
         "files": entry["files"],
         "expect": expect,
     }
+    if entry.get("data_files"):
+        out["data_files"] = entry["data_files"]
+    return out
 
 
 def generate_all() -> dict:
@@ -897,7 +1771,7 @@ def generate_all() -> dict:
 def main() -> int:
     names = [p["name"] for p in PROJECTS]
     assert len(names) == len(set(names)), "project names must be unique"
-    assert len(PROJECTS) >= 12, f"corpus degenerated: {len(PROJECTS)} projects"
+    assert len(PROJECTS) >= 20, f"corpus degenerated: {len(PROJECTS)} projects"
 
     fixture = generate_all()
 

@@ -13,6 +13,97 @@ everything forward is [ROADMAP.md](ROADMAP.md).
 
 ### Added
 
+- **M2 wave 4.5: the Python domain, and files can include files.**
+  `.. py:function::` and its thirteen siblings are no longer unknown
+  directives, and `include`/`literalinclude` work — which also means a
+  document is rebuilt when a file it *includes* changes.
+  - **py directives**: `py:module`, `py:currentmodule`, `py:function`,
+    `py:class`, `py:exception`, `py:method`, `py:classmethod`,
+    `py:staticmethod`, `py:attribute`, `py:property`, `py:data`,
+    `py:decorator`, `py:decoratormethod`, `py:type` — with real signature
+    parsing. Annotations go through a port of CPython's `ast.unparse`;
+    parameter defaults go through a port of `sphinx.pycode.ast.unparse`,
+    which keeps a literal's source text — so `def f(x: int = 0x10)` still
+    shows `0x10`, as it does under Sphinx; PEP 695 type-parameter lists,
+    multi-line signatures, `:async:`/`:abstractmethod:`/`:final:` and the
+    whole `:no-index:` option family are supported.
+  - **doc fields**: `:param:`, `:type:`, `:raises:`, `:returns:`, `:rtype:`,
+    `:var:` and their aliases render as Sphinx renders them — grouped
+    Parameters/Raises lists, `:param int x:` type syntax, `:meta private:`
+    filtering, and type cross-references. This pass runs for the *std*
+    kinds too, so an `envvar`'s `:param x:` now renders as `Param x`.
+  - **py cross-references**: `:py:func:`, `:py:class:`, `:py:meth:`,
+    `:py:mod:`, `:py:attr:`, `:py:data:`, `:py:exc:`, `:py:obj:`,
+    `:py:const:`, `:py:deco:` resolve against the registered objects, with
+    Sphinx's search order, its `~`/`.`/`!` modifiers, and the builtin
+    fallback (`:py:class:`int`` resolves). `:any:` resolves across domains.
+  - **py-modindex data**: modules are grouped and sorted the way
+    `PythonModuleIndex` groups them, honoring `modindex_common_prefix`. Like
+    `genindex`, the page itself needs the HTML writer.
+  - **`include`**: the whole docutils option set (`:literal:`, `:code:`,
+    `:number-lines:`, `:encoding:`, `:tab-width:`,
+    `:start-line:`/`:end-line:`/`:start-after:`/`:end-before:`,
+    `:class:`/`:name:`), Sphinx's srcdir-relative `/path` rewrite, circular
+    inclusion detection, and the docutils standard include files
+    (`.. include:: <isonum.txt>`).
+  - **`literalinclude`**: `:lines:`, `:start-after:`/`:end-before:`/
+    `:start-at:`/`:end-at:`, `:pyobject:`, `:prepend:`/`:append:`,
+    `:dedent:`, `:diff:`, `:emphasize-lines:`, `:linenos:`/`:lineno-match:`/
+    `:lineno-start:`, `:tab-width:`, `:encoding:`, `:caption:`, `:name:`,
+    `:class:`, `:language:`, `:force:`.
+  - **incremental builds**: `include` and `literalinclude` record their
+    member files as dependencies, so editing an included fragment rebuilds
+    the documents that include it. Wave 4's dependency tracking is no
+    longer images-only.
+  - **glossary**: the three misformat diagnostics Sphinx raises
+    (`glossary term must be preceded by empty line`, `glossary terms must
+    not be separated by empty lines`, `glossary seems to be misformatted,
+    check indentation`) are recorded in the doctree (not yet printed — see
+    the known limitation below).
+  - **Known limitation — `include`/`literalinclude` diagnostics are not
+    printed yet.** The diagnostics these directives raise (a missing or
+    unreadable file, the refused `:parser:`, a circular inclusion) are
+    docutils *reporter* messages, which this build records in the doctree
+    but does not yet stream to stderr or to the `-w` file — a pre-existing
+    reporter-channel gap the wave-5 diagnostics work closes. Until then a
+    broken include path drops its content **silently**, and `-W` stays
+    green where `sphinx-build` fails. The glossary diagnostics above take
+    the same channel.
+  Evidence: the environment oracle grew to 29 projects / 84 documents and
+  the read-phase doctree oracle to 489 cases, both at zero divergence
+  against a real `sphinx-build` 9.1.0; `:pyobject:`'s tokenizer was checked
+  against `sphinx.pycode`'s over 1200 real modules (24,903 definitions, no
+  mismatches).
+- New configuration knobs for object signatures, readable from `conf.py`,
+  YAML/JSON and `-D` (all ten verified `-D`-settable):
+  `maximum_signature_line_length`,
+  `python_maximum_signature_line_length`,
+  `python_trailing_comma_in_multi_line_signatures`,
+  `python_display_short_literal_types`,
+  `python_use_unqualified_type_names`, `toc_object_entries`,
+  `toc_object_entries_show_parents`, `add_function_parentheses`,
+  `add_module_names`, `strip_signature_backslash`. An out-of-range
+  `toc_object_entries_show_parents` warns and is kept, like Sphinx.
+- `source_encoding` is a real configuration key (`conf.py`, YAML/JSON and
+  `-D`; default `utf-8-sig`, Sphinx's own) and is the default `:encoding:`
+  of `include` and `literalinclude`. A non-UTF-8 value prints Sphinx's
+  deprecation warning byte-for-byte (`Support for source encodings other
+  than UTF-8 is deprecated and will be removed in Sphinx 10. …`); a codec
+  this crate cannot decode earns one additional notice. The key governs the
+  file-inserting directives **only**: this crate still decodes its own
+  `.rst` sources as UTF-8, where Sphinx hands `source_encoding` to docutils
+  as `settings.input_encoding` for the document read as well.
+- `maximum_signature_line_length` and `python_maximum_signature_line_length`
+  are type-checked the way Sphinx's `check_confval_types` checks them.
+  `-D maximum_signature_line_length=20` — which Sphinx keeps as the
+  *string* `'20'`, because a key whose default is `None` is never coerced —
+  now warns ``The config value `maximum_signature_line_length' has type
+  `str'; expected `NoneType' or `int'.`` (byte-exact, counts toward `-W`)
+  and leaves the key unset, where earlier builds silently coerced it. A
+  mistyped `conf.py` literal warns the same way with its Python type name.
+  Sphinx itself goes on to crash on the first signature; this build does
+  not.
+
 - **M2 wave 4: the build has a real environment, and it warns like Sphinx.**
   The pipeline is now read → merge → resolve → write over a serialized
   `BuildEnvironment`, and the diagnostics that come out of it are
@@ -122,6 +213,32 @@ everything forward is [ROADMAP.md](ROADMAP.md).
 
 ### Changed
 
+- **Breaking: the doctree and environment cache formats both changed
+  (M2 wave 4.5).** `DOCTREE_FORMAT_VERSION` went 1 → 2 and `ENV_VERSION`
+  2 → 3, because both structures gained fields (per-line source provenance
+  on doctrees; py-domain registries, the inclusion graph and file
+  dependencies on the environment). Old blobs are an honest cache **miss**,
+  not a mis-decode, so **the first build after upgrading is a full cold
+  build**. No action is required; `-E` is not needed.
+- **More warnings are new by default in this release (M2 wave 4.5).** The
+  py domain now participates in cross-reference resolution, so a project
+  with Python API docs gains diagnostics it never saw here before:
+  `duplicate object description of …, other instance in …, use :no-index:
+  for one of them`, `more than one target found for cross-reference …`,
+  `more than one target found for 'any' cross-reference …`, and — under
+  `-n`/`nitpicky` — dangling `:py:*:` references. `:any:` is now the
+  domainless, `warn_dangling` role it is in Sphinx, so a broken `:any:`
+  target warns `'any' reference target not found: … [ref.any]` **without
+  `-n`** — that one reaches any project that uses `:any:`, whether or not
+  it documents Python objects. The "skipping N python-domain references"
+  notice lost its python-domain population (those references are now
+  resolved and warned about); it survives, re-worded, as `N cross-domain
+  reference(s) not validated (domain not implemented until M5)`, and still
+  covers `:c:`, `:cpp:`, `:js:` and `:rst:` references, which stay
+  unvalidated until those domains land.
+  **This can turn a passing `-W` build into a failing one** for any project
+  that documents Python objects or uses `:any:`. Build once without `-W`
+  before upgrading a CI job that uses it.
 - **Broken standard-domain references now warn without `-n`.**
   Sphinx sets `warn_dangling` on seven std reftypes — `:ref:`, `:numref:`,
   `:doc:`, `:term:`, `:keyword:`, `:option:` and `:confval:`
@@ -198,6 +315,153 @@ surface. The binary's CLI is unaffected.
 
 ### Fixed
 
+- **Glossary terms are verbatim, definition-list terms are `rstrip()`ped,
+  toctree entries are not trimmed (M2 wave 4.5, panel fix round F).**
+  Sphinx's `split_term_classifiers` takes a glossary term and its first
+  classifier exactly as written, so `term\xa0 : cls` keeps its NBSP in the
+  `<term>`, the index entry (`'term\xa0'`) and the registered term, and
+  `term : \xa0cls` keeps it in the index key; docutils' `Text.term` does the
+  opposite for a plain definition list (`text = parts[0].rstrip()`, Python's
+  whitespace set). `TocTree.parse_content` reads each entry line verbatim, so
+  an entry indented deeper than its block (`   a` / `     b`) names the
+  nonexisting document `'  b'` and leaves `b` an orphan, as Sphinx warns —
+  this crate had trimmed it and resolved `b`. Warning-stream `%r` now escapes
+  every non-printable character the way CPython's `repr` does
+  (`'foo\xa0bar'`) from one `py_repr_str`; the `src/env/toctree.rs` copy had
+  escaped only `< 0x20` and `0x7f`. The same round moved the remaining
+  `trim_start()`/`trim_end()` sites to Python's `strip` semantics — a field
+  body's or option description's leading NBSP is kept, and
+  `process_index_entry`, `parselinenos`, `parse_line_num_spec`,
+  `get_signatures`, `_filter_meta_fields`, the `::` tail, overlined titles,
+  `line-block` lines, simple-table margins and option synonyms strip
+  `\x1c`-`\x1f` like a space — and `include` in insert mode rstrips each line
+  with Python's set before the line-length-limit check. Every change is
+  pinned: docutils 718→735, sphinx 472→489, +2 env tests, +2 unit tests.
+- **`.. _ name:` was parsed as a hyperlink target (M2 wave 4.5, panel fix
+  round D).** docutils' target construct is `\.\.[ ]+_(?![ ]|$)`: a space or
+  end-of-line right after the `_` makes the whole block a plain comment. This
+  crate read `.. _ pad  lbl :` as a target whose stripped name collided with
+  a real `.. _pad  lbl:` — a spurious `Duplicate explicit target name`
+  message, and on its own a label Sphinx never has, so a `:ref:` to it
+  resolved here and warned `undefined label` there. It is a comment now, as
+  are a bare `.. _` (with or without an indented continuation) and
+  `.. _\tx:` (tabs expand before the match); a backtick phrase that opens
+  with a space or closes after one is `malformed hyperlink target.`, as
+  docutils' target pattern says. The plain form keeps a space before its
+  colon — probed, still a target.
+- **Names, labels and URIs now split on Python's whitespace (M2 wave 4.5,
+  panel fix round D).** Round C fixed the cross-reference targets; the same
+  `\x1c`-`\x1f` gap was still in every docutils name normalizer
+  (`fully_normalize_name`, `whitespace_normalize_name`, both `make_id`s), the
+  target/anonymous/image/embedded URI cleanups, the indirect-reference check,
+  the std domain's `ws_re` port for `envvar`/`confval`/`program`, and the
+  `:option:` subcommand fold. `.. _a\x1fb:` is the label `a b` (both `:ref:`
+  spellings reach it), `.. envvar:: FOO\x1fBAR` indexes `environment
+  variable; FOO BAR`, `.. program:: git\x1fadd` scopes its options under
+  `git-add`, and `:option:`git\x1fadd -x`` resolves — all as under Sphinx
+  9.1.0. Pinned by 17 docutils cases, 5 sphinx cases and the `names_round_d`
+  env-oracle project, compared at full strength.
+- **A huge `:tab-width:` on an `include` reported the wrong error first (M2
+  wave 4.5, panel fix round C).** The C-int range check that keeps an
+  out-of-range `:tab-width:` from hanging the parser ran before the file
+  was even opened, so `.. include:: missing.rst` with
+  `:tab-width: 2147483648` reported the overflow where docutils reports the
+  missing file. docutils reaches `expandtabs` only after the read and the
+  clip succeed — behind `tab_width >= 0` in `:literal:`/`:code:` mode, and
+  per line of `string2lines` in insert mode, which never expands an empty
+  file at all. The check now fires exactly there; probed against docutils
+  0.22.4 over missing/empty/normal files × the three modes × a huge and a
+  hugely negative width, plus the `:start-after:` and clip-to-empty
+  orderings.
+- **An `include` through a symlink recorded the path it had not read (M2
+  wave 4.5, panel fix round C).** The file *opened* followed the symlink,
+  like Sphinx's `relfn2path` (which `.resolve()`s the joined path), but the
+  two bookkeeping records — the included docname behind the "document isn't
+  included in any toctree" check, and the dependency an incremental rebuild
+  watches — still spelled the *lexical* path. `.. include:: link/../part.rst`
+  beside a real `part.rst` therefore suppressed the orphan warning Sphinx
+  prints for `part.rst`, and watched a file whose changes could not affect
+  the build. Both records now follow the resolved path, spelled relative to
+  the resolved source directory (`../ext/part.rst` for a file the link led
+  out of the tree) — the same `env.dependencies` a real `sphinx-build` ends
+  with, and the same `env.included` for every file *inside* the source
+  directory. One knowing simplification remains for a `.rst` the link leads
+  *outside* it: Sphinx's `path2doc` then records the absolute path itself as
+  a pseudo-docname in `env.included`, this crate records nothing. The entry
+  is output-inert (its only reader is the orphan check, which a `/`-rooted
+  name can never satisfy) and is listed under the known divergences in
+  `docs/IMPLEMENTATION_STATUS.md`.
+- **Cross-reference targets now collapse Python's whitespace, and an
+  explicit `Title <target>` keeps its padding (M2 wave 4.5, panel fix round
+  C).** Sphinx's `ws_re` is Python's `\s`, which admits `\x1c`-`\x1f`;
+  `:doc:`a\x1fb`` now reaches the resolver as `a b`, as it does under
+  Sphinx. And the target between the brackets of an explicit title is taken
+  verbatim — collapsed, never stripped — for every role, `:ref:` and
+  `:numref:` included: they lowercase their target and nothing more, where
+  this crate had been applying docutils' `fully_normalize_name`, which
+  strips the ends as well.
+- **`:eq:` is the math domain's role (M2 wave 4.5, panel fix round C).**
+  Registered without a domain prefix like `:any:`, it produced a
+  `pending_xref` with `refdomain=""`; `MathReferenceRole.result_nodes`
+  stamps `refdomain="math"`, and the inner node's classes stay
+  `xref eq`. Resolution of equation targets is a wave-5 domain, so an
+  `:eq:` reference now joins the build's "domain not implemented" count
+  instead of being run through the std resolver it never belonged to.
+- **Directive validation invented four more warnings `sphinx-build` never
+  emits (M2 wave 4.5, panel fix round B).** `.. include::` of a file whose
+  extension is not `.rst`/`.txt`/`.md`/`.inc` — the docutils standard
+  include files, `.. include:: <isonum.txt>`, among them — warned `Unusual
+  file extension for include:`; `literalinclude` rejected `:lineno-start:`,
+  `:tab-width:` and `:dedent:` values, and `code-block` `:lineno-start:`
+  values, that Sphinx's option converters accept, with `… must be a
+  positive integer` (`code-block` has no `:tab-width:` and accepted
+  `:dedent:` all along); an empty
+  `code-block` warned `Code-block directive has no content` (it is legal);
+  and `toctree`'s `:maxdepth:` was range-checked although `-1` is the
+  documented "unlimited". Each of those failed `-W` on a project Sphinx
+  builds clean. All four are gone, the validator drift audit now sweeps
+  negative and zero values, and a probe-clean Sphinx project is pinned
+  end-to-end to earn no validation warning at all.
+- **Warnings raised inside an included file now name that file (M2 wave
+  4.5, panel fix round B).** Toctree, numbering and directive/role
+  validation warnings for content that arrived through `.. include::` were
+  reported against the *including* document at the included file's line
+  number; they now carry the included file's path, as under Sphinx (modulo
+  the relative-vs-absolute spelling recorded in the known divergences). Two
+  cross-reference warnings were located wrongly as well: a dangling
+  annotation reference in a Python signature (`def f(x: Missing)`) rendered
+  `:0:` and named the wrong file — it now locates at the signature's own
+  file and line, the included file's for a signature inside an include —
+  and a dangling `:param Missing x:` doc-field reference located at the
+  field list's own line where Sphinx walks up to the nearest ancestor that
+  has a location (the enclosing section, an admonition, or no location at
+  all directly under the document). Pinned byte-for-byte by the
+  `py_locations` oracle project.
+- **Directive validation invented `Unknown option '…'` warnings for options
+  Sphinx accepts (M2 wave 4.5).** `literalinclude` warned about `:lines:`,
+  `:emphasize-lines:` and `:lineno-match:`; `code-block` about `:force:` and
+  `:class:`; `figure` about its own `:figwidth:`/`:figclass:` and about
+  `:figname:` (all three naming the *image* directive in the message);
+  `image` and `figure` about `:loading:`. Each of those failed `-W` on a
+  project `sphinx-build` builds clean. `include`'s missing
+  `:parser:`/`:class:`/`:name:` were fixed in the same sweep but never
+  warned: that validator checks the argument and the file extension only,
+  and nothing on the build path consults its option list — a latent trap
+  rather than a live bug. Every validator's option list is now checked
+  against the parser's own option spec, in both directions, by a test that
+  covers all ten of them — which also removed `literalinclude`'s advertised
+  `:start-line:`/`:end-line:`, options Sphinx's `literalinclude` does not
+  have, and added `:figname:` to the parser's own `figure` table, where it
+  was missing (docutils `images.py:125`).
+- **A `glossary` comment split a multi-term entry (M2 wave 4.5).** A `.. `
+  comment line between two terms produced two definition list items, the
+  first with an empty `<definition>` — a shape docutils never emits. The
+  entry split is now a faithful port of Sphinx's own line state machine, so
+  terms on both sides of a comment share one entry, terms separated by a
+  blank line share one entry (and warn), and a definition dedents by its
+  first line rather than by the block minimum.
+- **`:number-lines:` on an empty included file padded the line number to two
+  columns** where docutils uses one.
 - **The `objects.inv` reader corrupted real inventories.** It converted the
   zlib-compressed payload to a `String` lossily and then split it with
   `str::lines`, so any inventory whose compressed bytes happened to contain

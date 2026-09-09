@@ -3,7 +3,13 @@
 
 Regenerate with:
 
-    uv run --python 3.12 --with docutils==0.22.4 python tools/gen_doctree_fixture.py
+    PYTHONNOUSERSITE=1 uv run --python 3.12 --with docutils==0.22.4 \
+        python tools/gen_doctree_fixture.py
+
+PYTHONNOUSERSITE=1 is NOT optional: `uv run` keeps the user's site-packages
+on sys.path, and a user-site Pygments there silently re-records every
+`code:: python` case as tokenized output. Regenerating without the flag
+produces spurious fixture churn.
 
 The fixture records docutils 0.22.4 PARSE-LAYER pseudo-XML (no transforms:
 no doctitle promotion, no target propagation, no transition hoisting, no
@@ -654,6 +660,21 @@ CASES = [
     ("dir_media", "figure_bad_scale", ".. figure:: pic.png\n   :scale: abc\n\n   Caption.\n"),
     ("dir_media", "figure_bad_first_child", ".. figure:: pic.png\n\n   - bullet\n   - list\n"),
     ("dir_media", "figure_name_option", ".. figure:: pic.png\n   :name: fig one\n\n   Caption.\n"),
+    # `figname` (images.py:125 option_spec, :155-157 run) puts the explicit
+    # target on the FIGURE, unlike `name`, which Image.run puts on the inner
+    # image. Empty is falsy in Python, so a valueless `:figname:` is inert.
+    # NOT in the corpus: `figname` COLLIDING with an earlier explicit target.
+    # docutils appends the "Duplicate explicit target name" message to the
+    # msgnode and then DETACHES it when the msgnode's content model rejects
+    # it (nodes.py:1983-1990), so the warning disappears at the parse layer;
+    # we emit it beside the node. Pre-existing and not figname-specific --
+    # plain `:name:` on `image` and on `note` diverge identically (probed
+    # in fix round 1) -- so it is ledgered for wave 5, not pinned here.
+    ("dir_media", "figure_figname_option", ".. figure:: pic.png\n   :figname: my fig\n\n   Caption.\n"),
+    ("dir_media", "figure_figname_no_content", ".. figure:: pic.png\n   :figname: solo\n"),
+    ("dir_media", "figure_figname_and_name", ".. figure:: pic.png\n   :figname: my fig\n   :name: other\n\n   Caption.\n"),
+    ("dir_media", "figure_figname_with_figclass_align", ".. figure:: pic.png\n   :figclass: fc\n   :figname: fn\n   :align: right\n\n   Caption.\n"),
+    ("dir_media", "figure_figname_empty", ".. figure:: pic.png\n   :figname:\n\n   Caption.\n"),
     ("dir_media", "figure_align_vertical_rejected", ".. figure:: pic.png\n   :align: top\n\n   Caption.\n"),
     ("dir_media", "code_plain", ".. code::\n\n   x = 1\n   y = 2\n"),
     ("dir_media", "code_class_name", ".. code::\n   :class: extra\n   :name: snippet one\n\n   pass\n"),
@@ -824,6 +845,153 @@ CASES = [
     ("review", "quoted_literal_then_indent", "intro::\n\n> line one\n  indented\n"),
     ("review", "established_styles_overunder", "=====\nA\n=====\n\nB\n-\n\n=====\nC\n=====\n\nD\n~\n\nbody\n"),
     ("mixtures", "everything_adjacent", "Head\n====\n\nterm\n    def\n\n- a\n- b\n\n1. one\n2. two\n\n::\n\n    lit\n\n.. done\n"),
+    # ----- panel fix round D: target-marker name rule + Python `\s` -----
+    # The hyperlink-target construct is `\.\.[ ]+_(?![ ]|$)` (states.py
+    # 2464-2469): a space or EOL after `_` on the first line makes the block
+    # a plain comment (no "malformed hyperlink target." message, nothing
+    # registered), so a reference to the would-be name stays a dangling
+    # refname. Tabs expand before the match, so `_\tx:` is a comment too.
+    ("round_d", "target_leading_space_is_comment", ".. _ pad  lbl :\n\nSee `pad lbl`_.\n"),
+    ("round_d", "target_leading_space_comment_absorbs_block", ".. _ x:\n   cont\n\npara\n"),
+    ("round_d", "target_bare_underscore_is_comment", ".. _\n\npara\n"),
+    ("round_d", "target_bare_underscore_with_block_is_comment", ".. _\n   name: uri\n\npara\n"),
+    ("round_d", "target_tab_after_underscore_is_comment", ".. _\tx:\n\npara\n"),
+    ("round_d", "target_beside_leading_space_comment", ".. _pad  lbl:\n.. _ pad  lbl :\n\npara\n"),
+    # The plain form keeps a space before its colon (still a target) …
+    ("round_d", "target_space_before_colon", ".. _pad  lbl :\n\npara\n"),
+    # … but a backtick phrase may neither open with a space nor close after
+    # one: `(?![ `])` / `(?<![ \n\x00])(?P=quote)` in the target pattern.
+    ("round_d", "target_quoted_leading_space_malformed", ".. _` x`: https://x/\n"),
+    ("round_d", "target_quoted_trailing_space_malformed", ".. _`x `: https://x/\n"),
+    # Python's `str.split()` (every name normalizer, `make_id`, and the
+    # URI cleanup `''.join(part.split())`) splits on `str.isspace`, which
+    # admits \x1c-\x1f; \x1f is the one `splitlines` does not eat first.
+    ("round_d", "target_python_whitespace_name", ".. _a\x1fb:\n\npara\n"),
+    ("round_d", "section_python_whitespace_name", "Sec\x1fC\n=====\n\nbody\n"),
+    ("round_d", "reference_python_whitespace_name", "See `a\x1fb`_ here.\n"),
+    ("round_d", "target_python_whitespace_refuri", ".. _t: http://x\x1fy\n"),
+    ("round_d", "target_python_whitespace_indirect_is_a_uri", ".. _t: a\x1fb_\n"),
+    ("round_d", "anonymous_target_python_whitespace_refuri", "__ http://x\x1fy\n"),
+    ("round_d", "embedded_uri_python_whitespace", "See `text <http://x\x1fy>`_ here.\n"),
+    # (the `image` `:target:` twin lives in the `dir_image` family below
+    # the scope guard — same `parse_target` URI path.)
+    ("dir_image", "target_python_whitespace", ".. image:: p.png\n   :target: http://x\x1fy\n"),
+    # ----- round_e: the hyperlink-target grammar, ported whole -----
+    # `hyperlink_target` (states.py:2055-2078) joins the block ONE LINE AT A
+    # TIME with no separator, keeping each continuation line's indentation,
+    # and retries the target pattern after each. Both of these therefore end
+    # in `malformed hyperlink target.` — and the fallback `Body.comment` runs
+    # with the state machine ALREADY on the block's last line, so the comment
+    # holds only that line (sliced at the `\.\.( +|$)` transition's end) and
+    # the warning is attributed to it. (Round D held the first of these out
+    # with the wrong stated behaviour; both are now oracle-pinned.)
+    ("round_e", "target_second_line_colon_malformed", ".. _name\n   : uri\n"),
+    ("round_e", "target_second_line_bare_malformed", ".. _name\n   uri\n"),
+    ("round_e", "target_third_line_malformed", ".. _name\n   : uri\n   more\n"),
+    ("round_e", "target_malformed_comment_spans_blank", ".. _name\n   x\n\n   y\n"),
+    ("round_e", "target_wide_marker_malformed", "..   _name\n x\n"),
+    # … while a ONE-space continuation indent completes the marker instead.
+    ("round_e", "target_second_line_one_space_indent", ".. _name\n : uri\n"),
+    ("round_e", "target_name_split_across_lines", ".. _a\n   b: uri\n"),
+    # The tail is `(?<![\s\x00])[ ]?:([ ]+|$)` with
+    # `non_whitespace_escape_before = r'(?<![\s\x00])'` (states.py:780 — NOT
+    # `(?<![ \n\x00])`): at most ONE space before the colon, and a name may
+    # not end in Python whitespace (which includes NBSP and \x1f).
+    ("round_e", "target_three_spaces_before_colon_malformed", ".. _lbl   :\n"),
+    ("round_e", "target_two_spaces_before_colon_malformed", ".. _pad  lbl  :\n"),
+    ("round_e", "target_nbsp_before_colon_malformed", ".. _x\u00a0:\n"),
+    ("round_e", "target_us_before_colon_malformed", ".. _x\x1f:\n"),
+    ("round_e", "target_quoted_us_before_close_malformed", ".. _`x\x1f`: uri\n"),
+    ("round_e", "target_quoted_nbsp_before_close_malformed", ".. _`x\u00a0`: uri\n"),
+    # The same `[ ]?` makes these two WELL-formed, where the pre-round parser
+    # called them malformed.
+    ("round_e", "target_quoted_space_before_colon", ".. _`x y` : uri\n"),
+    ("round_e", "target_anonymous_space_before_colon", ".. __ :\n"),
+    # Non-greedy `.+?`: the first closing backtick whose tail matches wins.
+    ("round_e", "target_quoted_inner_backtick", ".. _`a`b`: uri\n"),
+    # `add_target` normalizes `unescape(name)`, and `unescape` drops the
+    # WHOLE `\x00 ` pair — an escaped space vanishes from the name …
+    ("round_e", "target_escaped_space_in_name", ".. _x\\ y:\n"),
+    # … while in the LINK it splits `split_escaped_whitespace` parts, which
+    # rejoin with a real space.
+    ("round_e", "target_escaped_space_in_link", ".. _t: a\\ b\n"),
+    # `is_reference` needs a whole `simplename` before the `_`, so a `$` in
+    # the body makes this a URI, not an indirect reference.
+    ("round_e", "target_indirect_needs_a_simplename", ".. _t: a$b_\n"),
+    # Every explicit-markup construct opens `\.\.[ ]+` — LITERAL spaces. A
+    # NBSP after the dots is a comment, not a target.
+    ("round_e", "explicit_nbsp_after_dots_is_comment", ".. \u00a0_x:\n"),
+    # ----- round_e: the remaining Python-`str.split()` sites -----
+    # `class_option` splits with `str.split()` (directives/__init__.py:316),
+    # so \x1f makes TWO class names instead of one hyphenated id.
+    ("dir_admonitions", "class_option_python_whitespace", ".. note::\n   :class: a\x1fb\n\n   body\n"),
+    # `directives.uri` (:209-221) removes unescaped Python whitespace.
+    ("dir_image", "uri_argument_python_whitespace", ".. image:: p\x1fq.png\n"),
+    ("dir_media", "figure_uri_python_whitespace", ".. figure:: p\x1fq.png\n"),
+    # `' '.join(self.arguments[0].lower().split())` (misc.py:296).
+    ("dir_body", "raw_format_python_whitespace", ".. raw:: ht\x1fml\n\n   <b>x</b>\n"),
+    # round F: `LineBlock.run` (misc.py) parses `line_text.strip()` and sets
+    # `line.indent = len(line_text) - len(line_text.lstrip())` — Python's set,
+    # so a leading NBSP/\x1f is one column of INDENT (a nested line_block).
+    ("dir_body", "line_block_directive_leading_nbsp_is_indent", ".. line-block::\n\n   \xa0x\n   y\n"),
+    ("dir_body", "line_block_directive_leading_us_is_indent", ".. line-block::\n\n   \x1fx\n   y\n"),
+    # `...split(self.arguments[0])[0].split()` (misc.py:422) — two codes.
+    ("substitutions", "unicode_codes_python_whitespace", ".. |u| unicode:: 0x41\x1f0x42\n\n|u| here\n"),
+    # `positive_int_list` (:392-403) — pre-round this raised an ERROR.
+    ("dir_tables", "list_table_widths_python_whitespace", ".. list-table::\n   :widths: 1\x1f2\n\n   * - a\n     - b\n"),
+    ("dir_tables", "table_widths_python_whitespace", ".. table::\n   :widths: 1\x1f2\n\n   === ===\n   a   b\n   === ===\n"),
+    # `parse_directive_arguments` splits with `str.split()` too
+    # (states.py:2365-2380); `final_argument_whitespace` then re-joins.
+    ("dir_core", "directive_argument_python_whitespace", ".. class:: a\x1fb\n\npara\n"),
+    # `choice` is `argument.lower().strip()` (directives/__init__.py:322-331).
+    ("dir_image", "align_choice_python_whitespace", ".. image:: p.png\n   :align: \x1fleft\n"),
+    # `Text.paragraph` is `'\n'.join(lines).rstrip()` — the document's own
+    # lines are rstripped by `string2lines`, but a table cell's are not.
+    ("tables_simple", "cell_trailing_python_whitespace", "=== ===\na\x1f  b\n=== ===\n"),
+    ("tables_grid", "cell_trailing_python_whitespace", "+---+---+\n| a\x1f| b |\n+---+---+\n"),
+    # The substitution marker's closing lookbehind is the same
+    # `non_whitespace_escape_before` (states.py:1992-2001), so a name may not
+    # end in Python whitespace. (EOF forms only: the malformed fallback's
+    # comment extent is a separate, ledgered gap — see IMPLEMENTATION_STATUS.)
+    ("substitutions", "marker_us_before_close_malformed", ".. |ab\x1f| replace:: q\n"),
+    ("substitutions", "marker_nbsp_before_close_malformed", ".. |ab | replace:: q\n"),
+    # ----- round_f: the definition-list term IS rstripped -----
+    # `Text.term` splits each Text node on ` +: +` and then rstrips the term
+    # part — `text = parts[0].rstrip()` (states.py:3015), Python's whitespace
+    # set — so whatever precedes the classifier delimiter never reaches the
+    # <term>. (Sphinx's glossary term is the opposite: verbatim — see
+    # gen_sphinx_fixture.py's round-F cases.)
+    ("round_f", "dl_term_nbsp_before_classifier", "term\xa0 : cls\n   def\n"),
+    ("round_f", "dl_term_us_before_classifier", "term\x1f : cls\n   def\n"),
+    ("round_f", "dl_term_us_before_two_classifiers", "term\x1f : a : b\n   def\n"),
+    ("round_f", "dl_term_ideographic_space_before_classifier", "term\u3000 : cls\n   def\n"),
+    # The field body's first line is `line[match.end():]` after `field_marker`'s
+    # `( +|$)` (states.py:2960-2965) — ASCII spaces only, nothing lstripped —
+    # and the option description likewise follows `option_marker`'s `(  +| ?$)`
+    # (states.py:1250, 1641): an NBSP right after the gap is body text.
+    ("round_f", "field_body_leading_nbsp_kept", ":a: \xa0b\n"),
+    ("round_f", "field_body_leading_nbsp_kept_multiline", ":a:  \xa0b\n   c\n"),
+    ("round_f", "option_desc_leading_nbsp_kept", "-a  \xa0desc\n"),
+    ("round_f", "option_desc_three_spaces_then_nbsp_kept", "-a   \xa0desc\n"),
+    # `Text.paragraph`: when `data[-3] in ' \n'` the text is `data[:-3].rstrip()`
+    # (states.py:2733-2736) — Python's set, so a `\x1f` before the ` ::` goes.
+    ("round_f", "literal_marker_us_before_space_rstripped", "abc\x1f ::\n\n   lit\n"),
+    # `Line.text` (over+underline) strips the title at BOTH ends — `title.rstrip()`,
+    # `section(title.lstrip(), ...)` — while `Text.underline` only `rstrip()`s
+    # (`title = context[0].rstrip()`): a leading NBSP survives an underline-only
+    # title and a leading \x1f does not survive an overlined one.
+    ("round_f", "title_overline_leading_us_stripped", "=====\n\x1fT\n=====\n"),
+    ("round_f", "title_underline_leading_nbsp_kept", "\xa0T\n===\n"),
+    # `is_enumerated_list_item`: `if not next_line[:1].strip()` — a next line
+    # opening with an NBSP/\x1f is "blank or indented", so the item IS a list
+    # item (and then ends "without a blank line").
+    ("round_f", "enum_next_line_leading_us_is_indented", "1. a\n\x1fb\n"),
+    ("round_f", "enum_next_line_leading_nbsp_is_indented", "1. a\n\xa0b\n"),
+    # SimpleTableParser: `line[:firstend].strip()` decides row vs continuation
+    # and `check_columns`' `line[end:nextstart].strip()` guards the margin —
+    # Python's set, so a lone \x1f is blank in both places.
+    ("round_f", "simple_table_margin_us_is_blank", "=== ===\na  \x1fb\n=== ===\n"),
+    ("round_f", "simple_table_first_column_us_is_continuation", "=== ===\na   b\n\x1f   c\n=== ===\n"),
 ]
 
 

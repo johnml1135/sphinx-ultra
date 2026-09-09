@@ -25,6 +25,7 @@ pub mod dependencies;
 pub mod genindex;
 pub mod metadata;
 pub mod numbers;
+pub mod py_domain;
 pub mod resolve;
 pub mod std_domain;
 pub mod toctree;
@@ -62,11 +63,19 @@ use crate::doctree::Node;
 /// stored `version` doesn't match current — mirroring Sphinx's own
 /// `ENV_VERSION` check, where a stale environment is simply rebuilt from
 /// scratch rather than partially trusted.
-pub const ENV_VERSION: u32 = 2;
+///
+/// Version 3: wave 4.5's `Span` change (a `line` provenance field) alters
+/// the shape of every serialized `Node` tree in `tocs`/`titles`. The same
+/// wave later added the `py` field; a v3 `env.bin` written before it fails
+/// to decode (the trailing bytes don't parse as a `PyDomainData`) and is
+/// rebuilt — only dev builds of this branch ever wrote one, so no second
+/// bump.
+pub const ENV_VERSION: u32 = 3;
 
 /// The `env.bin` filename inside a build's cache directory.
 const ENV_FILENAME: &str = "env.bin";
 
+pub use py_domain::PyDomainData;
 pub use std_domain::StdDomainData;
 
 /// One entry harvested from a document's `index` nodes, as recorded in
@@ -177,6 +186,9 @@ pub struct BuildEnvironment {
     pub glob_toctrees: BTreeSet<String>,
     pub numbered_toctrees: BTreeSet<String>,
     pub std: StdDomainData,
+    /// The python domain's registries (`domaindata['py']`), insertion-
+    /// ordered — see [`PyDomainData`] for why the order is data.
+    pub py: PyDomainData,
     /// docname -> its `.. index::` entries, in document order.
     pub index_entries: BTreeMap<String, Vec<IndexEntryRecord>>,
 }
@@ -360,6 +372,10 @@ impl BuildEnvironment {
             .anonlabels
             .retain(|_, (fn_, _)| fn_.as_str() != docname);
 
+        // `PythonDomain.clear_doc`, dispatched by the same `env-purge-doc`
+        // event (`domains/python/__init__.py:744-751`).
+        self.py.clear_doc(docname);
+
         self.index_entries.remove(docname);
     }
 
@@ -396,6 +412,42 @@ impl BuildEnvironment {
                     "name": name,
                     "docname": docname,
                     "labelid": labelid,
+                })
+            })
+            .collect();
+
+        // `domaindata['py']` as record lists, in REGISTRATION order — the
+        // order is oracle data (Sphinx's fuzzy resolution iterates it), so
+        // unlike the std lists these must not be re-sorted. Field names
+        // follow the `ObjectEntry`/`ModuleEntry` tuple fields; T14's
+        // fixture generator records the same shapes.
+        let py_objects: Vec<JsonValue> = self
+            .py
+            .objects
+            .iter()
+            .map(|(name, entry)| {
+                json!({
+                    "name": name,
+                    "docname": entry.docname,
+                    "node_id": entry.node_id,
+                    "objtype": entry.objtype,
+                    "aliased": entry.aliased,
+                })
+            })
+            .collect();
+
+        let py_modules: Vec<JsonValue> = self
+            .py
+            .modules
+            .iter()
+            .map(|(name, entry)| {
+                json!({
+                    "name": name,
+                    "docname": entry.docname,
+                    "node_id": entry.node_id,
+                    "synopsis": entry.synopsis,
+                    "platform": entry.platform,
+                    "deprecated": entry.deprecated,
                 })
             })
             .collect();
@@ -451,6 +503,8 @@ impl BuildEnvironment {
                 "progoptions": progoptions,
                 "terms": self.std.terms,
             },
+            "py_objects": py_objects,
+            "py_modules": py_modules,
             "index_entries": JsonValue::Object(index_entries),
         })
     }
@@ -551,6 +605,36 @@ mod tests {
         env.std.terms.insert(
             "glossary term".to_string(),
             ("index".to_string(), "term-glossary-term".to_string()),
+        );
+        // py entries owned by "index" — registered out of alphabetical
+        // order so the snapshot's order-preservation is visible.
+        env.py.note_object(
+            "zeta.func",
+            py_domain::PyObjectEntry {
+                docname: "index".to_string(),
+                node_id: "zeta.func".to_string(),
+                objtype: "function".to_string(),
+                aliased: false,
+            },
+        );
+        env.py.note_object(
+            "alpha.func",
+            py_domain::PyObjectEntry {
+                docname: "index".to_string(),
+                node_id: "alpha.func".to_string(),
+                objtype: "function".to_string(),
+                aliased: true,
+            },
+        );
+        env.py.note_module(
+            "zeta",
+            py_domain::PyModuleEntry {
+                docname: "index".to_string(),
+                node_id: "module-zeta".to_string(),
+                synopsis: "Zed things.".to_string(),
+                platform: "posix".to_string(),
+                deprecated: true,
+            },
         );
         env.index_entries.insert(
             "index".to_string(),
@@ -691,6 +775,8 @@ mod tests {
         assert!(env.std.objects.is_empty());
         assert!(env.std.progoptions.is_empty());
         assert!(env.std.terms.is_empty());
+        assert!(env.py.objects.is_empty() && env.py.objects_index.is_empty());
+        assert!(env.py.modules.is_empty() && env.py.modules_index.is_empty());
         assert!(env.index_entries.is_empty());
     }
 
@@ -937,6 +1023,24 @@ mod tests {
         let entry = entries[0].as_array().unwrap();
         assert_eq!(entry[0], "single");
         assert_eq!(entry[3], "main"); // bool true -> literal "main"
+
+        // py lists keep REGISTRATION order — zeta was noted before alpha.
+        let py_objects = snapshot["py_objects"].as_array().unwrap();
+        assert_eq!(
+            py_objects
+                .iter()
+                .map(|o| o["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["zeta.func", "alpha.func"]
+        );
+        assert_eq!(py_objects[1]["aliased"], true);
+        let py_modules = snapshot["py_modules"].as_array().unwrap();
+        assert_eq!(py_modules.len(), 1);
+        assert_eq!(py_modules[0]["name"], "zeta");
+        assert_eq!(py_modules[0]["node_id"], "module-zeta");
+        assert_eq!(py_modules[0]["synopsis"], "Zed things.");
+        assert_eq!(py_modules[0]["platform"], "posix");
+        assert_eq!(py_modules[0]["deprecated"], true);
 
         assert_eq!(
             snapshot["tocs_pformat"]["index"],

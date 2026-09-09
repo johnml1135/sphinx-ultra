@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::doctree::{kinds, AttrValue, Doctree, Node, Span};
 use crate::env::BuildEnvironment;
 use crate::matching;
+use crate::utils::py_repr_str;
 
 /// Sphinx's `StandardDomain._virtual_doc_names` (`domains/std/__init__.py:784-788`):
 /// docnames that resolve even though no source file produces them.
@@ -66,6 +67,9 @@ pub struct ToctreeContent<'a> {
     pub docname: &'a str,
     pub glob: bool,
     pub reversed: bool,
+    /// Source-table index of the `.. toctree::` marker's line (the node's
+    /// `source`): every diagnostic below is stamped with it.
+    pub source: u16,
     /// 1-based line of the `.. toctree::` marker. Sphinx logs every
     /// diagnostic below with `location=toctree`, i.e. the directive node's
     /// source info — *not* the offending entry's own line.
@@ -106,8 +110,16 @@ pub enum ToctreeWarningKind {
 /// still reproduce the build's warnings.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToctreeWarning {
+    /// Source-table index of the `.. toctree::` directive's line: a
+    /// toctree written inside an included file warns against THAT file
+    /// (`location=toctree` is the node, whose `source` is the included
+    /// file's). Deliberately not `#[serde(default)]` — the warning rides
+    /// the document cache, and a pre-provenance record decoding with
+    /// source 0 would name the includer again (cache-shape rule,
+    /// [`crate::rst::RegistryExport::program_options`]).
+    pub source: u16,
     /// 1-based line of the `.. toctree::` directive (Sphinx's
-    /// `location=toctree`).
+    /// `location=toctree`), within `source`.
     pub line: u32,
     /// The message, formatted exactly as Sphinx formats it.
     pub message: String,
@@ -174,6 +186,7 @@ pub fn resolve_entries(input: &ToctreeContent<'_>) -> ResolvedEntries {
         docname,
         glob,
         reversed,
+        source,
         line,
         found_docs,
         source_suffixes,
@@ -198,6 +211,7 @@ pub fn resolve_entries(input: &ToctreeContent<'_>) -> ResolvedEntries {
                 category: Option<&str>,
                 kind: ToctreeWarningKind| {
         sink.push(ToctreeWarning {
+            source,
             line,
             message,
             category: category.map(str::to_string),
@@ -390,36 +404,6 @@ pub fn docname_join(base_docname: &str, docname: &str) -> String {
         }
     }
     segments.join("/")
-}
-
-/// `repr()` of a Python `str`: single quotes unless that would need
-/// escaping and double quotes wouldn't.
-pub(crate) fn py_repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,7 +987,10 @@ mod tests {
                 sphinx: true,
                 docname: docname.to_string(),
                 exclude_patterns: Vec::new(),
+                py: Default::default(),
+                srcdir: None,
                 found_docs: Some(std::sync::Arc::new(found.clone())),
+                ..Default::default()
             },
         )
     }
@@ -1257,6 +1244,7 @@ mod tests {
             docname,
             glob: false,
             reversed: false,
+            source: 0,
             line: 1,
             found_docs: found,
             source_suffixes: &[".rst"],
@@ -1465,6 +1453,7 @@ mod tests {
         assert_eq!(
             resolved.warnings,
             vec![ToctreeWarning {
+                source: 0,
                 line: 1,
                 message: "toctree glob pattern 'missing*' didn't match any documents".to_string(),
                 category: None,
@@ -1729,16 +1718,6 @@ mod tests {
             messages[0].message,
             "document is referenced in multiple toctrees: ['a', 'b'], selecting: b <- c"
         );
-    }
-
-    #[test]
-    fn py_repr_quoting_matches_python() {
-        assert_eq!(py_repr_str("a"), "'a'");
-        assert_eq!(py_repr_str("it's"), "\"it's\"");
-        assert_eq!(py_repr_str("say \"hi\""), "'say \"hi\"'");
-        assert_eq!(py_repr_str("both ' and \""), "'both \\' and \"'");
-        assert_eq!(py_repr_str("a\\b"), "'a\\\\b'");
-        assert_eq!(py_repr_str("a\nb"), "'a\\nb'");
     }
 
     #[test]

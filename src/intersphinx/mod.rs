@@ -29,8 +29,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value as JsonValue;
 
-use crate::env::toctree::py_repr_str;
 use crate::inventory::{posix_join, Inventory, InventoryFile, InventoryItem};
+use crate::utils::py_repr_str;
 
 pub use fetch::{HttpConfig, InventoryFetcher, TlsCacerts, UreqFetcher, DEFAULT_USER_AGENT};
 
