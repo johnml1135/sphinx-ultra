@@ -33,7 +33,7 @@ jobs:
       RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -77,7 +77,7 @@ jobs:
     name: Benchmark
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -111,7 +111,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: "1.85"
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Install MSRV toolchain
       uses: dtolnay/rust-toolchain@master
@@ -133,7 +133,7 @@ jobs:
     name: Musl Build (release target)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     # cross builds in a container with a complete musl toolchain, so the
     # build cannot break when the runner image or host toolchain drifts
@@ -154,7 +154,7 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -169,7 +169,7 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
