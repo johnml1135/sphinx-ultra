@@ -712,33 +712,18 @@ impl HTMLBuilder {
 
     /// Write build info file
     pub async fn write_build_info(&self) -> Result<()> {
-        let build_info = serde_json::json!({
-            "config": {
-                "extensions": [],
-                "templates_path": [],
-                "source_suffix": ".rst",
-                "master_doc": self.config.root_doc.as_deref().unwrap_or("index"),
-                "version": self.config.version.as_deref().unwrap_or(""),
-                "release": self.config.release.as_deref().unwrap_or(""),
-                "project": self.config.project,
-                "copyright": self.config.copyright.as_deref().unwrap_or(""),
-                "language": self.config.language.as_deref().unwrap_or("en"),
-            },
-            "tags": [],
-            "version": env!("CARGO_PKG_VERSION"),
-        });
-
         let build_info_path = self.outdir.join(".buildinfo");
-        fs::write(build_info_path, serde_json::to_string_pretty(&build_info)?).await?;
+        fs::write(
+            build_info_path,
+            crate::builder::sphinx_build_info_contents(&self.config, &self.config.tags)?,
+        )
+        .await?;
 
         Ok(())
     }
 
     /// Finish the build process
     ///
-    /// Object-inventory dumping used to happen here too; it was removed
-    /// along with the dead `BuildEnvironment`-coupled `dump_inventory`
-    /// (M2 wave 4 task 4) and will come back with a decoupled signature.
     pub async fn finish(&mut self, search_index: &crate::search::SearchIndex) -> Result<()> {
         info!("Finishing HTML build");
 

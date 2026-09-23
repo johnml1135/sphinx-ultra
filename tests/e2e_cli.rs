@@ -165,6 +165,31 @@ fn build_emits_sphinx_object_inventory() {
 }
 
 #[test]
+fn build_emits_sphinx_build_info() {
+    let out = out_dir("basic-build-info");
+    let result = build(&fixture("basic"), &out, &[]);
+
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    let raw = std::fs::read_to_string(out.join(".buildinfo")).unwrap();
+    let mut lines = raw.split('\n');
+    assert_eq!(lines.next(), Some("# Sphinx build info version 1"));
+    assert_eq!(
+        lines.next(),
+        Some(
+            "# This file records the configuration used when building these files. When it is not found, a full rebuild will be done."
+        )
+    );
+    let config = lines.next().unwrap();
+    let tags = lines.next().unwrap();
+    assert!(config.starts_with("config: "));
+    assert!(tags.starts_with("tags: "));
+    assert_eq!(config["config: ".len()..].len(), 32);
+    assert_eq!(&tags["tags: ".len()..], "645f666f9bcd5a90fca523b33c5a78b7");
+    assert_eq!(lines.next(), Some(""));
+    assert_eq!(lines.next(), None);
+}
+
+#[test]
 fn build_with_relative_source_path_works() {
     // Regression test for the 2026-08 relative-`--source` crash.
     let out = out_dir("relative-source");

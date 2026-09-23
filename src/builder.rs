@@ -235,6 +235,38 @@ fn config_fingerprint(config: &BuildConfig) -> Result<String> {
         .to_string())
 }
 
+/// Render the Sphinx 9.1 `.buildinfo` file.
+pub(crate) fn sphinx_build_info_contents(config: &BuildConfig, tags: &[String]) -> Result<String> {
+    // Sphinx hashes Config.filter({'html'}) with Python's stable_hash. Ultra
+    // does not retain Sphinx's per-setting rebuild categories and cannot
+    // reproduce Python's repr-based MD5 input byte-for-byte, so this keeps
+    // the format and hash width while using the existing deterministic
+    // configuration fingerprint. The resulting hash is intentionally not
+    // presented as a byte-exact Sphinx config hash.
+    let config_hash = config_fingerprint(config)?[..32].to_string();
+
+    // The empty tag set is the common HTML build case and this is Sphinx's
+    // stable_hash(sorted([])) value. Non-empty tags use the same deterministic
+    // width but remain subject to the same Python stable_hash gap.
+    let tags_hash = if tags.is_empty() {
+        "645f666f9bcd5a90fca523b33c5a78b7".to_string()
+    } else {
+        let mut sorted_tags = tags.to_vec();
+        sorted_tags.sort();
+        blake3::hash(serde_json::to_string(&sorted_tags)?.as_bytes())
+            .to_hex()
+            .to_string()[..32]
+            .to_string()
+    };
+
+    Ok(format!(
+        "# Sphinx build info version 1\n\
+         # This file records the configuration used when building these files. When it is not found, a full rebuild will be done.\n\
+         config: {config_hash}\n\
+         tags: {tags_hash}\n"
+    ))
+}
+
 impl SphinxBuilder {
     pub fn new(config: BuildConfig, source_dir: PathBuf, output_dir: PathBuf) -> Result<Self> {
         // -d/doctree_dir relocates the cache (sphinx-build's doctree dir).
@@ -497,6 +529,11 @@ impl SphinxBuilder {
         // Generate sitemap and search index
         self.generate_search_index(&processed_docs, &doctrees)
             .await?;
+        tokio::fs::write(
+            self.output_dir.join(".buildinfo"),
+            sphinx_build_info_contents(&self.config, &self.config.tags)?,
+        )
+        .await?;
 
         let build_time = start_time.elapsed();
         let output_size = utils::calculate_directory_size(&self.output_dir).await?;
