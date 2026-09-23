@@ -355,3 +355,22 @@ the first differing line's **content** (expected plus actual text, which is
 what makes the table actionable) and the `html-body-fallback` category (so body
 content is diffable while Ultra's templates differ). The report JSON also
 records `expected_line`.
+
+## Round 8: host details in Sphinx's error report, and lock-hash line endings
+
+Found while regenerating after Round 7. For fatal errors and crashes, Sphinx
+writes a full error report into the warnings stream: a "Versions" block with
+the runner's kernel and Python patch version, loaded extensions, last
+messages, and traceback frames through the runner's site-packages. That
+changes with every runner-image update, so it can't be oracle data.
+
+1. **Error-report reduction.** For `build-error` and `reference-crash` cases,
+   the stored warnings keep every line before Sphinx's error report, the
+   report's header line (e.g. `Configuration error!`, `Sphinx error!`,
+   `Recursion error!`), and the final exception message line(s). The
+   Versions, Loaded Extensions, Last Messages and traceback-frame sections are
+   dropped. The same reduction applies to Ultra's warnings before comparison.
+   The root-leak scan runs after reduction and must find nothing.
+2. **Lock digest.** `lock_sha256` is the SHA-256 of `uv.lock` after CRLF→LF
+   normalization, computed identically at generation and at `--verify`, so a
+   Windows checkout verifies against a Linux-generated ledger.
