@@ -255,3 +255,18 @@ changes what is *reported*, never what *passes*.
 8. **Default-suite diagnostics tests.** Unit tests for body/chrome splitting,
    needs.json keyed diff, inventory record diff and the divergence grouping,
    all against small synthetic inputs, so the default suite stays green.
+
+## Round 4 (implementation finding): absolute paths in rendered system messages
+
+`oracle_py` found that the snippet `conf.py` (`keep_warnings = True`) makes
+Sphinx render system messages into `index.html`, including the absolute
+source path. About 220 docutils cases are affected, and the root-leak rule
+correctly aborted generation.
+
+**Decision:** snippet projects use `keep_warnings = False`, Sphinx's default
+and what real projects use. Warnings are still captured and compared through
+the `-w` warnings file; `True` existed only to mirror the read-phase doctree
+fixture, which the HTML oracle doesn't need. Path normalization stays
+warnings-only. The root-leak check now collects **every** leaking case and
+fails once with the full list (profile/source_set/case_id plus the offending
+file), instead of aborting on the first.
