@@ -389,6 +389,57 @@ fn comparator_normalizes_all_runtime_tokens_in_warnings() {
 }
 
 #[test]
+fn comparator_reduces_real_sphinx_error_report() {
+    let expected = String::from_utf8_lossy(include_bytes!(
+        "fixtures/html_oracle/core/refs/html_projects/literalinclude/warnings.txt"
+    ))
+    .replace(
+        "/home/runner/work/sphinx-ultra/sphinx-ultra/target/html-oracle/generator-work/case-2usubfn1/source",
+        "<SRCDIR>",
+    );
+    let actual = br#"
+Configuration error!
+
+Versions
+========
+
+* Platform:         windows; (Windows-11)
+* Python version:   3.12.15 (CPython)
+
+Last Messages
+=============
+
+None.
+
+Loaded Extensions
+=================
+
+None.
+
+Traceback
+=========
+
+      File "C:\run\site-packages\sphinx\config.py", line 349, in read
+        raise ConfigError(
+    sphinx.errors.ConfigError: config directory doesn't contain a conf.py file (C:\run\case\source)
+
+
+The full traceback has been saved in:
+/tmp/sphinx-err-actual.log
+
+To report this error to the developers, please open an issue.
+"#;
+    let roots = support::html_oracle::WarningRoots {
+        source_root: Some(Path::new(r"C:\run\case\source")),
+        output_root: Some(Path::new(r"C:\run\case\output")),
+        doctree_root: Some(Path::new(r"C:\run\case\doctree")),
+        case_root: Some(Path::new(r"C:\run\case")),
+    };
+    let diagnostics = compare_warnings_with_roots(expected.as_bytes(), actual, None, Some(roots));
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
 fn comparator_parses_searchindex_and_needs_json_with_key_order_ignored() {
     let search_expected = br#"Search.setIndex({"docnames":["a"],"titles":["A"]});"#;
     let search_actual = br#"Search.setIndex({"titles":["A"],"docnames":["a"]});"#;

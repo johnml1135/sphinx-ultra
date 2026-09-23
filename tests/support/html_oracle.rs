@@ -1040,7 +1040,76 @@ fn normalize_warning_bytes_with_roots(bytes: &[u8], roots: Option<WarningRoots<'
         }
     }
     let normalized = replace_sphinx_error_logs(&normalized);
-    String::from_utf8_lossy(&normalized).into_owned()
+    let normalized = String::from_utf8_lossy(&normalized);
+    reduce_sphinx_error_report(&normalized)
+}
+
+fn reduce_sphinx_error_report(warnings: &str) -> String {
+    let lines = warnings.split_inclusive('\n').collect::<Vec<_>>();
+    let Some(header_index) = lines.iter().position(|line| {
+        let line = line.trim_end_matches(['\r', '\n']);
+        let Some(prefix) = line.strip_suffix(" error!") else {
+            return false;
+        };
+        !prefix.is_empty()
+            && prefix
+                .chars()
+                .all(|character| character.is_ascii_alphabetic() || character == ' ')
+    }) else {
+        return warnings.to_string();
+    };
+    let Some(traceback_index) =
+        lines
+            .iter()
+            .enumerate()
+            .skip(header_index + 1)
+            .find_map(|(index, line)| {
+                (line.trim_end_matches(['\r', '\n']) == "Traceback").then_some(index)
+            })
+    else {
+        return warnings.to_string();
+    };
+    let Some(exception_index) = lines
+        .iter()
+        .enumerate()
+        .skip(traceback_index + 1)
+        .rev()
+        .find_map(|(index, line)| is_exception_message_line(line).then_some(index))
+    else {
+        return warnings.to_string();
+    };
+    let mut exception_end = exception_index + 1;
+    while exception_end < lines.len()
+        && !lines[exception_end].trim().is_empty()
+        && lines[exception_end].starts_with("    ")
+    {
+        exception_end += 1;
+    }
+    let prefix = lines[..header_index].concat();
+    let header = lines[header_index].trim_end_matches(['\r', '\n']);
+    let exception = lines[exception_index..exception_end]
+        .concat()
+        .trim_end_matches(['\r', '\n'])
+        .to_string();
+    format!("{prefix}{header}\n\n{exception}\n")
+}
+
+fn is_exception_message_line(line: &str) -> bool {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let Some(type_name) = line
+        .strip_prefix("    ")
+        .and_then(|line| line.split_once(':').map(|(name, _)| name))
+    else {
+        return false;
+    };
+    !type_name.is_empty()
+        && type_name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '.'))
+        && type_name
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
 }
 
 fn replace_source_root_token(
@@ -1121,9 +1190,11 @@ fn replace_token(bytes: &[u8], token: &[u8], replacement: &[u8]) -> Vec<u8> {
     let mut cursor = 0;
     while cursor < bytes.len() {
         let matches = bytes[cursor..].starts_with(token);
-        let boundary = bytes
-            .get(cursor + token.len())
-            .is_none_or(|byte| *byte == b'/' || *byte == b'\\');
+        let boundary = bytes.get(cursor + token.len()).is_none_or(|byte| {
+            *byte == b'/'
+                || *byte == b'\\'
+                || !byte.is_ascii_alphanumeric() && !matches!(*byte, b'.' | b'_' | b'-')
+        });
         if matches && boundary {
             output.extend_from_slice(replacement);
             cursor += token.len();
