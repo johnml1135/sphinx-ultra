@@ -204,3 +204,54 @@ mismatch, reported separately in `report.md`/`report.json` from HTML
 mismatches. `needs.json` files that an HTML build writes (because the project
 sets `needs_build_json = True`) stay in the HTML tree and get the same JSON
 policy.
+
+## Round 3 (user direction): diagnostics for a 1-for-1 reimplementation
+
+User: "get the oracle projects / source and output needs.json and html being
+easily comparable and a good diagnostic for building a 1-for-1 recoding of
+this. The PR is just the oracle and diagnostics."
+
+Scope: **no changes under `src/`**. The PR is the oracle corpus, generator,
+comparator, runner and diagnostics. Comparison stays strict; everything below
+changes what is *reported*, never what *passes*.
+
+1. **Side-by-side trees on disk.** For every scheduled case, the exhaustive
+   run leaves `target/html-oracle/runs/<profile>/<source_set>/<case_id>/` with
+   `input/` (materialized source), `expected/` (reference tree reconstructed
+   from refs + blobs, plus `warnings.txt` and, for local-needs,
+   `needs/needs.json`), `actual/` (Ultra output), `actual-warnings.txt`,
+   `actual-needs/` and `result.json`. A developer can run `diff -r expected
+   actual` or open both in a diff tool with no harness knowledge. Each run dir
+   is recreated fresh.
+2. **Single-case command.** `HTML_ORACLE_FILTER=<key>` plus a documented
+   `HTML_ORACLE_KEEP=all|failed` (default `failed`: run dirs of passing cases
+   are deleted after comparison). The report prints, for each failing case,
+   the exact filter string that reruns only that case.
+3. **HTML mismatch localisation (report only).** For a text mismatch in an
+   `*.html` file, split both sides at Sphinx's body markers (the
+   `<div class="body" role="main">` element through its matching close, found
+   by a simple tag-depth scan; no DOM library) and classify it as
+   `html-body`, `html-chrome` (the body matches but the surrounding template
+   differs), or `html-both`. Report the first differing line number and a
+   unified diff (3 lines of context, capped at 64 KiB) of the body region
+   first, then chrome. If the markers are missing on either side, fall back to
+   a whole-file unified diff with category `html-unstructured`.
+4. **needs.json diagnostics.** On a mismatch, key needs by
+   `versions[*].needs[<id>]` and report `missing-need`, `extra-need`, and
+   per-field `need-field` differences (need id, field, expected, actual), plus
+   top-level/version key differences. Fall back to a JSON-path diff for
+   unexpected shapes.
+5. **searchindex.js / objects.inv diagnostics.** Report differing top-level
+   keys (searchindex) and missing/extra/changed inventory records rather than
+   one opaque "value differs".
+6. **Warnings diagnostics.** Line-level diff of normalized warnings, with
+   missing/extra counts.
+7. **Report layout.** `report.md` has a summary table (per profile ×
+   source_set: scheduled/passed/failed), a per-category count table, a
+   "most common first-divergence" table (group failing HTML files by their
+   first differing expected line, top 25, which shows the highest-leverage
+   fixes), then per-case sections. `report.json` carries the same data in
+   machine-readable form for tooling or agents.
+8. **Default-suite diagnostics tests.** Unit tests for body/chrome splitting,
+   needs.json keyed diff, inventory record diff and the divergence grouping,
+   all against small synthetic inputs, so the default suite stays green.

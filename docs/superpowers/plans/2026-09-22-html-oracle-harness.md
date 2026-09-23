@@ -9,6 +9,8 @@ Create one comprehensive first PR that discovers the complete in-scope corpus, b
 This is one first PR because the acceptance contract is end-to-end: committed references, deterministic generation, a runnable comparator, and a complete known-red report. It is divided into bounded commits so each schema, discovery, runner, storage, comparator, process, and report task is independently reviewable.
 
 No production or test implementation is written until this plan is executed.
+The implementation PR changes only tools/, tests/, tests/fixtures/html_oracle/,
+and NOTICE.md; nothing under src/ changes.
 
 ## Architecture
 
@@ -22,7 +24,8 @@ Rust tests have three layers:
 
 1. tests/support/html_oracle.rs loads and validates index.json, reconstructs logical trees, applies the fixed path policy, and compares outputs.
 2. tests/support/diagnostics.rs executes child processes with bounded pipes and deadlines.
-3. tests/html_differential.rs invokes env!("CARGO_BIN_EXE_sphinx-ultra") for every runnable ledger case, then writes the aggregate report.
+3. tests/support/html_oracle.rs also produces reporting-only diagnostics: retained side-by-side trees, HTML body/chrome localization, keyed needs.json differences, structured searchindex.js and objects.inv differences, warning line diffs, and first-divergence groups.
+4. tests/html_differential.rs invokes env!("CARGO_BIN_EXE_sphinx-ultra") for every runnable ledger case, then writes the aggregate report.
 
 Required implementation paths:
 
@@ -463,7 +466,92 @@ Record uuid.uuid4=counter in the profile record. For local_needs also append nee
 - [ ] Run cargo fmt --all and cargo test --test html_differential normalizer comparator schema. Expected green result: every table policy test passes.
 - [ ] Commit feat: compare HTML oracle trees by fixed policy.
 
-### Task 6: Actual CLI execution and bounded diagnostics
+### Task 6: Reporting-only side-by-side diagnostics
+
+Files:
+
+- Modify: tests/support/html_oracle.rs
+- Modify: tests/html_differential.rs
+
+- [ ] Write red synthetic Rust tests in tests/html_differential.rs for `html-body`, `html-chrome`, `html-both`, and `html-unstructured`, keyed needs.json differences, searchindex top-level key differences, objects.inv missing/extra/changed records, warning line differences, and first-divergence grouping. Use these exact HTML inputs for the four localization tests:
+
+~~~rust
+let expected = "<html><div class=\"body\" role=\"main\">\nA\n</div><footer>ok</footer></html>";
+let body_changed = "<html><div class=\"body\" role=\"main\">\nB\n</div><footer>ok</footer></html>";
+let chrome_changed = "<html><div class=\"body\" role=\"main\">\nA\n</div><footer>changed</footer></html>";
+let both_changed = "<html><div class=\"body\" role=\"main\">\nB\n</div><footer>changed</footer></html>";
+let unstructured = "<html><main>A</main></html>";
+assert_eq!(diagnose_html(expected, body_changed).category, "html-body");
+assert_eq!(diagnose_html(expected, chrome_changed).category, "html-chrome");
+assert_eq!(diagnose_html(expected, both_changed).category, "html-both");
+assert_eq!(diagnose_html(expected, unstructured).category, "html-unstructured");
+~~~
+
+Use this needs.json pair and assert `missing-need`, `extra-need`, and `need-field` records are keyed by `versions[0].needs["N-1"]`, while a changed top-level key produces `needs-top-level` and an unexpected shape produces `needs-json-path`:
+
+~~~json
+{"versions":[{"version":"1","needs":{"N-1":{"title":"One","status":"open"},"N-2":{"title":"Two"}}}]}
+{"versions":[{"version":"1","needs":{"N-1":{"title":"Changed","status":"open"},"N-3":{"title":"Three"}}}],"extra":true}
+~~~
+
+Assert the searchindex fixture reports `searchindex-missing-key`, `searchindex-extra-key`, and `searchindex-changed-key`, the inventory fixture reports `inventory-missing-record`, `inventory-extra-record`, and `inventory-changed-record`, normalized warnings report `warning-missing-line`, `warning-extra-line`, and `warning-changed-line`, and three synthetic failures at expected line 7 produce one first-divergence group with count 3. Add retention assertions that unset HTML_ORACLE_KEEP resolves to `failed`, `all` retains a passing run, and a complete case key is the rerun filter.
+- [ ] Run `cargo test --test html_differential diagnostic_synthetic -- --nocapture`. Expected red result before implementation: the diagnostic functions and report grouping are missing; expected green result after implementation: all synthetic category and grouping assertions pass without invoking Sphinx-Ultra.
+- [ ] Add the reporting interfaces to tests/support/html_oracle.rs without changing comparison decisions:
+
+~~~rust
+pub struct Diagnostic {
+    pub category: String,
+    pub logical_path: String,
+    pub first_expected_line: Option<usize>,
+    pub expected: String,
+    pub actual: String,
+    pub detail: String,
+}
+
+pub struct InventoryRecord {
+    pub name: String,
+    pub domain_role: String,
+    pub priority: i32,
+    pub uri: String,
+    pub display_name: String,
+}
+
+pub struct FirstDivergenceGroup {
+    pub expected_line: usize,
+    pub count: usize,
+    pub sample_files: Vec<String>,
+}
+
+pub fn diagnose_html(expected: &str, actual: &str) -> Diagnostic;
+pub fn diagnose_needs_json(expected: &serde_json::Value, actual: &serde_json::Value) -> Vec<Diagnostic>;
+pub fn diagnose_searchindex(expected: &serde_json::Value, actual: &serde_json::Value) -> Vec<Diagnostic>;
+pub fn diagnose_inventory(expected: &[InventoryRecord], actual: &[InventoryRecord]) -> Vec<Diagnostic>;
+pub fn diagnose_warnings(expected: &str, actual: &str) -> Vec<Diagnostic>;
+pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenceGroup>;
+~~~
+
+Implement `diagnose_html` as a report-only wrapper around the fixed comparator, dispatched only after a strict `*.html` comparison has found a mismatch. Normalize CRLF first, locate the exact `<div class="body" role="main">` marker in each side, and find its matching `</div>` with a simple tag-depth scan that increments on non-self-closing `<div` tags and decrements on `</div>` tags. If either marker is absent, return `html-unstructured` with a whole-file unified diff. Otherwise compare body and the concatenated prefix/suffix chrome: body-only differences are `html-body`, chrome-only differences are `html-chrome`, and differences in both are `html-both`. Record the first differing full-file line and emit a three-line-context unified diff for the body before the chrome, capped at 64 KiB. Never rewrite the compared bytes or turn a diagnostic into a pass.
+- [ ] Implement structured diagnostics in tests/support/html_oracle.rs. For needs.json, require `versions` to be an array and each element's `needs` to be an object; key records by `versions[index].needs[id]`, emit missing/extra/per-field records, report top-level and version-key changes, and use a JSON-path diff under `needs-json-path` when either shape is unexpected. For searchindex.js, report missing, extra, and changed top-level keys. For objects.inv, compare canonical five-field records and report missing, extra, and changed records. For warnings, compare normalized lines and include missing, extra, and changed line counts. Sort all diagnostics by logical path, category, first line, and detail; sort first-divergence groups by descending count then ascending expected line and retain the first 25.
+- [ ] Implement retained run artifacts in tests/support/html_oracle.rs and tests/html_differential.rs with this exact layout and result shape:
+
+~~~text
+target/html-oracle/runs/<profile>/<source_set>/<case_id>/
+  input/
+  expected/
+    warnings.txt
+    needs/needs.json
+  actual/
+  actual-warnings.txt
+  actual-needs/
+  result.json
+~~~
+
+`input/` is populated from the case's materialized input files; `expected/` is reconstructed from profile refs and blobs and includes the reference warnings file plus local-needs needs/needs.json; `actual/` is Ultra's HTML output; `actual-warnings.txt` is Ultra's `-w` file; `actual-needs/` is Ultra's `-b needs` output when the case has a needs artifact; and `result.json` contains the case key, HTML status, needs status, pass/fail, sorted diagnostics, and the exact rerun filter `profile/source_set/case_id`. Recreate the complete run directory before each case and never place cache or doctree files inside `actual/`. A retained case is directly inspectable with `diff -r target/html-oracle/runs/profile/source_set/case_id/expected target/html-oracle/runs/profile/source_set/case_id/actual`.
+- [ ] Parse `HTML_ORACLE_KEEP` as exactly `failed` or `all`, defaulting to `failed`. With `failed`, delete a passing case directory after writing its result; with `all`, retain every side-by-side directory. Parse `HTML_ORACLE_FILTER` as a substring over `profile/source_set/case_id`; the report's rerun command uses the complete case key so it selects one case. Reject any other keep value or a filter with no matching ledger case.
+- [ ] Run `cargo test --test html_differential diagnostic_synthetic -- --nocapture` again. Expected green result: body/chrome classification, keyed needs diagnostics, searchindex/inventory/warning diagnostics, first-divergence groups, run layout, and keep/filter policy tests pass; existing strict comparator tests remain unchanged.
+- [ ] Commit `test: add HTML oracle diagnostics`.
+
+### Task 7: Actual CLI execution and bounded process handling
 
 - [ ] Write red tests that re-enter std::env::current_exe through an ignored helper selected by HTML_ORACLE_DIAGNOSTICS_HELPER. Test a timeout, more than 512 KiB on both streams, and a read or kill error.
 - [ ] Define ExitStatusKind with Success, BuildError(i32), Timeout, SpawnError(String), and IoError(String) in tests/support/diagnostics.rs.
@@ -475,9 +563,9 @@ Record uuid.uuid4=counter in the profile record. For local_needs also append nee
 - [ ] Run cargo test --test html_differential diagnostics smoke repeat_run. Expected green result: CARGO_BIN_EXE_sphinx-ultra executes, cache and warnings are outside output, a second fresh run has identical output and warnings, and no pipe deadlock occurs.
 - [ ] Commit test: run Ultra with bounded diagnostics.
 
-### Task 7: Two-root determinism and generator ordering
+### Task 8: Two-root determinism and generator ordering
 
-- [ ] Write red tests that generate one small complete core source set below two different absolute roots and compare core/index.json, inputs, refs, blobs, order, and root-leak behavior. The local-needs HTML and needs.json two-root regression is covered in Task 9 with the runner shim.
+- [ ] Write red tests that generate one small complete core source set below two different absolute roots and compare core/index.json, inputs, refs, blobs, order, and root-leak behavior. The local-needs HTML and needs.json two-root regression is covered in Task 10 with the runner shim.
 - [ ] Write the Rust repeat-run test that deletes and recreates one case run directory, invokes Ultra twice with -q -w, and asserts identical output-tree bytes and warning-file bytes.
 - [ ] Implement sorted source-set, origin, case, file, and JSON-key ordering; UTF-8 JSON with indent 2 and final LF; process-pool -j N with canonical result collection; distinct absolute source, output, cache, and warnings paths per child. The repeat-build helper always starts with a deleted run directory.
 - [ ] Implement the focused core command: uv run --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --out tests/fixtures/html_oracle --profile core -j 2.
@@ -486,18 +574,19 @@ Record uuid.uuid4=counter in the profile record. For local_needs also append nee
 - [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q -k deterministic. Expected green result: different absolute roots produce identical trees.
 - [ ] Commit test: prove two-root oracle determinism.
 
-### Task 8: Exhaustive differential run and reports
+### Task 9: Exhaustive differential run and reports
 
-- [ ] Write red report tests for ordering by profile, source_set, case_id, logical_path, category; per-case pass/fail; counts per source set and category; excluded and reference-crash counts; and a 64 KiB assertion cap.
+- [ ] Write red report tests for ordering by profile, source_set, case_id, logical_path, category; per-case pass/fail; counts per profile/source_set and category; excluded and reference-crash counts; side-by-side run retention; `HTML_ORACLE_KEEP=failed|all`; exact per-case `HTML_ORACLE_FILTER` reruns; the `html-body`, `html-chrome`, `html-both`, `html-unstructured`, needs, searchindex, inventory, and warning categories; the top-25 first-divergence table; and a 64 KiB assertion cap.
 - [ ] Load both profile/index.json files and merge their cases in memory. Apply HTML_ORACLE_FILTER as a substring over profile/source_set/case_id. Schedule built and build-error. Do not schedule reference-crash, excluded-network, or excluded-plantuml. A filter with no matches is an error.
-- [ ] Use available_parallelism as a bounded thread pool. Each worker runs CARGO_BIN_EXE_sphinx-ultra and returns an owned result. The main thread sorts all results before reporting.
-- [ ] Write target/html-oracle/report.json with total_cases, scheduled_cases, passed_cases, failed_cases, excluded_cases, reference_crash_cases, counts_by_source_set, counts_by_category, and cases. Write equivalent Markdown summary, source-set, category, and per-failure sections.
-- [ ] Cap each diff at 64 KiB and combined stdout plus assertion text at 64 KiB. The assertion points to both report files and states that the files contain every result.
+- [ ] Use available_parallelism as a bounded thread pool. Each worker recreates target/html-oracle/runs/profile/source_set/case_id, writes `input/`, reconstructs `expected/` from refs and blobs, runs Ultra into `actual/` with cache/doctree outside `actual/`, captures `actual-warnings.txt`, creates `actual-needs/` for every run and runs `-b needs` there when the ledger has local-needs fields, writes `result.json`, and applies HTML_ORACLE_KEEP after comparison. Each owned result includes its exact literal rerun filter such as `core/docutils_snippets/docutils-0001`; the main thread sorts all results before reporting.
+- [ ] Write target/html-oracle/report.json with `total_cases`, `scheduled_cases`, `passed_cases`, `failed_cases`, `excluded_cases`, `reference_crash_cases`, `counts_by_source_set`, `counts_by_category`, `summary_by_profile_source_set`, `categories`, `first_divergences`, and `cases`. `summary_by_profile_source_set` has `profile`, `source_set`, `scheduled`, `passed`, and `failed`; `first_divergences` has `expected_line`, `count`, and `sample_files` for the top 25 groups; each case embeds the same diagnostics and rerun filter as result.json.
+- [ ] Write report.md with these sections in order: summary table with one row per profile × source_set, category count table, most-common first-divergence table grouped by expected HTML line and capped at 25 rows, and per-case sections. Each failed case includes the run directory, all structured diagnostics, capped diffs, and a command containing its literal rerun key, for example `HTML_ORACLE_FILTER=core/docutils_snippets/docutils-0001 HTML_ORACLE_KEEP=all cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture`.
+- [ ] Cap each body diff, chrome diff, JSON-path diff, inventory diff, warning diff, and combined stdout plus assertion text at 64 KiB. The assertion points to both report files and states that the files contain every result; diagnostics never change strict comparison pass/fail decisions.
 - [ ] Mark the test #[ignore] as html_oracle_exhaustive. Run cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture. Expected result while Ultra is incomplete: every runnable case is attempted, all failures are aggregated, and the command exits nonzero.
-- [ ] Run cargo test --test html_differential report and cargo test --test html_differential -- --list. Expected green result: report tests pass and exhaustive is ignored by default.
+- [ ] Run `HTML_ORACLE_FILTER=core/docutils_snippets/docutils-0001 HTML_ORACLE_KEEP=all cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture` for a single-case diagnostic rerun, then run cargo test --test html_differential report and cargo test --test html_differential -- --list. Expected green result: report, retention, filter, and layout tests pass and exhaustive is ignored by default.
 - [ ] Commit test: add exhaustive HTML oracle report.
 
-### Task 9: Add the local-needs needs.json oracle
+### Task 10: Add the local-needs needs.json oracle
 
 Files:
 
@@ -512,13 +601,13 @@ Files:
 - [ ] After the HTML reference build has status built or build-error, run a second child reference build with a separate source/output/cache/warnings run directory and argv ["-q", "-w", warnings_file, "-b", "needs", "-D", "needs_reproducible_json=1", "-d", doctree_dir, sourcedir, needs_output]. Apply the UUID shim before Sphinx import and record needs_reproducible_json=1 in the local-needs determinism_shims list.
 - [ ] Capture the second build status using the same traceback rule. Read only its -w warnings file into needs_warnings. If needs.json exists, store it at repository path tests/fixtures/html_oracle/local_needs/refs/sphinx_needs_doc_tests/case_id/needs/needs.json and set needs_json to a ref FileRecord. Set needs_status and needs_exit_code for the second build. Do not run this second build for core cases, excluded cases, or HTML reference-crash cases.
 - [ ] Add the needs.json policy row to both generator and Rust comparator dispatch: parse JSON, ignore object-key order, preserve array order, and compare scalar types exactly. Keep needs.json emitted by the HTML build inside files and apply the same policy there.
-- [ ] Extend the exhaustive worker. For every local-needs case whose HTML status is built or build-error, create a fresh run directory and invoke Ultra with -b needs, -q, -w warnings, and -d cache. If Ultra rejects the needs builder, add a needs-builder mismatch and do not merge it into the HTML mismatch list. If the builder runs, compare needs status, needs warnings, and needs.json with separate needs-json-value, invalid-needs-json, needs-warning, and needs-status categories. The HTML invocation and its mismatches remain independently reported.
+- [ ] Extend the exhaustive worker. For every local-needs case whose HTML status is built or build-error, create the expected `needs/needs.json` side-by-side artifact, create `actual-needs/`, and invoke Ultra with -b needs, -q, -w warnings, and -d cache. If Ultra rejects the needs builder, add a needs-builder mismatch and do not merge it into the HTML mismatch list. If the builder runs, compare needs status, needs warnings, and needs.json with keyed `missing-need`, `extra-need`, `need-field`, `needs-top-level`, and `needs-json-path` diagnostics plus separate needs-json-value, invalid-needs-json, needs-warning, and needs-status categories. The HTML invocation and its mismatches remain independently reported.
 - [ ] Do not translate or pre-filter native sphinx-needs directives: native Ultra processing of those directives is not assumed. A rejected needs builder is reported as needs-builder, and any other Ultra inability is reported as a known-red needs or HTML mismatch rather than being presented as a successful native needs build.
 - [ ] Add report counts and Markdown sections for needs-builder and all other needs categories. The default suite remains green because only the ignored exhaustive test runs reference comparisons.
 - [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q -k needs_json; cargo test --test html_differential needs_json. Expected red result before implementation: missing schema fields, missing artifact, and missing comparator policy. Expected green result after implementation: the regression project produces stable needs.json and all schema/status tests pass.
 - [ ] Commit feat: add needs JSON oracle.
 
-### Task 10: Generate artifacts, verify integrity, and hand off
+### Task 11: Generate artifacts, verify integrity, and hand off
 
 - [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q; cargo fmt --all; cargo clippy --all-targets --all-features -- -D warnings; cargo test. Expected green result: all default checks pass before generation.
 - [ ] Generate core with uv run --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --out tests/fixtures/html_oracle --profile core -j 4.
@@ -531,7 +620,7 @@ Files:
 
 ## Final review checklist
 
-- [ ] src/main.rs still supports positional source/output, -b html, and -d cache paths exactly as used.
+- [ ] Read-only verification confirms src/main.rs still supports positional source/output, -b html, and -d cache paths exactly as used; no file under src/ is modified.
 - [ ] tools/gen_sphinx_fixture.py still has extensions=[], master_doc='index', exclude_patterns=['_build'], smartquotes=False, and keep_warnings=True.
 - [ ] tools/gen_inventory_fixture.py still has four SPHINX_PROJECTS entries.
 - [ ] tests/fixtures still has exactly the seven named HTML projects.
@@ -540,5 +629,8 @@ Files:
 - [ ] core/index.json and local_needs/index.json contain only the five statuses above, and no focused regeneration changes the other profile subtree.
 - [ ] The comparison code implements only the fixed table.
 - [ ] Static blobs are deduplicated while all logical paths are present.
-- [ ] The ignored exhaustive test uses CARGO_BIN_EXE_sphinx-ultra, external cache paths, all built and build-error cases, bounded diagnostics, deterministic ordering, and complete reports.
+- [ ] The ignored exhaustive test uses CARGO_BIN_EXE_sphinx-ultra, external cache paths, all built and build-error cases, bounded diagnostics, deterministic ordering, complete side-by-side run directories, HTML_ORACLE_KEEP, exact per-case HTML_ORACLE_FILTER reruns, structured needs/searchindex/objects.inv/warnings diagnostics, first-divergence grouping, and complete reports.
+- [ ] The report contains the profile × source_set summary, category counts, top-25 first-divergence groups, per-case diagnostics, and a rerun filter for every failure; diagnostics never relax strict comparisons.
+- [ ] Synthetic diagnostics tests for HTML body/chrome, needs.json keyed diffs, inventory records, and first-divergence grouping pass in the default suite.
+- [ ] Nothing under src/ changes; the implementation scope is limited to tools/, tests/, tests/fixtures/html_oracle/, and NOTICE.md.
 - [ ] No implementation code is written outside the planned paths.
