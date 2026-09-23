@@ -1,116 +1,52 @@
-# HTML Testing Oracle Research
+# Testing Oracles Research
 
 ## Finding
 
-There is no single exhaustive upstream golden corpus for Sphinx HTML output.
-Upstream behavior is distributed across pytest cases, fixture projects,
-builder-specific tests, extension tests, parser tests, and generated artifacts.
-Those sources exercise different phases and do not provide one authoritative,
-machine-readable set of input trees, output trees, provenance, and exclusions.
+There is no single exhaustive upstream golden corpus for this Sphinx-Ultra worktree. The repository has complementary corpora, and document-shaped inputs must be promoted through real Sphinx HTML builds wherever possible.
 
-The repository already contains strong local evidence, but it is intentionally
-split by layer:
+Verified local evidence:
 
-| Existing source | Evidence | What it covers |
-|---|---:|---|
-| tests/fixtures/doctree_differential.json and tools/gen_doctree_fixture.py | 735 cases | Docutils parse-layer behavior |
-| tests/fixtures/sphinx_doctree_differential.json and tools/gen_sphinx_fixture.py | 489 cases | Sphinx 9.1.0 read-phase snippets |
-| tests/fixtures/env_differential.json and tools/gen_env_fixture.py | 29 projects / 84 documents | Build-environment state, resolved doctrees, warnings, toctrees, domains, and indexes |
-| tests/fixtures/{basic,basic_missing_ref,deps_image,intersphinx,literalinclude,toctree_forms,toctree_glob} | 7 projects | Checked-in HTML-ish end-to-end fixture projects |
-| tools/gen_inventory_fixture.py and tests/fixtures/inventories/manifest.json | 4 Sphinx-built projects | Real HTML-builder objects.inv records; the committed inventory directory also has handcrafted valid and malformed byte cases |
-| tests/fixtures/pattern_differential.json and tools/gen_pattern_fixture.py | 881 cases | Parser-only Sphinx pattern semantics |
-| Local sibling sphinx-needs doc_test projects | 142 projects | Extension-originated pytest expectations and project-level behavior |
+| Existing source | Evidence |
+| --- | --- |
+| tests/fixtures/doctree_differential.json and tools/gen_doctree_fixture.py | 735 Docutils differential cases |
+| tests/fixtures/sphinx_doctree_differential.json and tools/gen_sphinx_fixture.py | 489 Sphinx read-phase snippet cases |
+| tests/fixtures/env_differential.json and tools/gen_env_fixture.py | 29 environment projects containing 84 documents |
+| tests/fixtures/basic, basic_missing_ref, deps_image, intersphinx, literalinclude, toctree_forms, toctree_glob | 7 checked-in HTML-ish fixture projects |
+| SPHINX_PROJECTS in tools/gen_inventory_fixture.py | 4 Sphinx-built inventory projects; handcrafted .inv files remain parser fixtures |
+| tests/fixtures/pattern_differential.json and tools/gen_pattern_fixture.py | 881 parser-only pattern cases, outside the HTML oracle because they are not documents |
+| C:\Users\johnm\Documents\repos\sphinx-needs\packages\sphinx-needs\tests\doc_test | 142 local sibling doc_test projects with conf.py |
 
-The counts above are floors for the future HTML corpus. The source-set
-discovery check must also prove exact set equality for every case currently
-present, so a silently truncated or renamed source cannot pass merely because
-the floor still passes. The existing status table in
-docs/IMPLEMENTATION_STATUS.md is the repository's corroborating inventory for
-the parser, Sphinx read-phase, environment, pattern, and inventory counts.
+The sibling checkout was verified at sphinx-needs 8.5.0, commit 58bcb59d861da95f2aca79f343e8bae6ec5c1250, with subtree tree 958172a89defcec69704f6b9d61e482e7c4e8409. Its importable package is packages/sphinx-needs/src/sphinx_needs and its documentation projects are packages/sphinx-needs/tests/doc_test. The checkout has unrelated root-level dirt, but packages/sphinx-needs is clean; generation must reject dirt inside that subtree.
 
-## Oracle policy
+## Reference profiles
 
-Sphinx snippets should be promoted through real HTML builds whenever the input
-can be materialized as a project. A direct read-phase harness is useful for
-isolating parser behavior, but it is not enough to pin page templates, copied
-assets, search data, inventory emission, relative links, warnings, or builder
-finish behavior. The HTML oracle should therefore materialize each eligible
-snippet or project, run the real Sphinx HTML builder, and retain the complete
-logical output tree. Cases that genuinely require a different builder or an
-external service stay in the ledger with a reason instead of being silently
-dropped.
+- core is exactly Sphinx 9.1.0 with Docutils 0.22.4 and its own committed uv.lock.
+- local_needs is exactly Sphinx 9.1.0 with Docutils 0.21.2 and its own committed uv.lock. Its locked dependencies include sphinx-needs 8.5.0 and pytest. The local source is selected by --needs-root or SPHINX_NEEDS_ROOT, prepended to the child PYTHONPATH, and verified inside the child against the import path, version, commit, subtree tree, and clean package-subtree status.
+- Lock creation may resolve packages through the package index. Reference generation uses uv run --locked and a child socket guard; no build requires a network service.
 
-Every upstream case must occur exactly once in one machine-readable ledger.
-The ledger's status is one of these values and no other value is accepted:
+## Corpus policy
 
-| Status | Meaning |
-|---|---|
-| active | The reference and Ultra build are runnable and comparable. |
-| alias | The case has a unique source identity but reuses one canonical case's input and reference. |
-| excluded-network | The upstream case needs network access; it is recorded but never run by the offline harness. |
-| excluded-plantuml | The case requires PlantUML or another unavailable diagram renderer. |
-| excluded-external-test-fixture | The test depends on data outside the checked-in source set. |
-| unsupported-builder | The case targets a builder other than the HTML builder or cannot produce an HTML contract. |
-| reference-crash | The pinned reference process crashes; its failure, traceback summary, and provenance are retained as reference evidence. |
+Each in-scope source case appears exactly once in index.json. The ledger has only built, build-error, reference-crash, excluded-network, and excluded-plantuml statuses.
 
-expectation is separate from status and is one of match, expected-failure, or
-reference-only. This allows the harness to record a known Ultra limitation
-without treating it as an upstream omission. In particular, local
-sphinx-needs cases retain their originating pytest node ID, assertion or
-regression expectation, and source revision. A case containing an unsupported
-sphinx-needs directive is reference-only or expected-failure; it is never
-blindly passed to native Ultra as if the extension were implemented.
+A local-needs case is one project directory, not one record per originating test invocation. Its origin contains all statically discovered pytest node IDs that reference that project and a variants_not_captured flag when the originating scope uses confoverrides or a non-HTML builder. The scanner does not import tests or extract assertion data. The project is built from its own conf.py with builder html, and Ultra runs against the resulting case when the reference status is runnable.
 
-## Pinned reference profiles
+The 735 Docutils and 489 Sphinx snippets become one-document projects using extensions=[], master_doc='index', exclude_patterns=['_build'], smartquotes=False, and keep_warnings=True. Environment projects and the seven existing HTML projects are rebuilt with the real HTML builder. Inventory cases come from the four Sphinx-built projects in tools/gen_inventory_fixture.py.
 
-The core profile is exactly Sphinx 9.1.0 with Docutils 0.22.4 and has its own
-committed lock. The local-needs profile is exactly sphinx-needs 8.5.0 at
-commit 58bcb59d861da95f2aca79f343e8bae6ec5c1250, with subtree tree
-958172a89defcec69704f6b9d61e482e7c4e8409, and uses Sphinx 9.1.0 with
-Docutils 0.21.2 from its own committed lock. The generator must verify all
-four version values plus the sphinx-needs commit and subtree tree before it
-generates anything. It must fail closed if the local checkout is missing or
-does not match those pins.
+The 881 parser-only pattern cases are explicitly outside this document oracle. They are not silently counted as missing; the source-set contract excludes them because they cannot create an HTML project.
 
-The two profiles are independent. A core fixture must never be regenerated
-under the local-needs dependency graph, and a local-needs case must retain its
-extension provenance even when its source happens to be plain RST. The ledger
-records the profile, lock digest, source revision, originating file, pytest
-node ID, builder, and expectation for every case.
+## Comparison, storage, and diagnostics
 
-## Implications for the harness
+Only CRLF-to-LF text normalization is permitted, plus replacement of the absolute source root with <SRCDIR> in the warnings stream. searchindex.js is compared as parsed JSON with object key order ignored and array order preserved. objects.inv is compared by its exact header and canonical decoded records. .buildinfo and all other opaque bytes are exact.
 
-The new oracle needs to add a complete build contract around the existing
-layered fixtures:
+Reference generation is child-process only. The child installs guards for socket.socket.connect, socket.create_connection, and socket.getaddrinfo before calling sphinx.cmd.build.main. Static _static and _images bytes are content-addressed in blobs by SHA-256 while every logical output path remains in the ledger. NOTICE.md has one licensing row per source set and one row for Sphinx and alabaster theme assets; licensing is not stored per file.
 
-1. tools/gen_html_oracle.py must discover every declared source set, verify
-   the exact source-set equality and count floors, build eligible inputs with
-   the pinned profile, and write the fixture atomically and deterministically.
-2. tools/html_oracle_cases.toml must be the checked-in discovery and policy
-   schema. It must name the seven statuses, the three expectation modes, the
-   source roots, the exact profile locks, the normalization boundaries, the
-   output policies, and the licensing records.
-3. tests/fixtures/html_oracle/index.json must be the generated ledger. It must
-   contain one record per upstream case, sorted by source set and case ID, with
-   no duplicate IDs and no unreferenced input, reference, or blob.
-4. tests/fixtures/html_oracle/inputs must retain the materialized source trees,
-   refs must retain structured and textual reference records, and blobs must
-   deduplicate static assets by content hash without deleting any logical
-   output-tree entry. NOTICE.md must identify source, revision, license, and
-   redistribution scope for every imported corpus.
-5. Rust comparison must use the actual CARGO_BIN_EXE_sphinx-ultra binary.
-   Cache directories must be outside the output directory. The same case must
-   be built under two different absolute source and output roots, then
-   compared after only the declared path-field and CRLF normalizations.
-6. JSON and searchindex.js must be compared through explicit canonical
-   structured policies. objects.inv must be decoded and compared as semantic
-   header and record data. Opaque files such as images, fonts, and other
-   binary assets must be compared byte-for-byte.
-7. The default suite must stay green while Ultra is incomplete. One ignored,
-   opt-in exhaustive differential test must run every runnable case, aggregate
-   every mismatch, cap each diagnostic, and exit nonzero until all active cases
-   pass. Excluded, alias, expected-failure, and reference-only cases must be
-   reported according to their ledger records rather than hidden.
+The default Rust suite compares Ultra-to-Ultra for deterministic process and comparator checks. The ignored exhaustive suite invokes CARGO_BIN_EXE_sphinx-ultra with cache directories outside output directories, bounded output pipes, timeouts, deterministic case ordering, complete source-set coverage, and a report containing every mismatch. Its assertion output is capped at 64 KiB and points to the complete Markdown and JSON reports.
 
-These constraints make the HTML oracle a compatibility ledger and reproducible
-artifact set, not a sample-only smoke corpus.
+## Acceptance checks
+
+1. Source discovery enforces at least 735 Docutils cases, at least 489 Sphinx cases, exactly 29 environment projects, at least 84 environment documents, exactly 7 HTML projects, exactly 4 inventory projects, and exactly 142 local-needs projects.
+2. Discovered source keys equal ledger keys with no duplicates or unreferenced files.
+3. Profile records contain versions, lock SHA-256, and local-needs commit and subtree provenance.
+4. Generation is atomic, deterministic across different absolute roots, and rejects absolute-root bytes outside warnings.
+5. The default cargo test suite remains green.
+6. One ignored exhaustive differential test runs every built and build-error case, aggregates all mismatch categories, and exits nonzero while Ultra is incomplete.

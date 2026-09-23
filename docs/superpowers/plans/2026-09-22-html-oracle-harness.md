@@ -2,1443 +2,456 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task.
 
-**Goal:** Build a reproducible, offline, provenance-preserving HTML differential harness that captures real Sphinx HTML output, compares it with the actual CARGO_BIN_EXE_sphinx-ultra CLI, and covers every discovered local upstream case without pretending unsupported sphinx-needs directives are native Ultra inputs.
+## Goal
 
-**Architecture:** A locked Python generator reads tools/html_oracle_cases.toml, discovers all declared source sets, runs pinned Sphinx HTML builds, and atomically writes a complete fixture tree plus a one-record-per-case ledger. Rust integration support loads and validates that ledger, executes the real binary in isolated roots with cache directories outside output, applies only declared path and CRLF normalization, and compares structured or opaque output according to explicit file policies. The default suite validates schema, provenance, hashes, discovery, normalization, comparators, and a smoke case; one ignored exhaustive test runs every runnable case and aggregates failures.
+Create one comprehensive first PR that discovers the complete in-scope corpus, builds committed references with real Sphinx HTML builds, and runs the actual sphinx-ultra CLI against every runnable case. The default cargo test suite stays green. One ignored exhaustive test runs the whole runnable set, aggregates every mismatch, writes target/html-oracle/report.md and target/html-oracle/report.json, and exits nonzero while Ultra is incomplete.
 
-**Tech Stack:** Python 3.12 tomllib, pytest, uv locked offline environments, Sphinx 9.1.0, Docutils 0.22.4 for core, sphinx-needs 8.5.0 with Sphinx 9.1.0 and Docutils 0.21.2 for the local-needs profile, Rust integration tests, serde, serde_json, toml, blake3, sha2, tempfile, walkdir, and wait-timeout.
+This is one first PR because the acceptance contract is end-to-end: committed references, deterministic generation, a runnable comparator, and a complete known-red report. It is divided into bounded commits so each schema, discovery, runner, storage, comparator, process, and report task is independently reviewable.
 
----
+No production or test implementation is written until this plan is executed.
 
-## Design contract and reviewable commit strategy
+## Architecture
 
-This is one comprehensive first PR because the value of an HTML oracle comes
-from the generator, pinned reference environments, fixture ledger, comparator,
-CLI runner, and exhaustive test agreeing on one contract. Splitting those
-pieces across unrelated PRs would permit a green harness with no complete
-corpus or a corpus with no trustworthy runner. The work is still divided into
-small reviewable commits. Each commit below leaves its bounded layer tested;
-the final commit wires the exhaustive opt-in behavior and runs the full
-verification matrix.
+Reference generation is Python and has three layers:
 
-The required implementation paths are:
+1. Discovery reads the existing JSON fixtures and project directories, materializes each document-shaped input as an HTML project, and records provenance.
+2. A child runner installs a socket guard and calls sphinx.cmd.build.main(argv) with the pinned Sphinx environment.
+3. The generator captures output, warnings, status, hashes, and static assets into an atomic fixture tree.
 
-- Create: tools/gen_html_oracle.py
-- Create: tools/html_oracle_cases.toml
-- Create: tests/html_differential.rs
-- Create: tests/support/html_oracle.rs
-- Create: tests/support/diagnostics.rs
-- Create: tests/fixtures/html_oracle/index.json
-- Create: tests/fixtures/html_oracle/inputs/
-- Create: tests/fixtures/html_oracle/refs/
-- Create: tests/fixtures/html_oracle/blobs/
-- Create: tests/fixtures/html_oracle/NOTICE.md
+Rust tests have three layers:
 
-The plan also creates the locked Python profile files and generator unit tests
-needed to make regeneration executable without network access.
+1. tests/support/html_oracle.rs loads and validates index.json, reconstructs logical trees, applies the fixed path policy, and compares outputs.
+2. tests/support/diagnostics.rs executes child processes with bounded pipes and deadlines.
+3. tests/html_differential.rs invokes env!("CARGO_BIN_EXE_sphinx-ultra") for every runnable ledger case, then writes the aggregate report.
 
-### Task 1: Add the locked profile and ledger schema contract
+Required implementation paths:
 
-**Files:**
+~~~text
+tools/gen_html_oracle.py
+tools/html_oracle_runner.py
+tools/html_oracle_cases.toml
+tools/oracle_profiles/core/pyproject.toml
+tools/oracle_profiles/core/uv.lock
+tools/oracle_profiles/local_needs/pyproject.toml
+tools/oracle_profiles/local_needs/uv.lock
+tools/test_gen_html_oracle.py
+tests/html_differential.rs
+tests/support/html_oracle.rs
+tests/support/diagnostics.rs
+tests/fixtures/html_oracle/index.json
+tests/fixtures/html_oracle/inputs
+tests/fixtures/html_oracle/refs
+tests/fixtures/html_oracle/blobs
+tests/fixtures/html_oracle/NOTICE.md
+~~~
 
-- Create: tools/html_oracle_cases.toml
-- Create: tools/oracle_profiles/core/pyproject.toml
-- Create: tools/oracle_profiles/core/uv.lock
-- Create: tools/oracle_profiles/local_needs/pyproject.toml
-- Create: tools/oracle_profiles/local_needs/uv.lock
-- Create: tools/test_gen_html_oracle.py
-- Modify: Cargo.toml
-- Modify: Cargo.lock
+Each case directory is tests/fixtures/html_oracle/inputs/profile/source_set/case_id and tests/fixtures/html_oracle/refs/profile/source_set/case_id. Sanitize case IDs to A-Za-z0-9_.-, limit the sanitized portion to 48 characters, and append a hyphen plus the first eight hex characters of sha256 of the unsanitized identifier on truncation or collision.
 
-- [ ] **Step 1: Write schema tests first.**
+### Corpus and scope
 
-Add these tests to tools/test_gen_html_oracle.py:
+The verified source counts are:
+
+| Source set | Profile | Source | Contract |
+| --- | --- | --- | --- |
+| docutils_snippets | core | tests/fixtures/doctree_differential.json | at least 735 one-document projects |
+| sphinx_read_snippets | core | tests/fixtures/sphinx_doctree_differential.json | at least 489 one-document projects |
+| environment_projects | core | tests/fixtures/env_differential.json | exactly 29 projects and at least 84 documents |
+| html_projects | core | seven named directories in tests/fixtures | exactly 7 projects |
+| inventory_projects | core | SPHINX_PROJECTS in tools/gen_inventory_fixture.py | exactly 4 Sphinx-built projects |
+| sphinx_needs_doc_tests | local_needs | packages/sphinx-needs/tests/doc_test | exactly 142 directories containing conf.py |
+
+The 881 records in tests/fixtures/pattern_differential.json are parser-only pattern cases, not documents, and are outside the HTML oracle. They are not materialized or ledgered. The handcrafted .inv files in tests/fixtures/inventories remain parser fixtures; only the four Sphinx-built projects from SPHINX_PROJECTS become cases.
+
+The seven existing HTML-ish directories are basic, basic_missing_ref, deps_image, intersphinx, literalinclude, toctree_forms, and toctree_glob. They are read-only inputs. The Docutils, Sphinx read-phase, and environment JSON fixtures are also read-only.
+
+Each Docutils or Sphinx snippet becomes an index.rst plus this exact conf.py:
 
 ~~~python
-from pathlib import Path
-
-import pytest
-
-from gen_html_oracle import load_spec, validate_spec
-
-
-ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "tools" / "html_oracle_cases.toml"
-
-
-def test_spec_declares_all_statuses_and_expectations():
-    spec = load_spec(SPEC)
-    validate_spec(spec)
-    assert spec["statuses"] == [
-        "active",
-        "alias",
-        "excluded-network",
-        "excluded-plantuml",
-        "excluded-external-test-fixture",
-        "unsupported-builder",
-        "reference-crash",
-    ]
-    assert spec["expectations"] == ["match", "expected-failure", "reference-only"]
-
-
-def test_profile_pins_are_exact():
-    spec = load_spec(SPEC)
-    assert spec["profiles"]["core"] == {
-        "sphinx": "9.1.0",
-        "docutils": "0.22.4",
-        "lock": "tools/oracle_profiles/core/uv.lock",
-    }
-    assert spec["profiles"]["local_needs"] == {
-        "sphinx": "9.1.0",
-        "docutils": "0.21.2",
-        "sphinx_needs": "8.5.0",
-        "commit": "58bcb59d861da95f2aca79f343e8bae6ec5c1250",
-        "subtree_tree": "958172a89defcec69704f6b9d61e482e7c4e8409",
-        "lock": "tools/oracle_profiles/local_needs/uv.lock",
-    }
-
-
-def test_invalid_status_is_rejected(tmp_path):
-    bad = tmp_path / "bad.toml"
-    bad.write_text(
-        "schema_version = 1\nstatuses = ['active', 'not-valid']\nexpectations = ['match']\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="status"):
-        validate_spec(load_spec(bad))
+project = "html-oracle"
+extensions = []
+master_doc = "index"
+exclude_patterns = ["_build"]
+smartquotes = False
+keep_warnings = True
 ~~~
 
-- [ ] **Step 2: Run the schema tests and verify the red result.**
+Environment projects are reconstructed with all documents and built with the real html builder. Existing HTML projects keep their own conf.py. Inventory projects use the real html builder and the conventions in tools/gen_inventory_fixture.py.
 
-Run:
+Local-needs discovery is restricted to needs-root/packages/sphinx-needs/tests/doc_test. The checked sibling checkout has source at packages/sphinx-needs/src/sphinx_needs and exactly 142 direct doc_test directories with conf.py. One case is one project. The ledger records every statically found pytest node ID referencing that project and sets variants_not_captured when a matching test scope contains confoverrides or a non-html builder. The scanner reads AST and source paths only; it does not import tests or extract assertions.
 
-~~~powershell
-python -m pytest tools/test_gen_html_oracle.py -q
+### Status model
+
+Use exactly these statuses:
+
+| Status | Reference handling | Ultra handling |
+| --- | --- | --- |
+| built | exit code 0; capture complete tree | run and compare complete tree |
+| build-error | nonzero exit without a Python traceback; capture warnings and partial tree | run and require build-error class, warnings, and files |
+| reference-crash | traceback; capture record and do not run Ultra | not scheduled |
+| excluded-network | static remote fetch requirement | not scheduled |
+| excluded-plantuml | static conf.py load of sphinxcontrib.plantuml | not scheduled |
+
+Excluded records have null exit_code, empty warnings, a required excluded_reason, and no files. A traceback is the exact marker Traceback (most recent call last): in combined child output. A nonzero result without that marker is build-error. A build-error is the supported cannot-generate reference case and is still run through Ultra.
+
+The local-needs cases are not downgraded because Ultra lacks extension directives. They are built with their own conf.py, committed, and sent to Ultra whenever their reference status is built or build-error.
+
+### Fixed per-path comparison policy
+
+TOML has no normalization settings. Both Python and Rust implement this exact table:
+
+| Path or stream | Policy |
+| --- | --- |
+| warnings stream | UTF-8 with replacement, CRLF to LF, replace the absolute source root with <SRCDIR>, exact text comparison |
+| searchindex.js | CRLF to LF, remove Search.setIndex( and the final );, parse JSON, compare values with object-key order ignored and array order preserved |
+| objects.inv | exact four-line header, zlib-decode records, parse name/domain-role/priority/URI/display name, sort by all five fields, compare header plus canonical record list |
+| *.buildinfo | exact bytes |
+| *.html, _sources/**, *.css, *.js except searchindex.js, *.json, *.xml, *.txt | CRLF to LF, then exact bytes |
+| every other path, including images | exact bytes |
+
+There is no HTML DOM rewrite or field-specific normalizer. Source-root replacement is permitted only in warnings. The generator fails if an absolute source, build, or cache root occurs in captured reference bytes outside warnings.
+
+### Storage and determinism
+
+HTML, searchindex.js, objects.inv, .buildinfo, _sources, and other non-static outputs are stored under refs. Every logical path beginning _static/ or _images/ is stored under blobs using its content SHA-256 as the filename. The ledger retains every logical path, so deduplicating bytes never removes logical output.
+
+For sorted relative path and content digest pairs, use:
+
+~~~python
+def canonical_hash(entries: list[tuple[str, str]]) -> str:
+    payload = "".join(
+        f"{path}\0{digest}\n"
+        for path, digest in sorted(entries)
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 ~~~
 
-Expected result before implementation: FAIL because
-tools/gen_html_oracle.py and tools/html_oracle_cases.toml do not exist.
+Use this formula for input_sha256 and tree_sha256. Generation uses a process pool controlled by -j N, default os.cpu_count(), but collects and serializes results by profile, source_set, case_id, then logical path.
 
-- [ ] **Step 3: Add the exact declarative schema.**
+Each profile owns a subtree. Generate into a complete sibling staging tree, validate it, rename the old tree to tests/fixtures/html_oracle.old, rename staging to tests/fixtures/html_oracle, and remove .old only after the new tree is visible. A failure before the second rename preserves the old tree. Run one failure-injection test.
 
-Create tools/html_oracle_cases.toml with this contract:
+## Tech Stack
 
-~~~toml
-schema_version = 1
-statuses = [
-  "active",
-  "alias",
-  "excluded-network",
-  "excluded-plantuml",
-  "excluded-external-test-fixture",
-  "unsupported-builder",
-  "reference-crash",
+Python 3.12 stdlib, Sphinx 9.1.0, Docutils 0.22.4 for core, Docutils 0.21.2 for local_needs, sphinx-needs 8.5.0 loaded by explicit PYTHONPATH, and uv locked projects. Lock creation may resolve packages through the package index; generation uses uv run --locked and the child socket guard.
+
+Rust uses serde, serde_json, sha2, tempfile, std::process, std::thread, std::sync, and std::time. Add sha2 as a direct Cargo dependency for exact SHA-256. Do not add a runtime network service or OS sandbox.
+
+## Full index.json schema
+
+The generator writes sorted UTF-8 JSON at tests/fixtures/html_oracle/index.json. These Python types are the complete writer schema:
+
+~~~python
+from typing import Literal, TypedDict
+
+CaseStatus = Literal[
+    "built",
+    "build-error",
+    "reference-crash",
+    "excluded-network",
+    "excluded-plantuml",
 ]
-expectations = ["match", "expected-failure", "reference-only"]
+FileStorage = Literal["ref", "blob"]
 
-[corpus_floors]
-docutils_snippets = 735
-sphinx_read_snippets = 489
-environment_projects = 29
-environment_documents = 84
-html_projects = 7
-inventory_projects = 4
-pattern_cases = 881
-sphinx_needs_doc_tests = 142
+class ProfileRecord(TypedDict):
+    sphinx: str
+    docutils: str
+    needs_version: str | None
+    needs_commit: str | None
+    needs_tree: str | None
+    lock_path: str
+    lock_sha256: str
 
-[profiles.core]
-sphinx = "9.1.0"
-docutils = "0.22.4"
-lock = "tools/oracle_profiles/core/uv.lock"
+class OriginRecord(TypedDict):
+    source_set: str
+    origin_path: str
+    pytest_node_ids: list[str]
+    variants_not_captured: bool
 
-[profiles.local_needs]
-sphinx = "9.1.0"
-docutils = "0.21.2"
-sphinx_needs = "8.5.0"
-commit = "58bcb59d861da95f2aca79f343e8bae6ec5c1250"
-subtree_tree = "958172a89defcec69704f6b9d61e482e7c4e8409"
-lock = "tools/oracle_profiles/local_needs/uv.lock"
+class FileRecord(TypedDict):
+    logical_path: str
+    storage: FileStorage
+    storage_path: str
+    sha256: str
+    size: int
 
-[discovery]
-needs_root_env = "SPHINX_NEEDS_ROOT"
-html_fixture_root = "tests/fixtures"
-inventory_manifest = "tests/fixtures/inventories/manifest.json"
-docutils_fixture = "tests/fixtures/doctree_differential.json"
-sphinx_fixture = "tests/fixtures/sphinx_doctree_differential.json"
-environment_fixture = "tests/fixtures/env_differential.json"
-pattern_fixture = "tests/fixtures/pattern_differential.json"
-
-[[source_sets]]
-name = "docutils_snippets"
-kind = "fixture_cases"
-path = "tests/fixtures/doctree_differential.json"
-profile = "core"
-id_field = "name"
-floor = 735
-
-[[source_sets]]
-name = "sphinx_read_snippets"
-kind = "fixture_cases"
-path = "tests/fixtures/sphinx_doctree_differential.json"
-profile = "core"
-id_field = "name"
-floor = 489
-
-[[source_sets]]
-name = "environment_projects"
-kind = "environment_projects"
-path = "tests/fixtures/env_differential.json"
-profile = "core"
-id_field = "name"
-floor = 29
-document_floor = 84
-
-[[source_sets]]
-name = "html_projects"
-kind = "checked_in_html_projects"
-path = "tests/fixtures"
-profile = "core"
-names = ["basic", "basic_missing_ref", "deps_image", "intersphinx", "literalinclude", "toctree_forms", "toctree_glob"]
-floor = 7
-
-[[source_sets]]
-name = "inventory_projects"
-kind = "inventory_projects"
-path = "tests/fixtures/inventories/manifest.json"
-profile = "core"
-floor = 4
-
-[[source_sets]]
-name = "pattern_cases"
-kind = "fixture_cases"
-path = "tests/fixtures/pattern_differential.json"
-profile = "core"
-id_field = "pattern_id"
-floor = 881
-
-[[source_sets]]
-name = "sphinx_needs_doc_tests"
-kind = "sphinx_needs_doc_tests"
-profile = "local_needs"
-floor = 142
-
-[[policy]]
-path = "**/*.json"
-kind = "json"
-
-[[policy]]
-path = "**/searchindex.js"
-kind = "searchindex-js"
-
-[[policy]]
-path = "**/objects.inv"
-kind = "objects-inv"
-
-[[policy]]
-path = "**/*"
-kind = "opaque"
-~~~
-
-The generator must reject unknown keys in the schema, duplicate source-set
-names, duplicate status values, non-relative fixture paths, and floors below
-the evidence table. pattern_id is assigned by the generator from the sorted
-(pattern, path) pair because the existing pattern fixture has no explicit
-case-name field.
-
-- [ ] **Step 4: Add the profile projects and generate their locks.**
-
-Create tools/oracle_profiles/core/pyproject.toml:
-
-~~~toml
-[project]
-name = "sphinx-ultra-html-oracle-core"
-version = "0.0.0"
-requires-python = ">=3.12,<3.13"
-dependencies = ["sphinx==9.1.0", "docutils==0.22.4"]
-~~~
-
-Create tools/oracle_profiles/local_needs/pyproject.toml:
-
-~~~toml
-[project]
-name = "sphinx-ultra-html-oracle-local-needs"
-version = "0.0.0"
-requires-python = ">=3.12,<3.13"
-dependencies = ["sphinx==9.1.0", "docutils==0.21.2", "sphinx-needs==8.5.0", "pytest==8.3.5"]
-~~~
-
-Generate both committed locks with the network disabled:
-
-~~~powershell
-uv lock --offline --project tools/oracle_profiles/core
-uv lock --offline --project tools/oracle_profiles/local_needs
-~~~
-
-Expected result: both commands succeed using the local package cache and
-write uv.lock. If either command needs a download, stop with a clear error;
-do not relax the offline requirement or substitute a floating dependency.
-
-- [ ] **Step 5: Implement only schema loading and validation.**
-
-Create tools/gen_html_oracle.py with these exact interfaces before adding
-discovery logic:
-
-~~~python
-from pathlib import Path
-import tomllib
-
-
-def load_spec(path: Path) -> dict:
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
-
-
-def validate_spec(spec: dict) -> None:
-    required_statuses = {
-        "active",
-        "alias",
-        "excluded-network",
-        "excluded-plantuml",
-        "excluded-external-test-fixture",
-        "unsupported-builder",
-        "reference-crash",
-    }
-    required_expectations = {"match", "expected-failure", "reference-only"}
-    statuses = spec.get("statuses")
-    expectations = spec.get("expectations")
-    if spec.get("schema_version") != 1:
-        raise ValueError("schema_version must equal 1")
-    if set(statuses or ()) != required_statuses or len(statuses) != len(required_statuses):
-        raise ValueError("status vocabulary does not match the HTML oracle contract")
-    if set(expectations or ()) != required_expectations or len(expectations) != len(required_expectations):
-        raise ValueError("expectation vocabulary does not match the HTML oracle contract")
-    if set(spec.get("profiles", ())) != {"core", "local_needs"}:
-        raise ValueError("core and local_needs profiles are required")
-    if len({entry["name"] for entry in spec.get("source_sets", ())}) != len(spec["source_sets"]):
-        raise ValueError("source-set names must be unique")
-~~~
-
-- [ ] **Step 6: Add the Rust parsing dependencies and test the contract.**
-
-Add these development dependencies to Cargo.toml:
-
-~~~toml
-toml = "0.9"
-sha2 = "0.10"
-wait-timeout = "0.2"
-walkdir = "2.5"
-~~~
-
-Run:
-
-~~~powershell
-cargo check --tests --locked
-python -m pytest tools/test_gen_html_oracle.py -q
-~~~
-
-Expected result: PASS for the Python schema tests and PASS for Cargo
-dependency resolution. The lockfile must change only for these direct test
-dependencies and their exact transitive entries.
-
-- [ ] **Step 7: Commit the bounded schema task.**
-
-~~~powershell
-git add Cargo.toml Cargo.lock tools/html_oracle_cases.toml tools/oracle_profiles tools/gen_html_oracle.py tools/test_gen_html_oracle.py
-git commit -m "test: define html oracle profiles and schema"
-~~~
-
-### Task 2: Discover every source set and emit the provenance ledger
-
-**Files:**
-
-- Modify: tools/gen_html_oracle.py
-- Modify: tools/test_gen_html_oracle.py
-- Create: tests/fixtures/html_oracle/NOTICE.md
-
-- [ ] **Step 1: Write discovery tests before implementation.**
-
-Add tests that call discover_source_sets(ROOT, spec) and assert the exact
-floors and identities:
-
-~~~python
-from gen_html_oracle import discover_source_sets
-
-
-def test_existing_source_sets_meet_the_evidence_floors():
-    discovered = discover_source_sets(ROOT, load_spec(SPEC))
-    assert len(discovered["docutils_snippets"]) >= 735
-    assert len(discovered["sphinx_read_snippets"]) >= 489
-    assert len(discovered["environment_projects"]) >= 29
-    assert sum(len(case.documents) for case in discovered["environment_projects"]) >= 84
-    assert len(discovered["html_projects"]) == 7
-    assert len(discovered["inventory_projects"]) >= 4
-    assert len(discovered["pattern_cases"]) >= 881
-
-
-def test_html_projects_are_the_seven_checked_in_projects():
-    discovered = discover_source_sets(ROOT, load_spec(SPEC))
-    assert [case.case_id for case in discovered["html_projects"]] == [
-        "basic",
-        "basic_missing_ref",
-        "deps_image",
-        "intersphinx",
-        "literalinclude",
-        "toctree_forms",
-        "toctree_glob",
-    ]
-
-
-def test_duplicate_source_identity_fails():
-    records = [{"source_set": "x", "case_id": "same"}, {"source_set": "x", "case_id": "same"}]
-    with pytest.raises(ValueError, match="exactly once"):
-        validate_unique_source_ids(records)
-~~~
-
-- [ ] **Step 2: Run the discovery tests and verify the red result.**
-
-~~~powershell
-python -m pytest tools/test_gen_html_oracle.py -q -k "source_sets or duplicate_source"
-~~~
-
-Expected result before implementation: FAIL because the discovery functions
-are not defined.
-
-- [ ] **Step 3: Implement typed source records and exact discovery.**
-
-Define these records in tools/gen_html_oracle.py:
-
-~~~python
-from collections.abc import Sequence
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class SourceCase:
+class CaseRecord(TypedDict):
+    profile: str
     source_set: str
     case_id: str
-    profile: str
-    origin_path: str
-    origin_nodeid: str | None
-    source_files: Sequence[str]
-    status: str
-    expectation: str
-    builder: str
-    license_spdx: str
-
-
-@dataclass(frozen=True)
-class ProjectCase(SourceCase):
-    documents: Sequence[str]
-
-
-def validate_unique_source_ids(records: list[dict]) -> None:
-    seen: set[tuple[str, str]] = set()
-    for record in records:
-        key = (record["source_set"], record["case_id"])
-        if key in seen:
-            raise ValueError(f"source case {key!r} must appear exactly once")
-        seen.add(key)
-~~~
-
-Implement one deterministic adapter per kind in the TOML schema. The adapters
-must:
-
-- read each JSON fixture's case names without changing its input bytes;
-- read environment project names and count document keys;
-- list exactly the seven named HTML projects and reject an extra or missing
-  checked-in project;
-- derive the four Sphinx-built inventory project identities from the real
-  SPHINX_PROJECTS entries represented by raw_objects, while preserving the
-  twelve committed .inv files as separate artifact records;
-- assign sorted (pattern, path) IDs to all 881 pattern records;
-- walk the configured SPHINX_NEEDS_ROOT doc_test tree, collect 142 project
-  cases with their pytest node IDs, and fail if the root is absent, the
-  pinned commit is wrong, or the subtree tree is wrong;
-- record license_spdx, source revision, profile lock digest, builder, and
-  origin path on every record.
-
-The local-needs adapter must read the originating pytest expectation rather
-than inventing one. It must record the test node ID, expected status, expected
-file-regression or assertion artifact path, and a digest of the expectation.
-If the test does not expose a machine-readable artifact, emit a
-reference-only record with the original node ID and reason; never synthesize
-an Ultra expectation.
-
-- [ ] **Step 4: Add provenance and licensing records.**
-
-Write tests/fixtures/html_oracle/NOTICE.md with one table row for each source
-set:
-
-~~~markdown
-# HTML Oracle Fixture Notices
-
-The generated fixture contains source-derived inputs and reference outputs.
-The repository's MIT license applies to harness code. Imported source and
-expected artifacts retain the license of their originating project.
-
-| Source set | Revision or lock | License record | Scope |
-|---|---|---|---|
-| docutils_snippets | Docutils 0.22.4 | BSD-2-Clause | Derived test inputs and outputs |
-| sphinx_read_snippets | Sphinx 9.1.0, Docutils 0.22.4 | BSD-2-Clause | Derived test inputs and outputs |
-| environment_projects | Sphinx 9.1.0, Docutils 0.22.4 | BSD-2-Clause | Derived project inputs and outputs |
-| html_projects | Repository commit containing this fixture | MIT | Checked-in project inputs and outputs |
-| inventory_projects | Sphinx 9.1.0, Docutils 0.22.4 | BSD-2-Clause | Derived inventory records and bytes |
-| pattern_cases | Sphinx 9.1.0 | BSD-2-Clause | Derived pattern inputs and results |
-| sphinx_needs_doc_tests | sphinx-needs 8.5.0 at commit 58bcb59d861da95f2aca79f343e8bae6ec5c1250, subtree 958172a89defcec69704f6b9d61e482e7c4e8409 | MIT | Derived project inputs and originating pytest expectations |
-~~~
-
-The generator must append the exact upstream license-file paths and SHA-256
-digests discovered in each pinned environment. It must not copy package code,
-fonts, JavaScript, or images unless the license table says the artifact may be
-redistributed. Every copied external file gets an origin and license in the
-ledger.
-
-- [ ] **Step 5: Implement an atomic deterministic ledger writer.**
-
-Use this interface and ordering:
-
-~~~python
-import json
-import os
-import tempfile
-
-
-def write_json_atomic(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
-def ordered_cases(cases: list[SourceCase]) -> list[SourceCase]:
-    return sorted(cases, key=lambda case: (case.source_set, case.case_id))
-~~~
-
-The generated index.json must contain schema_version, generator, exact profile
-records, source-set counts and digests, and one cases entry per source
-identity. It must reject duplicate IDs before writing. The generator must write
-to a temporary fixture root and atomically replace only the final files after
-all builds and hash checks succeed.
-
-- [ ] **Step 6: Run the discovery tests and commit.**
-
-~~~powershell
-python -m pytest tools/test_gen_html_oracle.py -q
-git add tools/gen_html_oracle.py tools/test_gen_html_oracle.py tests/fixtures/html_oracle/NOTICE.md
-git commit -m "test: discover html oracle source sets"
-~~~
-
-Expected result: all discovery, pin, provenance, and duplicate-identity tests
-pass, with no generated output yet.
-
-### Task 3: Build pinned Sphinx references with no network
-
-**Files:**
-
-- Modify: tools/gen_html_oracle.py
-- Modify: tools/test_gen_html_oracle.py
-- Modify: tools/html_oracle_cases.toml
-
-- [ ] **Step 1: Write reference-build tests first.**
-
-Add tests for command construction and network denial:
-
-~~~python
-from gen_html_oracle import build_reference_command, network_denied
-
-
-def test_reference_command_uses_html_builder_and_external_doctree_dir():
-    command = build_reference_command(
-        profile="core",
-        source=Path("source"),
-        output=Path("output"),
-        doctree=Path("cache"),
-    )
-    assert command[-7:] == [
-        "-b", "html",
-        "-d", "cache",
-        "-q",
-        "source",
-        "output",
-    ]
-
-
-def test_network_guard_rejects_socket_connect():
-    with network_denied():
-        with pytest.raises(RuntimeError, match="network disabled"):
-            socket.create_connection(("127.0.0.1", 9), timeout=0.01)
-~~~
-
-- [ ] **Step 2: Run the tests and verify the red result.**
-
-~~~powershell
-python -m pytest tools/test_gen_html_oracle.py -q -k "reference_command or network_guard"
-~~~
-
-Expected result before implementation: FAIL because the reference command
-and network guard do not exist.
-
-- [ ] **Step 3: Add the pinned reference command and network guard.**
-
-Implement build_reference_command so it invokes the profile's Python with
-python -m sphinx, -b html, -d pointing to a cache directory outside the
-output, and -q. The command must run with PYTHONNOUSERSITE=1, NO_PROXY=*,
-no_proxy=*, and an empty Sphinx intersphinx mapping unless the case is marked
-excluded-network. network_denied() must patch socket.socket.connect,
-socket.create_connection, urllib.request.urlopen, and subprocess.Popen when
-its executable is a network client. The guard is active during reference
-generation and restored in a finally block.
-
-Use this build record:
-
-~~~python
-@dataclass(frozen=True)
-class ReferenceBuild:
-    case_id: str
-    status: str
+    status: CaseStatus
     exit_code: int | None
-    timed_out: bool
-    stdout: bytes
-    stderr: bytes
-    output_root: Path
-    cache_root: Path
+    warnings: str
+    excluded_reason: str | None
+    origin: OriginRecord
+    input_sha256: str
+    tree_sha256: str
+    files: list[FileRecord]
+
+class IndexDocument(TypedDict):
+    schema_version: int
+    generator: str
+    profiles: dict[str, ProfileRecord]
+    cases: list[CaseRecord]
 ~~~
 
-For every active or expected-failure case, materialize the input under a
-temporary absolute root, run a real HTML build, capture all output files, and
-retain warnings and exit status. A snippet case becomes a one-document
-project with conf.py and index.rst; a project case is copied as a complete
-source tree. Reference builds never call a private read-phase parser as their
-sole oracle.
+The complete JSON shape is:
 
-- [ ] **Step 4: Add explicit handling for reference-only and excluded cases.**
-
-Before spawning Sphinx, validate the ledger record:
-
-~~~python
-def should_build_reference(case: dict) -> bool:
-    return case["status"] in {"active", "alias", "reference-crash"} and case["expectation"] != "reference-only"
+~~~json
+{
+  "schema_version": 1,
+  "generator": "html-oracle/1",
+  "profiles": {
+    "core": {
+      "sphinx": "9.1.0",
+      "docutils": "0.22.4",
+      "needs_version": null,
+      "needs_commit": null,
+      "needs_tree": null,
+      "lock_path": "tools/oracle_profiles/core/uv.lock",
+      "lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "local_needs": {
+      "sphinx": "9.1.0",
+      "docutils": "0.21.2",
+      "needs_version": "8.5.0",
+      "needs_commit": "58bcb59d861da95f2aca79f343e8bae6ec5c1250",
+      "needs_tree": "958172a89defcec69704f6b9d61e482e7c4e8409",
+      "lock_path": "tools/oracle_profiles/local_needs/uv.lock",
+      "lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "cases": [
+    {
+      "profile": "core",
+      "source_set": "docutils_snippets",
+      "case_id": "docutils-0001",
+      "status": "built",
+      "exit_code": 0,
+      "warnings": "",
+      "excluded_reason": null,
+      "origin": {
+        "source_set": "docutils_snippets",
+        "origin_path": "tests/fixtures/doctree_differential.json[0]",
+        "pytest_node_ids": [],
+        "variants_not_captured": false
+      },
+      "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "tree_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "files": [
+        {
+          "logical_path": "index.html",
+          "storage": "ref",
+          "storage_path": "refs/core/docutils_snippets/docutils-0001/index.html",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "size": 1032
+        }
+      ]
+    }
+  ]
+}
 ~~~
 
-excluded-network, excluded-plantuml, excluded-external-test-fixture, and
-unsupported-builder records receive no subprocess. Their ledger entry must
-contain excluded_reason and reference_only = true. A local-needs case with an
-unsupported extension directive receives its originating pytest expectation
-and reference-only; it is not rewritten into a plain RST case.
-
-- [ ] **Step 5: Run a real core reference build and verify green behavior.**
-
-~~~powershell
-$env:PYTHONNOUSERSITE = "1"
-uv run --offline --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --profile core --source-set html_projects --no-network --out tests/fixtures/html_oracle
-~~~
-
-Expected result: every one of the seven checked-in projects is built through
-the HTML builder, caches are outside each output directory, and the generator
-reports deterministic case IDs and zero network attempts.
-
-- [ ] **Step 6: Commit the reference-build task.**
-
-~~~powershell
-git add tools/gen_html_oracle.py tools/test_gen_html_oracle.py tools/html_oracle_cases.toml
-git commit -m "test: build pinned html oracle references"
-~~~
-
-### Task 4: Capture complete logical trees and deduplicate static assets
-
-**Files:**
-
-- Modify: tools/gen_html_oracle.py
-- Modify: tools/test_gen_html_oracle.py
-- Create: tests/fixtures/html_oracle/inputs/
-- Create: tests/fixtures/html_oracle/refs/
-- Create: tests/fixtures/html_oracle/blobs/
-- Modify: tests/fixtures/html_oracle/index.json
-
-- [ ] **Step 1: Write tree and hash tests first.**
-
-Add tests that prove identical assets share one blob while both logical trees
-retain their own paths:
-
-~~~python
-from gen_html_oracle import capture_tree, sha256_bytes
-
-
-def test_static_asset_dedup_keeps_both_logical_paths(tmp_path):
-    first = tmp_path / "first"
-    second = tmp_path / "second"
-    first.mkdir()
-    second.mkdir()
-    (first / "_static").mkdir()
-    (second / "_static").mkdir()
-    (first / "_static" / "theme.css").write_bytes(b"body{}\r\n")
-    (second / "_static" / "theme.css").write_bytes(b"body{}\r\n")
-    store = tmp_path / "store"
-    one = capture_tree(first, store, "case-one")
-    two = capture_tree(second, store, "case-two")
-    assert one["files"]["_static/theme.css"]["blob"] == two["files"]["_static/theme.css"]["blob"]
-    assert len(list((store / "blobs").iterdir())) == 1
-    assert set(one["files"]) == {"_static/theme.css"}
-    assert set(two["files"]) == {"_static/theme.css"}
-
-
-def test_hash_is_sha256_of_exact_bytes():
-    assert sha256_bytes(b"body{}\r\n") == "c7dcb398bf735520e2241af1a61a2b5ed12d9b54551f0d60b9658c134370a31d"
-~~~
-
-- [ ] **Step 2: Run the tree tests and verify the red result.**
-
-~~~powershell
-python -m pytest tools/test_gen_html_oracle.py -q -k "dedup or hash"
-~~~
-
-Expected result before implementation: FAIL because tree capture and hash
-storage are not defined.
-
-- [ ] **Step 3: Implement exact-byte capture and content-addressed blobs.**
-
-Use SHA-256 for the on-disk content address and preserve every relative output
-path in the logical tree:
-
-~~~python
-import hashlib
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def capture_tree(output_root: Path, fixture_root: Path, case_key: str) -> dict:
-    files = {}
-    for path in sorted(p for p in output_root.rglob("*") if p.is_file()):
-        logical = path.relative_to(output_root).as_posix()
-        data = path.read_bytes()
-        digest = sha256_bytes(data)
-        if is_static_asset(logical):
-            blob = fixture_root / "blobs" / digest
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            if blob.exists() and blob.read_bytes() != data:
-                raise ValueError(f"blob collision for {digest}")
-            if not blob.exists():
-                blob.write_bytes(data)
-            files[logical] = {"kind": "blob", "blob": digest, "bytes": len(data)}
-        else:
-            ref = fixture_root / "refs" / case_key / logical
-            ref.parent.mkdir(parents=True, exist_ok=True)
-            ref.write_bytes(data)
-            files[logical] = {
-                "kind": "ref",
-                "path": ref.relative_to(fixture_root).as_posix(),
-                "sha256": digest,
-                "bytes": len(data),
-            }
-    return {"case_key": case_key, "files": files}
-~~~
-
-is_static_asset must return true for .css, .js, .png, .jpg, .jpeg, .gif,
-.svg, .woff, .woff2, .ttf, .ico, .webp, and .map; it must return false for
-HTML, JSON, searchindex.js, objects.inv, warning logs, and the structured
-reference records. This keeps semantic files inspectable while deduplicating
-static bytes. A missing output file is a tree error, not an implicit empty
-file.
-
-- [ ] **Step 4: Preserve inputs and complete tree metadata.**
-
-Copy each input source tree into tests/fixtures/html_oracle/inputs/<case_key>
-with sorted paths and exact bytes. Add input_sha256, tree_sha256,
-reference_status, and files to the case record. The files map must list every
-logical output path, including files that point to the same blob. The generator
-must reject symlinks, absolute logical paths, parent path components, duplicate
-case keys, and output files not represented in the map.
-
-- [ ] **Step 5: Run deterministic generation twice and compare manifests.**
-
-~~~powershell
-$env:PYTHONNOUSERSITE = "1"
-uv run --offline --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --profile core --no-network --out tests/fixtures/html_oracle
-Copy-Item tests/fixtures/html_oracle/index.json $env:TEMP/html-oracle-index-one.json
-uv run --offline --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --profile core --no-network --out tests/fixtures/html_oracle
-Compare-Object (Get-Content $env:TEMP/html-oracle-index-one.json) (Get-Content tests/fixtures/html_oracle/index.json)
-~~~
-
-Expected result: Compare-Object emits no differences; all inputs, refs, and
-blobs have stable names and bytes. Repeat the command for the local-needs
-profile with SPHINX_NEEDS_ROOT set to the pinned sibling checkout.
-
-- [ ] **Step 6: Commit the fixture storage task.**
-
-~~~powershell
-git add tools/gen_html_oracle.py tools/test_gen_html_oracle.py tests/fixtures/html_oracle
-git commit -m "test: store complete deduplicated html trees"
-~~~
-
-### Task 5: Add bounded process diagnostics and deterministic execution
-
-**Files:**
-
-- Create: tests/support/diagnostics.rs
-- Create: tests/html_differential.rs
-- Modify: Cargo.toml
-- Modify: Cargo.lock
-
-- [ ] **Step 1: Write diagnostic runner tests first.**
-
-Add unit tests in tests/support/diagnostics.rs for success, spawn failure,
-timeout, and bounded output:
+The Rust serde model is:
 
 ~~~rust
-#[test]
-fn captures_a_successful_process() {
-    let outcome = run_checked(CommandSpec::new("rustc").args(["--version"]), Duration::from_secs(5));
-    assert_eq!(outcome.status, ExitStatusKind::Success);
-    assert!(!outcome.stdout.is_empty());
-}
+use serde::Deserialize;
+use std::collections::BTreeMap;
 
-#[test]
-fn records_spawn_failure_without_panicking() {
-    let outcome = run_checked(CommandSpec::new("definitely-not-a-program"), Duration::from_secs(1));
-    assert!(matches!(outcome.status, ExitStatusKind::SpawnFailure(_)));
-}
-
-#[test]
-fn kills_a_timeout_and_caps_output() {
-    let outcome = run_checked(CommandSpec::new("rustc").args(["--version"]), Duration::from_nanos(1));
-    assert!(matches!(outcome.status, ExitStatusKind::TimedOut));
-    assert!(outcome.stdout.len() <= MAX_CAPTURE_BYTES);
-    assert!(outcome.stderr.len() <= MAX_CAPTURE_BYTES);
-}
-~~~
-
-- [ ] **Step 2: Run the diagnostic tests and verify the red result.**
-
-~~~powershell
-cargo test --test html_differential diagnostics -- --nocapture
-~~~
-
-Expected result before implementation: FAIL because the support module and
-integration test target do not exist.
-
-- [ ] **Step 3: Implement the bounded runner.**
-
-Create these exact types and constants:
-
-~~~rust
-pub const MAX_CAPTURE_BYTES: usize = 256 * 1024;
-pub const MAX_DIFF_BYTES: usize = 64 * 1024;
-pub const CASE_TIMEOUT: Duration = Duration::from_secs(120);
-
-pub struct CommandSpec {
-    pub program: PathBuf,
-    pub args: Vec<OsString>,
-    pub env: BTreeMap<OsString, OsString>,
-    pub cwd: Option<PathBuf>,
-}
-
-pub enum ExitStatusKind {
-    Success,
-    Exit(i32),
-    Signaled,
-    TimedOut,
-    SpawnFailure(String),
-}
-
-pub struct ProcessOutcome {
-    pub status: ExitStatusKind,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    pub truncated_stdout: bool,
-    pub truncated_stderr: bool,
-}
-
-pub fn run_checked(spec: CommandSpec, timeout: Duration) -> ProcessOutcome;
-~~~
-
-Spawn with piped stdout and stderr, kill_on_drop(true), the supplied
-environment, and a clean RUST_LOG. Read both pipes on dedicated threads into
-bounded buffers, use wait-timeout for the deadline, kill the child on timeout,
-and join both readers before returning. Never panic on a spawn, wait, read, or
-kill operation. Encode failures in ExitStatusKind.
-
-- [ ] **Step 4: Add deterministic command ordering and network denial.**
-
-Implement sorted_case_ids with BTreeMap and BTreeSet, and add these environment
-overrides to every Ultra invocation:
-
-~~~rust
-cmd.env_remove("HTTP_PROXY")
-    .env_remove("HTTPS_PROXY")
-    .env_remove("ALL_PROXY")
-    .env("NO_PROXY", "*")
-    .env("no_proxy", "*")
-    .env("RUST_LOG", "off");
-~~~
-
-The runner must refuse any case whose status is excluded-network unless the
-test is explicitly exercising ledger exclusion. The output and diagnostic
-lists are sorted by source set, case ID, and logical path before formatting.
-
-- [ ] **Step 5: Run and commit diagnostics.**
-
-~~~powershell
-cargo fmt --all
-cargo test --test html_differential diagnostics -- --nocapture
-git add tests/support/diagnostics.rs tests/html_differential.rs Cargo.toml Cargo.lock
-git commit -m "test: bound oracle process diagnostics"
-~~~
-
-Expected result: process tests pass, timeout output is bounded, and failure
-records are deterministic.
-
-### Task 6: Implement ledger validation, exact normalizers, and comparators
-
-**Files:**
-
-- Create: tests/support/html_oracle.rs
-- Modify: tests/html_differential.rs
-- Modify: Cargo.toml
-- Modify: Cargo.lock
-
-- [ ] **Step 1: Write normalizer and comparator tests first.**
-
-Add these tests to tests/support/html_oracle.rs:
-
-~~~rust
-#[test]
-fn normalizes_crlf_and_only_declared_path_fields() {
-    let policy = NormalizationPolicy {
-        path_fields: vec![FieldBoundary::JsonPointer("/metadata/source".into())],
-    };
-    let input = br#"{"metadata":{"source":"ROOT_A/index.rst"},"body":"ROOT_A"}\r
-"#;
-    let actual = normalize_json(input, &policy, "ROOT_A", "ROOT_B").unwrap();
-    assert_eq!(actual, br#"{"body":"ROOT_A","metadata":{"source":"ROOT_B/index.rst"}}
-"#);
-}
-
-#[test]
-fn opaque_bytes_are_compared_exactly() {
-    assert!(compare_opaque(b"a\r\n", b"a\n").is_err());
-}
-
-#[test]
-fn searchindex_comparison_preserves_array_order() {
-    let left = b"Search.setIndex({\"docnames\":[\"a\",\"b\"]})";
-    let right = b"Search.setIndex({\"docnames\":[\"b\",\"a\"]})";
-    assert!(compare_searchindex(left, right).is_err());
-}
-
-#[test]
-fn objects_inventory_compares_decoded_records() {
-    let left = include_bytes!("../../tests/fixtures/inventories/std_objects_and_docs.inv");
-    assert!(compare_objects_inv(left, left).is_ok());
-}
-~~~
-
-- [ ] **Step 2: Run the comparator tests and verify the red result.**
-
-~~~powershell
-cargo test --test html_differential normalizer -- --nocapture
-~~~
-
-Expected result before implementation: FAIL because
-tests/support/html_oracle.rs is absent.
-
-- [ ] **Step 3: Add the ledger and fixture model.**
-
-Define the serde model in tests/support/html_oracle.rs:
-
-~~~rust
-#[derive(Deserialize)]
-pub struct Ledger {
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexDocument {
     pub schema_version: u32,
+    pub generator: String,
     pub profiles: BTreeMap<String, ProfileRecord>,
-    pub source_sets: BTreeMap<String, SourceSetRecord>,
     pub cases: Vec<CaseRecord>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileRecord {
+    pub sphinx: String,
+    pub docutils: String,
+    pub needs_version: Option<String>,
+    pub needs_commit: Option<String>,
+    pub needs_tree: Option<String>,
+    pub lock_path: String,
+    pub lock_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginRecord {
+    pub source_set: String,
+    pub origin_path: String,
+    pub pytest_node_ids: Vec<String>,
+    pub variants_not_captured: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileStorage {
+    Ref,
+    Blob,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileRecord {
+    pub logical_path: String,
+    pub storage: FileStorage,
+    pub storage_path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaseStatus {
+    Built,
+    BuildError,
+    ReferenceCrash,
+    ExcludedNetwork,
+    ExcludedPlantuml,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CaseRecord {
+    pub profile: String,
     pub source_set: String,
     pub case_id: String,
-    pub status: String,
-    pub expectation: String,
-    pub profile: String,
-    pub builder: String,
-    pub input_root: String,
-    pub reference_root: String,
+    pub status: CaseStatus,
+    pub exit_code: Option<i32>,
+    pub warnings: String,
+    pub excluded_reason: Option<String>,
     pub origin: OriginRecord,
-    pub files: BTreeMap<String, FileRecord>,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind")]
-pub enum FileRecord {
-    Ref { path: String, sha256: String, bytes: usize },
-    Blob { blob: String, bytes: usize },
+    pub input_sha256: String,
+    pub tree_sha256: String,
+    pub files: Vec<FileRecord>,
 }
 ~~~
 
-Load index.json with serde_json, reject a schema version other than 1,
-validate all status and expectation values, require sorted unique case keys,
-require every input and reference path to remain below the fixture root, and
-verify every SHA-256 before comparison. Use the toml crate to parse
-tools/html_oracle_cases.toml in a schema test and assert that the generated
-ledger's source-set names and floor metadata match it.
+Validation rejects unknown fields, missing fields, unknown statuses, absolute paths, drive prefixes, parent components, symlinks, wrong hashes, wrong sizes, duplicate case keys, unsorted case keys, unknown profiles, and status-specific nullability errors. Every file reference must resolve below tests/fixtures/html_oracle.
 
-- [ ] **Step 4: Implement exact-boundary normalization.**
+## TDD implementation tasks
 
-Define:
+### Task 1: Profiles, configuration, and schema
 
-~~~rust
-pub enum FieldBoundary {
-    JsonPointer(String),
-    SearchIndexJsonPointer(String),
-    InventoryField { record: usize, field: String },
-    HtmlAttribute { tag: String, attribute: String },
-}
+- [ ] Write red tests in tools/test_gen_html_oracle.py for unknown status, missing input_sha256, path escape, hash mismatch, duplicate key, null exit_code for built, and files on an excluded case.
+- [ ] Create tools/oracle_profiles/core/pyproject.toml with Sphinx 9.1.0, Docutils 0.22.4, and pytest 8 through 9.
+- [ ] Create tools/oracle_profiles/local_needs/pyproject.toml with Sphinx 9.1.0, Docutils 0.21.2, sphinx-needs 8.5.0, and pytest 8 through 9. Do not add tool.uv.sources.
+- [ ] Create tools/html_oracle_cases.toml with the six source sets and exact counts above. There is no pattern source set.
+- [ ] Create both locks with uv lock --project tools/oracle_profiles/core and uv lock --project tools/oracle_profiles/local_needs. All later commands use uv run --locked.
+- [ ] Implement the Python schema and validator in tools/gen_html_oracle.py using the complete types above.
+- [ ] Implement the Rust serde model in tests/support/html_oracle.rs and a default schema test in tests/html_differential.rs.
+- [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q; cargo fmt --all -- --check; cargo test --test html_differential schema. Expected green result: all schema tests pass.
+- [ ] Commit test: define HTML oracle schema and profiles.
 
-pub struct NormalizationPolicy {
-    pub path_fields: Vec<FieldBoundary>,
-}
+### Task 2: Discovery, materialization, provenance, and licensing
 
-pub fn normalize_crlf(bytes: &[u8]) -> Vec<u8>;
-pub fn normalize_json(bytes: &[u8], policy: &NormalizationPolicy, from: &str, to: &str) -> Result<Vec<u8>, String>;
-pub fn normalize_searchindex(bytes: &[u8], policy: &NormalizationPolicy, from: &str, to: &str) -> Result<Value, String>;
+- [ ] Write red tests for 735 Docutils cases, 489 Sphinx cases, 29 projects, 84 documents, 7 HTML projects, 4 inventory projects, 142 needs projects, duplicate detection, ledger/discovery set equality, and needs-root escape.
+- [ ] Implement core discovery in tools/gen_html_oracle.py. Preserve bytes, reject symlinks, create one-document snippet projects, rebuild environment projects as HTML, copy the seven named projects, and select only SPHINX_PROJECTS.
+- [ ] Implement direct-child needs discovery at packages/sphinx-needs/tests/doc_test. Scan packages/sphinx-needs/tests/**/*.py with ast.parse. Emit repository-relative node IDs from file, class, and function scopes. Detect confoverrides and non-html builder values only to set variants_not_captured. Do not import tests or inspect assertions.
+- [ ] Implement static inspection. Mark excluded-network for a remote URL that a build would fetch. A remote intersphinx target with local inventory remains allowed. Mark excluded-plantuml when conf.py loads sphinxcontrib.plantuml. If both match, excluded-network wins.
+- [ ] Create NOTICE.md with exactly one licensing row per source set and one row for Sphinx and alabaster theme assets. Use BSD-2-Clause for Docutils and Sphinx-derived sets, the repository license for checked-in fixture projects, and MIT for sphinx-needs. State that the 881 pattern records are outside this HTML corpus and that licensing is not recorded per file.
+- [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q -k discovery. Expected green result: source floors, exact project counts, and the 142 count pass.
+- [ ] Commit feat: discover complete HTML oracle corpus.
+
+### Task 3: Child runner, provenance, and network denial
+
+- [ ] Write red tests for a conf.py socket attempt, core versions, wrong needs import location, wrong version, wrong commit, wrong tree, dirty package subtree, and harmless dirt outside that subtree.
+- [ ] Create tools/html_oracle_runner.py. Parse --sourcedir, --outputdir, --doctree-dir, --builder, --warnings-file, --needs-root, and --verify-needs.
+- [ ] Install this guard before importing Sphinx:
+
+~~~python
+import socket
+
+def reject_network(*args, **kwargs):
+    raise RuntimeError("network disabled by html oracle")
+
+socket.socket.connect = reject_network
+socket.create_connection = reject_network
+socket.getaddrinfo = reject_network
 ~~~
 
-normalize_crlf changes only CRLF to LF; it does not trim, collapse
-whitespace, decode opaque bytes, or change lone CR. Path replacement operates
-only on the declared field boundary and requires a complete from-root token
-followed by slash or the end of the field. A path token found anywhere else is
-a hard failure. There is no global string replacement.
-
-- [ ] **Step 5: Implement the structured policies.**
-
-Implement these comparators:
-
-~~~rust
-pub fn compare_json(left: &[u8], right: &[u8], policy: &NormalizationPolicy) -> Result<(), String>;
-pub fn compare_searchindex(left: &[u8], right: &[u8]) -> Result<(), String>;
-pub fn compare_objects_inv(left: &[u8], right: &[u8]) -> Result<(), String>;
-pub fn compare_opaque(left: &[u8], right: &[u8]) -> Result<(), String>;
-~~~
-
-For JSON, parse both values, recursively sort object keys for comparison, and
-preserve array order and scalar types. For searchindex.js, require the exact
-Search.setIndex( prefix and closing parenthesis, parse the enclosed JSON, sort
-object keys only, and preserve every array order and value. For objects.inv,
-parse the four header lines, zlib-decompress the payload, parse each semantic
-record with the existing inventory semantics, sort records by the Sphinx
-writer key (domain, name, display_name, objtype, docname, anchor, priority),
-and compare the resulting headers and records. Do not compare zlib-compressed
-bytes as a semantic inventory contract. For all other files, compare exact
-bytes after the file's declared CRLF policy; images, fonts, maps, and unknown
-binaries never receive text normalization.
-
-- [ ] **Step 6: Add comparator and schema tests to the default integration test.**
-
-The tests must prove:
-
-- every ledger case appears once;
-- each source set meets its floor and equals its discovered identity set;
-- every input, ref, and blob is referenced exactly as declared;
-- every blob digest matches its bytes;
-- every reference file has a policy;
-- no absolute path or parent segment appears in logical paths;
-- normalization changes only CRLF and declared fields;
-- JSON, searchindex, inventory, and opaque comparisons follow their policies.
-
-- [ ] **Step 7: Run and commit the comparison layer.**
-
-~~~powershell
-cargo fmt --all
-cargo test --test html_differential normalizer -- --nocapture
-cargo test --test html_differential schema -- --nocapture
-git add Cargo.toml Cargo.lock tests/support/html_oracle.rs tests/html_differential.rs
-git commit -m "test: add html oracle comparators"
-~~~
-
-### Task 7: Execute the real Ultra CLI and test two absolute roots
-
-**Files:**
-
-- Modify: tests/html_differential.rs
-- Modify: tests/support/html_oracle.rs
-- Modify: tests/support/diagnostics.rs
-
-- [ ] **Step 1: Write the CLI smoke and repeat-build tests first.**
-
-Add these tests:
-
-~~~rust
-#[test]
-fn html_oracle_smoke_runs_the_actual_binary() {
-    let case = load_ledger().case("html_projects", "basic");
-    let run = build_with_ultra(case, CASE_TIMEOUT);
-    assert!(matches!(run.status, ExitStatusKind::Success), "{run:?}");
-    assert!(run.output_root.join("index.html").is_file());
-}
-
-#[test]
-fn same_case_matches_under_two_absolute_roots() {
-    let case = load_ledger().case("html_projects", "basic");
-    let first = build_with_ultra_at(case, absolute_root("oracle-root-a"), CASE_TIMEOUT);
-    let second = build_with_ultra_at(case, absolute_root("oracle-root-b"), CASE_TIMEOUT);
-    assert_ne!(first.source_root, second.source_root);
-    assert_ne!(first.output_root, second.output_root);
-    assert!(!first.cache_root.starts_with(&first.output_root));
-    compare_logical_trees(case, &first, &second).unwrap();
-    compare_logical_trees(case, &first, &load_reference_tree(case)).unwrap();
-}
-~~~
-
-- [ ] **Step 2: Run the tests and verify the red result.**
-
-~~~powershell
-cargo test --test html_differential html_oracle_smoke -- --nocapture
-cargo test --test html_differential same_case_matches -- --nocapture
-~~~
-
-Expected result before the harness is wired: FAIL because the new fixture and
-CLI helpers are absent. The default smoke test asserts that the actual binary
-runs and emits a complete logical tree for the checked-in basic project. Full
-reference parity remains exclusively in the ignored exhaustive test so the
-default suite stays green while native HTML parity is incomplete.
-
-- [ ] **Step 3: Implement the exact CLI invocation.**
-
-build_with_ultra_at must use the binary exported by Cargo, never a PATH lookup
-or a library call:
-
-~~~rust
-let mut command = Command::new(env!("CARGO_BIN_EXE_sphinx-ultra"));
-command
-    .arg(&source_root)
-    .arg(&output_root)
-    .args(["-b", "html", "-d"])
-    .arg(&cache_root)
-    .arg("-q")
-    .env_remove("HTTP_PROXY")
-    .env_remove("HTTPS_PROXY")
-    .env_remove("ALL_PROXY")
-    .env("NO_PROXY", "*")
-    .env("no_proxy", "*")
-    .env("RUST_LOG", "off");
-~~~
-
-Create source, output, and cache directories under a fresh TempDir, but use
-two different absolute parent directory names for repeat builds. Copy inputs
-with exact bytes. Assert cache_root is outside output_root before spawning the
-process. The helper records exit status, bounded stdout and stderr, full
-logical output paths, and the cache location.
-
-- [ ] **Step 4: Compare complete logical output trees.**
-
-For every path listed by the ledger, load the matching Ultra file. Report a
-missing file, unexpected file, byte length mismatch, digest mismatch, warning
-stream mismatch, or comparator mismatch as a structured Mismatch record:
-
-~~~rust
-pub struct Mismatch {
-    pub case_id: String,
-    pub logical_path: String,
-    pub category: String,
-    pub summary: String,
-    pub diff: String,
-}
-~~~
-
-Sort mismatches by case ID and logical path, and cap each diff at
-MAX_DIFF_BYTES with a deterministic "[diff truncated at 65536 bytes]" suffix.
-Do not stop after the first mismatch.
-
-- [ ] **Step 5: Run default smoke, formatting, and tests.**
-
-~~~powershell
-cargo fmt --all -- --check
-cargo test --test html_differential html_oracle_smoke -- --nocapture
-cargo test --test html_differential same_case_matches -- --nocapture
-~~~
-
-Expected result: the smoke and repeat-root tests pass for the active basic
-case, all files are represented, cache directories are outside output, and
-the same normalized logical tree is produced under both absolute roots.
-
-- [ ] **Step 6: Commit the CLI task.**
-
-~~~powershell
-git add tests/html_differential.rs tests/support/html_oracle.rs tests/support/diagnostics.rs
-git commit -m "test: run html oracle through ultra cli"
-~~~
-
-### Task 8: Add complete source-set equality and expected-failure handling
-
-**Files:**
-
-- Modify: tools/gen_html_oracle.py
-- Modify: tools/test_gen_html_oracle.py
-- Modify: tests/support/html_oracle.rs
-- Modify: tests/html_differential.rs
-
-- [ ] **Step 1: Write source equality tests first.**
-
-~~~rust
-#[test]
-fn discovered_source_ids_equal_ledger_ids_exactly() {
-    let ledger = load_ledger();
-    for source_set in ledger.source_sets() {
-        let discovered = discover_ids_from_checked_in_source(source_set).unwrap();
-        let ledger_ids = ledger.ids_for(source_set);
-        assert_eq!(discovered, ledger_ids, "source-set drift in {source_set}");
-    }
-}
-
-#[test]
-fn unsupported_needs_directives_are_not_sent_to_ultra() {
-    for case in load_ledger().cases_for("sphinx_needs_doc_tests") {
-        if case.expectation == "reference-only" {
-            assert_ne!(case.status, "active");
-            assert!(case.origin.pytest_nodeid.is_some());
-        }
-    }
-}
-~~~
-
-- [ ] **Step 2: Run the tests and verify the red result.**
-
-~~~powershell
-cargo test --test html_differential source_ids -- --nocapture
-cargo test --test html_differential unsupported_needs -- --nocapture
-~~~
-
-Expected result before the checks are implemented: FAIL because discovery and
-ledger-set helpers are not defined.
-
-- [ ] **Step 3: Implement exact source-set equality and floors.**
-
-load_ledger must derive expected source identity sets from the checked-in
-fixtures and the pinned local-needs checkout, then compare them as
-BTreeSet<(source_set, case_id)>. A missing case, extra ledger case, renamed
-case, duplicate case, or stale alias is an error. Floors are checked in
-addition to exact equality so an accidental replacement by a smaller source
-fixture cannot pass after both sides drift together.
-
-- [ ] **Step 4: Implement alias resolution and expectation modes.**
-
-Aliases must contain exactly one canonical_case_id in the same source set.
-Resolve an alias to the canonical input and reference but retain the alias in
-the ledger and in the completeness count. expected-failure cases run Ultra
-only when their status is active; the test requires the recorded exit class
-and compares bounded diagnostics to the originating expectation. A
-reference-only case is never sent to Ultra. A reference-crash case stores the
-reference process failure and is never treated as a passing output comparison.
-
-- [ ] **Step 5: Verify local-needs provenance.**
-
-The generator must fail if a local-needs record has no pytest node ID,
-originating test path, assertion or regression expectation digest, profile
-pin, or directive capability classification. The Rust exhaustive runner must
-print a deterministic SKIP reference-only line containing the node ID and
-reason, not a false PASS line.
-
-- [ ] **Step 6: Run and commit corpus completeness.**
-
-~~~powershell
-python -m pytest tools/test_gen_html_oracle.py -q
-cargo test --test html_differential source_ids -- --nocapture
-cargo test --test html_differential unsupported_needs -- --nocapture
-git add tools/gen_html_oracle.py tools/test_gen_html_oracle.py tests/support/html_oracle.rs tests/html_differential.rs
-git commit -m "test: enforce complete oracle corpus"
-~~~
-
-### Task 9: Add the ignored exhaustive differential test
-
-**Files:**
-
-- Modify: tests/html_differential.rs
-- Modify: tests/support/html_oracle.rs
-- Modify: tests/support/diagnostics.rs
-
-- [ ] **Step 1: Write the aggregate-failure test contract first.**
-
-Add this ignored test with a real failure assertion:
-
-~~~rust
-#[test]
-#[ignore = "runs every active HTML oracle case and is expected to be red until parity is complete"]
-fn exhaustive_html_differential_known_red() {
-    let mut mismatches = Vec::new();
-    for case in load_ledger().runnable_cases_in_order() {
-        match run_and_compare(case) {
-            Ok(()) => {}
-            Err(mut case_mismatches) => mismatches.append(&mut case_mismatches),
-        }
-    }
-    mismatches.sort_by(|left, right| {
-        (&left.case_id, &left.logical_path, &left.category)
-            .cmp(&(&right.case_id, &right.logical_path, &right.category))
-    });
-    assert!(
-        mismatches.is_empty(),
-        "{} HTML oracle mismatch(es):\n{}",
-        mismatches.len(),
-        render_capped(&mismatches)
-    );
-}
-~~~
-
-- [ ] **Step 2: Run the ignored test and verify the red result.**
-
-~~~powershell
-cargo test --test html_differential exhaustive_html_differential -- --ignored --nocapture
-~~~
-
-Expected result while HTML parity is incomplete: the test runs every runnable
-case, reports all mismatches in sorted order, caps each diff, and exits
-nonzero. It must not stop at the first mismatch or report unsupported
-sphinx-needs directives as native Ultra failures.
-
-- [ ] **Step 3: Implement runnable-case selection.**
-
-runnable_cases_in_order includes active cases and active aliases. It includes
-an active expected-failure case only to verify its expected failure. It excludes
-all four excluded statuses, unsupported-builder, reference-crash, and every
-reference-only case. It emits a separate deterministic summary for every
-excluded or reference-only record, proving the record was considered.
-
-- [ ] **Step 4: Implement aggregate execution with bounded diagnostics.**
-
-Run each case in a fresh source, output, and cache root. Use the 120-second
-per-case deadline, 256 KiB stdout and stderr caps, and 64 KiB per mismatch
-diff. Compare the full logical tree, warning stream, exit status, and
-structured reference records. Catch spawn failures and timeouts as mismatches
-with categories spawn-failure and timeout; never panic or abort the rest of
-the corpus.
-
-- [ ] **Step 5: Add the known-red invocation to the documented command set.**
-
-The test remains ignored by default. Its only opt-in command is:
-
-~~~powershell
-cargo test --test html_differential exhaustive_html_differential -- --ignored --nocapture
-~~~
-
-The command must exit zero only when all runnable cases pass and all expected
-failures match their recorded expectation. While native Ultra is incomplete,
-the nonzero result is the intended signal.
-
-- [ ] **Step 6: Commit the exhaustive task.**
-
-~~~powershell
-git add tests/html_differential.rs tests/support/html_oracle.rs tests/support/diagnostics.rs
-git commit -m "test: add exhaustive html differential run"
-~~~
-
-### Task 10: Verify regeneration, artifact integrity, and the complete first PR
-
-**Files:**
-
-- Modify: tools/gen_html_oracle.py
-- Modify: tools/test_gen_html_oracle.py
-- Modify: tests/html_differential.rs
-- Modify: tests/support/html_oracle.rs
-- Modify: tests/support/diagnostics.rs
-- Modify: tests/fixtures/html_oracle/index.json
-- Modify: tests/fixtures/html_oracle/inputs/
-- Modify: tests/fixtures/html_oracle/refs/
-- Modify: tests/fixtures/html_oracle/blobs/
-- Modify: tests/fixtures/html_oracle/NOTICE.md
-
-- [ ] **Step 1: Run generator unit and schema tests.**
-
-~~~powershell
-python -m pytest tools/test_gen_html_oracle.py -q
-~~~
-
-Expected result: all generator, profile, discovery, source-set equality,
-network-denial, provenance, deterministic-order, and dedup tests pass.
-
-- [ ] **Step 2: Regenerate the core corpus deterministically.**
-
-~~~powershell
-$env:PYTHONNOUSERSITE = "1"
-uv run --offline --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --profile core --no-network --out tests/fixtures/html_oracle
-git diff --exit-code -- tests/fixtures/html_oracle
-~~~
-
-Expected result: the command succeeds and git diff --exit-code is clean after
-a committed regeneration. The generator must use atomic writes and must not
-change file ordering, line endings, case keys, or hashes between runs.
-
-- [ ] **Step 3: Regenerate the pinned local-needs corpus.**
-
-~~~powershell
-$env:PYTHONNOUSERSITE = "1"
-$needsRoot = (Resolve-Path $env:SPHINX_NEEDS_ROOT).Path
-uv run --offline --locked --project tools/oracle_profiles/local_needs python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --profile local_needs --needs-root $needsRoot --no-network --out tests/fixtures/html_oracle
-git diff --exit-code -- tests/fixtures/html_oracle
-~~~
-
-Expected result: the generator verifies sphinx-needs 8.5.0, commit
-58bcb59d861da95f2aca79f343e8bae6ec5c1250, subtree tree
-958172a89defcec69704f6b9d61e482e7c4e8409, Sphinx 9.1.0, and Docutils
-0.21.2 before it writes. The source set contains at least 142 local-needs
-cases, and every unsupported directive is ledgered with its originating pytest
-expectation rather than sent to Ultra.
-
-- [ ] **Step 4: Run Rust formatting, lint, default tests, and artifact integrity.**
-
-~~~powershell
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all
-cargo test --test html_differential -- --nocapture
-~~~
-
-Expected result: formatting, clippy, all default tests, schema checks, path
-checks, hash checks, normalizer tests, comparator tests, and smoke tests pass.
-The exhaustive test is still listed as ignored by the default run.
-
-- [ ] **Step 5: Run the opt-in exhaustive known-red test.**
-
-~~~powershell
-cargo test --test html_differential exhaustive_html_differential -- --ignored --nocapture
-~~~
-
-Expected result during this first implementation PR: nonzero with a sorted,
-capped aggregate of every remaining mismatch. The output must also list
-excluded-network, excluded-plantuml, excluded-external-test-fixture,
-unsupported-builder, reference-crash, alias, expected-failure, and
-reference-only counts so review can distinguish missing coverage from known
-parity work.
-
-- [ ] **Step 6: Verify only the intended implementation files are present.**
-
-~~~powershell
-git status --short
-git diff --check
-git diff --stat HEAD~9..HEAD
-~~~
-
-Expected result: every changed path is one of the planned harness, profile,
-fixture, or dependency files; git diff --check is clean; no production
-builder code, parser code, or unrelated test code changed.
-
-- [ ] **Step 7: Commit the complete first PR state.**
-
-~~~powershell
-git add Cargo.toml Cargo.lock tools tests/html_differential.rs tests/support tests/fixtures/html_oracle
-git commit -m "test: complete html oracle harness"
-~~~
-
-The commit sequence is intentionally reviewable, but the deliverable remains
-one coherent first PR because its correctness depends on all layers sharing
-the same pinned ledger, provenance, normalization, and execution contract.
+- [ ] Call sphinx.cmd.build.main with argv ["-b", builder, "-d", str(doctree_dir), str(sourcedir), str(outputdir)]. The parent captures both streams and sets PYTHONNOUSERSITE=1.
+- [ ] For local_needs, prepend needs-root/packages/sphinx-needs/src to PYTHONPATH and verify inside the child that sphinx_needs.__file__ is inside that path, __version__ is 8.5.0, git HEAD is 58bcb59d861da95f2aca79f343e8bae6ec5c1250, git HEAD:packages/sphinx-needs is 958172a89defcec69704f6b9d61e482e7c4e8409, and git status --porcelain -- packages/sphinx-needs is empty. There is no bypass flag.
+- [ ] Normalize combined output in the fixed order stdout, bytes, stderr, bytes, then CRLF and source-root replacement. Classify the traceback marker as reference-crash and other nonzero output as build-error.
+- [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q -k runner. Expected green result: child network access is rejected and all provenance checks are enforced.
+- [ ] Commit feat: add guarded Sphinx oracle runner.
+
+### Task 4: Complete trees, hashes, blobs, and atomic replacement
+
+- [ ] Write red tests for symlink rejection, parent path rejection, repeated static bytes producing one blob, complete logical paths, hash changes, absolute-root leaks, and failure injection.
+- [ ] Walk output with sorted relative paths and check is_symlink before is_file. Capture partial output for build-error and reference-crash. Store non-static output under refs and _static and _images bytes under blobs by content SHA-256.
+- [ ] Write warnings to refs/profile/source_set/case_id/warnings.txt and validate them against the warnings field. Keep warnings outside the logical files list.
+- [ ] Compute input_sha256 and tree_sha256 with canonical_hash. The empty entry list is used for excluded cases.
+- [ ] Stage a complete replacement in tests/fixtures/html_oracle.staging. Validate every ledger hash, file, path, source-set key, lock digest, and root-leak rule. Rename old to .old, staging to final, and remove .old only after the final rename. Make HTML_ORACLE_INJECT_FAILURE_AFTER=case-count fail before rename and preserve the old tree.
+- [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q -k "storage or hash or atomic". Expected green result: no symlink escapes, blobs deduplicate, logical trees remain complete, and failure is recoverable.
+- [ ] Commit feat: store deterministic oracle trees atomically.
+
+### Task 5: Fixed normalizers and comparator
+
+- [ ] Write red Rust tests for CRLF text equality, exact .buildinfo bytes, warnings-only source-root replacement, searchindex key ordering, searchindex array ordering, malformed wrappers, canonical objects.inv records, opaque bytes, missing files, and unexpected files.
+- [ ] Add Policy values Warnings, SearchIndex, ObjectsInventory, TextCrlf, and ExactBytes to tests/support/html_oracle.rs. Dispatch searchindex.js and objects.inv before general text extensions.
+- [ ] Implement searchindex.js parsing of Search.setIndex( JSON ); with JSON object key order ignored, array order preserved, and scalar types exact.
+- [ ] Implement objects.inv parsing of four exact header lines plus zlib records into five fields sorted by the complete tuple. Use invalid-objects-inventory and objects-inventory-value categories.
+- [ ] Reconstruct blob files, compare the union of logical paths, compare normalized warnings, and compare status class. built requires success; build-error requires build-error plus exact warnings and files; reference-crash and excluded records are not scheduled.
+- [ ] Return missing-file, unexpected-file, bytes-value, text-value, searchindex-value, objects-inventory-value, invalid-searchindex, invalid-objects-inventory, status, warning, spawn, io, and timeout categories.
+- [ ] Run cargo fmt --all and cargo test --test html_differential normalizer comparator schema. Expected green result: every table policy test passes.
+- [ ] Commit feat: compare HTML oracle trees by fixed policy.
+
+### Task 6: Actual CLI execution and bounded diagnostics
+
+- [ ] Write red tests that re-enter std::env::current_exe through an ignored helper selected by HTML_ORACLE_DIAGNOSTICS_HELPER. Test a timeout, more than 512 KiB on both streams, and a read or kill error.
+- [ ] Define ExitStatusKind with Success, BuildError(i32), Timeout, SpawnError(String), and IoError(String) in tests/support/diagnostics.rs.
+- [ ] Spawn with piped stdout and stderr, drain both pipes to EOF on reader threads, retain at most 256 KiB per stream plus [output truncated], poll every 20 milliseconds to a 60-second deadline, kill and drain on timeout, and map wait/read/kill failures to IoError.
+- [ ] In tests/html_differential.rs invoke env!("CARGO_BIN_EXE_sphinx-ultra") with positional input and output paths, -b html, -d cache path, and -q. The output and cache directories are siblings under target/html-oracle/runs/profile/source_set/case_id. Do not use -M.
+- [ ] Verify against src/main.rs: positional SOURCEDIR OUTPUTDIR, -b/--builder, -c/--conf-dir, -d/--doctree-dir, -D, -A, -t/--tag, -n/--nitpicky, -q/--quiet, -E/--fresh-env, -a/--write-all, and -T/--show-traceback.
+- [ ] Run cargo test --test html_differential diagnostics smoke. Expected green result: CARGO_BIN_EXE_sphinx-ultra executes, cache is outside output, and no pipe deadlock occurs.
+- [ ] Commit test: run Ultra with bounded diagnostics.
+
+### Task 7: Two-root determinism and generator ordering
+
+- [ ] Write red tests that generate one small complete source set below two different absolute roots and compare index.json, inputs, refs, blobs, order, and root-leak behavior.
+- [ ] Implement sorted source-set, origin, case, file, and JSON-key ordering; UTF-8 JSON with indent 2 and final LF; process-pool -j N with canonical result collection; distinct absolute source, output, cache, and warnings paths per child.
+- [ ] Implement the focused core command: uv run --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --out tests/fixtures/html_oracle --profile core -j 2.
+- [ ] Implement the focused local-needs command: uv run --locked --project tools/oracle_profiles/local_needs python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --out tests/fixtures/html_oracle --profile local_needs --needs-root C:\Users\johnm\Documents\repos\sphinx-needs -j 4.
+- [ ] Ensure a focused profile run cannot remove or rewrite an unselected profile. The complete workflow stages both profiles before replacement.
+- [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q -k deterministic. Expected green result: different absolute roots produce identical trees.
+- [ ] Commit test: prove two-root oracle determinism.
+
+### Task 8: Exhaustive differential run and reports
+
+- [ ] Write red report tests for ordering by profile, source_set, case_id, logical_path, category; per-case pass/fail; counts per source set and category; excluded and reference-crash counts; and a 64 KiB assertion cap.
+- [ ] Load every ledger case. Apply HTML_ORACLE_FILTER as a substring over profile/source_set/case_id. Schedule built and build-error. Do not schedule reference-crash, excluded-network, or excluded-plantuml. A filter with no matches is an error.
+- [ ] Use available_parallelism as a bounded thread pool. Each worker runs CARGO_BIN_EXE_sphinx-ultra and returns an owned result. The main thread sorts all results before reporting.
+- [ ] Write target/html-oracle/report.json with total_cases, scheduled_cases, passed_cases, failed_cases, excluded_cases, reference_crash_cases, counts_by_source_set, counts_by_category, and cases. Write equivalent Markdown summary, source-set, category, and per-failure sections.
+- [ ] Cap each diff at 64 KiB and combined stdout plus assertion text at 64 KiB. The assertion points to both report files and states that the files contain every result.
+- [ ] Mark the test #[ignore] as html_oracle_exhaustive. Run cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture. Expected result while Ultra is incomplete: every runnable case is attempted, all failures are aggregated, and the command exits nonzero.
+- [ ] Run cargo test --test html_differential report and cargo test --test html_differential -- --list. Expected green result: report tests pass and exhaustive is ignored by default.
+- [ ] Commit test: add exhaustive HTML oracle report.
+
+### Task 9: Generate artifacts, verify integrity, and hand off
+
+- [ ] Run uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q; cargo fmt --all; cargo clippy --all-targets --all-features -- -D warnings; cargo test. Expected green result: all default checks pass before generation.
+- [ ] Generate core with uv run --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --out tests/fixtures/html_oracle --profile core -j 4.
+- [ ] Generate local_needs with uv run --locked --project tools/oracle_profiles/local_needs python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --out tests/fixtures/html_oracle --profile local_needs --needs-root C:\Users\johnm\Documents\repos\sphinx-needs -j 4.
+- [ ] Implement --verify and run uv run --locked --project tools/oracle_profiles/core python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml --out tests/fixtures/html_oracle --verify.
+- [ ] Verify every file record, size, hash, blob name, logical path, lock digest, source-set count, source/ledger key equality, hash formula, sorted serialization, symlink rule, path rule, root-leak rule, and final fixture size. Print total size and warn if it exceeds 150 MB.
+- [ ] Run cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture. Expected result: known-red nonzero with complete report.md and report.json.
+- [ ] Run cargo fmt --all -- --check; cargo clippy --all-targets --all-features -- -D warnings; cargo test; uv run --locked --project tools/oracle_profiles/core python -m pytest tools/test_gen_html_oracle.py -q; git diff --check.
+- [ ] Review that only the planned generator, profiles, fixtures, Rust support, tests, and NOTICE.md changed. Commit feat: commit complete HTML oracle corpus.
+
+## Final review checklist
+
+- [ ] src/main.rs still supports positional source/output, -b html, and -d cache paths exactly as used.
+- [ ] tools/gen_sphinx_fixture.py still has extensions=[], master_doc='index', exclude_patterns=['_build'], smartquotes=False, and keep_warnings=True.
+- [ ] tools/gen_inventory_fixture.py still has four SPHINX_PROJECTS entries.
+- [ ] tests/fixtures still has exactly the seven named HTML projects.
+- [ ] The sibling checkout still has packages/sphinx-needs/src/sphinx_needs and packages/sphinx-needs/tests/doc_test with exactly 142 conf.py directories.
+- [ ] The local-needs commit and subtree tree match 58bcb59d861da95f2aca79f343e8bae6ec5c1250 and 958172a89defcec69704f6b9d61e482e7c4e8409.
+- [ ] index.json contains only the five statuses above.
+- [ ] The comparison code implements only the fixed table.
+- [ ] Static blobs are deduplicated while all logical paths are present.
+- [ ] The ignored exhaustive test uses CARGO_BIN_EXE_sphinx-ultra, external cache paths, all built and build-error cases, bounded diagnostics, deterministic ordering, and complete reports.
+- [ ] No implementation code is written outside the planned paths.
