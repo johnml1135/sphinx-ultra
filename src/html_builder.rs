@@ -696,33 +696,16 @@ impl HTMLBuilder {
     }
 
     /// Dump search index
-    pub async fn dump_search_index(
-        &self,
-        _search_index: &crate::search::SearchIndex,
-    ) -> Result<()> {
+    pub async fn dump_search_index(&self, search_index: &crate::search::SearchIndex) -> Result<()> {
         if !self.search {
             return Ok(());
         }
 
         info!("Dumping search index");
 
-        // TODO: Implement search index dumping
         let search_index_path = self.outdir.join(&self.searchindex_filename);
-        let search_data = serde_json::json!({
-            "docnames": [],
-            "filenames": [],
-            "titles": [],
-            "terms": {},
-            "objects": {},
-            "objnames": {},
-            "objtypes": {},
-        });
-
-        fs::write(
-            search_index_path,
-            serde_json::to_string_pretty(&search_data)?,
-        )
-        .await?;
+        let contents = crate::search::dumps_sphinx_index(&search_index.to_sphinx_value())?;
+        fs::write(search_index_path, contents).await?;
 
         Ok(())
     }

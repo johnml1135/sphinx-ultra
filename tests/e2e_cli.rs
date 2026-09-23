@@ -63,6 +63,69 @@ fn build_succeeds_and_writes_html_tree() {
 }
 
 #[test]
+fn build_emits_sphinx_search_index() {
+    let out = out_dir("basic-search-index");
+    let result = build(&fixture("basic"), &out, &[]);
+
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    let raw = std::fs::read_to_string(out.join("searchindex.js")).unwrap();
+    assert!(raw.starts_with("Search.setIndex("));
+    assert!(raw.ends_with(')'));
+
+    let value: serde_json::Value =
+        serde_json::from_str(&raw["Search.setIndex(".len()..raw.len() - ")".len()]).unwrap();
+    let object = value.as_object().unwrap();
+    let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        vec![
+            "alltitles",
+            "docnames",
+            "envversion",
+            "filenames",
+            "indexentries",
+            "objects",
+            "objnames",
+            "objtypes",
+            "terms",
+            "titles",
+            "titleterms",
+        ]
+    );
+    assert_eq!(
+        object["docnames"],
+        serde_json::json!(["index", "installation"])
+    );
+    assert_eq!(
+        object["filenames"],
+        serde_json::json!(["index.rst", "installation.rst"])
+    );
+    assert_eq!(
+        object["titles"],
+        serde_json::json!(["Welcome", "Installation"])
+    );
+    assert_eq!(
+        object["alltitles"],
+        serde_json::json!({
+            "Installation": [[1, null]],
+            "Welcome": [[0, null]],
+        })
+    );
+    assert_eq!(
+        object["terms"],
+        serde_json::json!({"Some": 1, "instal": 0, "text": 1})
+    );
+    assert_eq!(
+        object["titleterms"],
+        serde_json::json!({"instal": 1, "welcom": 0})
+    );
+    assert_eq!(object["objects"], serde_json::json!({}));
+    assert_eq!(object["objnames"], serde_json::json!({}));
+    assert_eq!(object["objtypes"], serde_json::json!({}));
+    assert_eq!(object["indexentries"], serde_json::json!({}));
+}
+
+#[test]
 fn build_with_relative_source_path_works() {
     // Regression test for the 2026-08 relative-`--source` crash.
     let out = out_dir("relative-source");

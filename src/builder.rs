@@ -486,7 +486,8 @@ impl SphinxBuilder {
         self.copy_static_assets().await?;
 
         // Generate sitemap and search index
-        self.generate_search_index(&processed_docs).await?;
+        self.generate_search_index(&processed_docs, &doctrees)
+            .await?;
 
         let build_time = start_time.elapsed();
         let output_size = utils::calculate_directory_size(&self.output_dir).await?;
@@ -1764,9 +1765,16 @@ impl SphinxBuilder {
         }
     }
 
-    async fn generate_search_index(&self, _documents: &[Document]) -> Result<()> {
+    async fn generate_search_index(
+        &self,
+        documents: &[Document],
+        doctrees: &[Doctree],
+    ) -> Result<()> {
         info!("Generating search index");
-        // TODO: Implement search index generation
+        let value =
+            crate::search::build_sphinx_index(documents, doctrees, &self.env, &self.source_dir);
+        let contents = crate::search::dumps_sphinx_index(&value)?;
+        tokio::fs::write(self.output_dir.join("searchindex.js"), contents).await?;
         Ok(())
     }
 
