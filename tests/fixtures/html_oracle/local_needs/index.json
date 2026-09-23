@@ -267,8 +267,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "42ae9cc0b483f161a185577def2535c758ca148255817964f530d28b426fd972",
-          "size": 212,
+          "sha256": "8b3a173024e58d61bf249910605bfbde992e1749f1f08ae85c74a0c12f7ab468",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/add_sections_sigs/schema_violations.json"
         },
@@ -325,7 +325,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "418747195f69d686dee00d63aa127c099486565237903455c48ab0563492c927",
+      "tree_sha256": "71c20e0034ac44885ba0e2481e19e4d128881d396fed7472eff34fc26ee411d5",
       "warnings": ""
     },
     {
@@ -614,8 +614,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ca1f879a04fc698c711ea2939ac7258c16f75aaf261e238a697544e7419a9f4a",
-          "size": 212,
+          "sha256": "692527fca8adaac26bd5ab45ce638a69c3a1070d6133cdfab11056dd987bb0e8",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/broken_doc/schema_violations.json"
         },
@@ -672,7 +672,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "2ec6c11428f773dfe5c4d149f6440bb8dec1af61ab0dadb29ac1234a571a7601",
+      "tree_sha256": "9b8c44d59414fb9a816ce167bd29e19fbc5a318de4c1d1ebe229b7f16351db0c",
       "warnings": "<SRCDIR>/index.rst:11: WARNING: Need could not be created: A need with ID 'SP_TOO_001' already exists. [needs.create_need]\n"
     },
     {
@@ -935,7 +935,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "de339f55565b253b5c5ed242f97f874d7463942f6503aa2cc139f88d21e926a6",
+          "sha256": "0325181c6d0911011779f1b088be0b500813107ef85023ebf3e7de0b97c4a062",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/broken_links/schema_violations.json"
@@ -993,7 +993,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "954cfa5bf8ca75162db47db97d2a0d64d5a46dbf3ee80b05f4652291bace8e0e",
+      "tree_sha256": "e883564dab736047a543572b82770fc43197317683e7ea9d2dee0713c9d5bc01",
       "warnings": "<SRCDIR>/index.rst:12: WARNING: Need 'SP_TOO_002' has unknown outgoing link 'NOT_WORKING_LINK' in field 'links' [needs.link_outgoing]\n<SRCDIR>/index.rst:21: WARNING: linked need BROKEN_LINK not found [needs.link_ref]\n"
     },
     {
@@ -1256,7 +1256,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "4c8a556701be1b5dc36e80996e3df46539ab3dfa59328521d440c354c0119d8e",
+          "sha256": "039b760f07312cc484d6f70c039a01b9850b27409a251c2fbd223a9f822be535",
           "size": 676,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/broken_statuses/schema_violations.json"
@@ -1314,7 +1314,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "87570f0ee4b964ad91ed4f8bdf9e024ef85c38d59a7f4ce45c405de3c4955522",
+      "tree_sha256": "30b8c57b668f21ecdcf532b7f234ae7d5d8df48256a7acc7ff767f94d2d1d6d2",
       "warnings": "WARNING: Config option \"needs_statuses\" is deprecated. Please use \"needs_fields.status.schema.enum\" to define custom status field enum constraints. [needs.deprecated]\nERROR: Need 'SP_TOO_002' has schema violations:\n  Severity:       violation\n  Field:          status\n  Need path:      SP_TOO_002\n  Schema path:    fields > schema > properties > status > enum\n  Schema message: \"NOT_ALLOWED\" is not one of \"open\" or \"implemented\" [sn_schema_violation.field_fail]\n"
     },
     {
@@ -1577,7 +1577,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "db9bf02c4eebc6bc5f6f4d311bdcdcff26acbc36aea12d55ace04b291abd2a87",
+          "sha256": "2019f727822923c1886bade29c026cd0ed072d2b5e2a266c7be19e00bd5b23a9",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/broken_syntax_doc/schema_violations.json"
@@ -1635,7 +1635,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "53608388575148d944477270a51460828e4e37776bec8d8526ae183fab2e16b8",
+      "tree_sha256": "d81c06b5024f62390168a3c1fb8796e4bf4244326e435580c84f70b77e97e19e",
       "warnings": "<SRCDIR>/index.rst:19: WARNING: Need could not be created: 'collapse' value is invalid: Cannot convert 'other' to boolean [needs.create_need]\n"
     },
     {
@@ -1898,8 +1898,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "3ced78a27e072e353265f3b6978faf9ce05b700648a37cb719f2913afb089e96",
-          "size": 673,
+          "sha256": "34daef00f3eff14f09216a88da5c4290497f4f5f906a11810c18abbbc2efe3a0",
+          "size": 671,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/broken_tags/schema_violations.json"
         },
@@ -1956,7 +1956,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "a5cd35ef58fa7bc52b8217969f6908c648b0c938e0aae553e5170b7879a02ae5",
+      "tree_sha256": "9f27e88b79dec83a4d00415b10438ae0bacdf3b9fec4a3dd7af670c67816a895",
       "warnings": "WARNING: Config option \"needs_tags\" is deprecated. Please use \"needs_fields.tags.schema.items.enum\" to define custom tags field enum constraints. [needs.deprecated]\nERROR: Need 'SP_TOO_003' has schema violations:\n  Severity:       violation\n  Field:          tags.2\n  Need path:      SP_TOO_003\n  Schema path:    fields > schema > properties > tags > items > enum\n  Schema message: \"BROKEN\" is not one of \"new\" or \"security\" [sn_schema_violation.field_fail]\n"
     },
     {
@@ -2219,7 +2219,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "7b4c83335630ca06c05ae4f71f1bdb5ae1026abba2805a7e1cabed36daa80221",
+          "sha256": "354df4118142cb7510108fd4baf7cdbdc4468158907150c2406d44fd53c0e66f",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_basic/schema_violations.json"
@@ -2289,7 +2289,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "563b41eba3d929c0fa941d3b6dbc00d1e4ee86b030d2de1cab4718bc16d21137",
+      "tree_sha256": "5654d4fe6afeab2d613e010083f811734ce09899754e7b9e1a40529fd6dbec37",
       "warnings": ""
     },
     {
@@ -2566,8 +2566,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "e596755adbe6b64a849a91376d3240e08904b9956ebd6dc20b69d85e201ac5e1",
-          "size": 214,
+          "sha256": "b46feffbf2cc5f92b82d02fef05c0c071e9bc5f67888d1bb0c95f28be1cfe1c7",
+          "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_chart_scope/schema_violations.json"
         },
@@ -2636,7 +2636,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "22d35f2fa3e54a36c9e695b2d2c937d42e98065d61de0c581c604121798e4722",
+      "tree_sha256": "f2b97f0fcf26b928c7557024380f3a5d1ff2d2585677dc02613d521d6a443f1b",
       "warnings": "WARNING: Matplotlib is not installed and required by needbar. Install with `sphinx-needs[plotting]` to use. [needs.mpl]\nWARNING: Matplotlib is not installed and required by needpie. Install with `sphinx-needs[plotting]` to use. [needs.mpl]\n"
     },
     {
@@ -2926,7 +2926,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "979e56ae67ef36c769bc4e053cf2e75be921da11643af8e682bd63949ac22473",
+          "sha256": "120cfe5ac432e24bbd49e25918cf5adcf05ff4fdb159afe8c8d8010bab31215f",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_df_calc_sum/schema_violations.json"
@@ -2984,7 +2984,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "be2e4dfbea31a2a93e8d7ee019de1db10d0dc9fe852988f82f412fb4a45acf62",
+      "tree_sha256": "b58adc33d829428aa3f727131e2cbecf3168a702568b0fa502d23ce6a41fc973",
       "warnings": ""
     },
     {
@@ -3247,7 +3247,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "c5070c5905d0ca3ff0a1138ef289db50499a8c619b79228361dff61b49982fcd",
+          "sha256": "3ac5b9ca32ac2ddd53a13e0cd08141c58efb1ba8299fc8bef28343f4364429e9",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_df_check_linked_values/schema_violations.json"
@@ -3305,7 +3305,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "42b6a4c1ebbc0fac089c5623ad9738c0b5bbe21d6a974a6eb4a2852200954879",
+      "tree_sha256": "96d5f0b7e72db345c3174d3da9284ed66e27a4bf43ae4b032994e81c4fb515b2",
       "warnings": ""
     },
     {
@@ -3575,8 +3575,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "7b66300c164b54c8f0fa984cb4ff1446d6a6086ea3423bf55993c58cde171109",
-          "size": 212,
+          "sha256": "d4b0bb4b2b2610befacb61940de4a89b003a8415f76ba8090036930752ce9eab",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_df_links_from_content/schema_violations.json"
         },
@@ -3633,7 +3633,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "63b134e4414d9c17a8374df1ae13d00609f451e2229ecae033fac2d418001e3c",
+      "tree_sha256": "b6ee9d2215747f75a37d377540f38406f705bca1be26c1222359bb2903abae39",
       "warnings": "<SRCDIR>/index.rst:51: WARNING: links_from_content: no stored node for need 'unknown1' [needs.dynamic_function]\n<SRCDIR>/index.rst:51: WARNING: links_from_content: no stored node for need 'unknown2' [needs.dynamic_function]\n<SRCDIR>/index.rst:57: WARNING: Error while executing function 'links_from_content': No need found for links_from_content [needs.dynamic_function]\nWARNING: links_from_content: no stored node for need 'unknown3' [needs.dynamic_function]\n"
     },
     {
@@ -3896,8 +3896,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "65fefff4c96402eb48a4445bfff2b0697435a55cceaae667155c8835a9bc14d8",
-          "size": 212,
+          "sha256": "fce52fdfbe8a599a59c20388e2cadc7069457741cf1fa6f099379f5974afa3a5",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_df_user_functions/schema_violations.json"
         },
@@ -3954,7 +3954,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "f2a411a4e2c65dcd4c4d87bd41be4a3663bfbf9677b25265ec8fe8527c36b028",
+      "tree_sha256": "488ac93f2ce3c0605cb0da67e3ecaa35dfc2651b0913aa5382bc2bed6648974e",
       "warnings": "WARNING: cannot cache unpickleable configuration value: 'needs_functions' (because it contains a function, class, or module object) [config.cache]\n<SRCDIR>/index.rst:12: WARNING: Error while resolving dynamic values for field 'status', of need 'TEST_2': dynamic function value <class 'object'> is not of type 'string' [needs.dynamic_function]\n<SRCDIR>/index.rst:16: WARNING: Return value of function 'bad_function' is of type <class 'object'>. Allowed are str, int, float, list [needs.dynamic_function]\n<SRCDIR>/index.rst:18: WARNING: Error parsing dynamic function: Not a function call [needs.dynamic_function]\n<SRCDIR>/index.rst:20: WARNING: Unknown function 'unknown' [needs.dynamic_function]\n"
     },
     {
@@ -4224,8 +4224,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "64b64faf157caeba9efd1755053e163501df4805f45fd69ae2afe2163cb53b57",
-          "size": 212,
+          "sha256": "033550bdec299a08e8942e93b38ba62fe8b61da6349dd0512fd50edbf8ba6fb9",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_dynamic_functions/schema_violations.json"
         },
@@ -4282,7 +4282,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "7f9d1d37e631352589bc1605b6371cc41d4d1aeada7bff2372489e462ccb6c49",
+      "tree_sha256": "7b5e9eb290f3f84e3700a816d287ba1b0b38c61d4757c5f8fff37572bb61621f",
       "warnings": "<SRCDIR>/index.rst:26: WARNING: Need could not be created: 'tags' value is invalid: only one string, dynamic function or variant function allowed per array item. [needs.create_need]\n<SRCDIR>/index.rst:47: WARNING: Need could not be created: Field 'test_func' is invalid: Error parsing dynamic function 'test': Unsupported arg 0 value type [needs.create_need]\n<SRCDIR>/index.rst:53: WARNING: Need could not be created: Field 'test_func' is invalid: Error parsing dynamic function 'test': Unsupported arg 0 value type [needs.create_need]\n<SRCDIR>/index.rst:45: WARNING: Error while executing function 'copy': Need not found [needs.dynamic_function]\n"
     },
     {
@@ -4552,7 +4552,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "83db3d81d39a201aa13b9023d8c90e4b5180b62f0222fd32cbb7345c09225c29",
+          "sha256": "0fc8826bdded54960b93c08eff2407c76db8c1adde1807f063cb6466f0a46985",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_field_defaults/schema_violations.json"
@@ -4610,7 +4610,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "eb9b1b222eaee4f1280f67bcab11e76a21ad68708edb9df06ee2bb1a9d34c923",
+      "tree_sha256": "86c17748f833cc9eeaf502bd661e0fbc83571ab6aaa5775655ce731b74a702d3",
       "warnings": "WARNING: needs_fields['bad_value_type']['default'] value is incorrect: Invalid value for field 'bad_value_type': 1.27 [needs.config]\nWARNING: needs_fields['too_many_params']['predicates'] value is incorrect: defaults must be a list of (filter, value) pairs. [needs.config]\nWARNING: needs_links['link3']['default'] value is incorrect: Invalid value for field 'link3': 1 [needs.config]\n"
     },
     {
@@ -4887,7 +4887,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "18b94eb987c223adf3c471cc13049f106793d024d58d0759c509eb0b88c65862",
+          "sha256": "f3df56ee8544ea1e027d27bd234966d01c908db438612a9792ee14873f39eb3c",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_filter_this_doc/schema_violations.json"
@@ -4960,7 +4960,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "8df2bb3cbfa6313b1ab1ce29620867eb0274bfb4b089ea32fee1430a638b4834",
+      "tree_sha256": "2312b5f98a29c2555efd3b38837e9d154ce18f144a0e720270dedd7e6a03c0ff",
       "warnings": "WARNING: Matplotlib is not installed and required by needbar. Install with `sphinx-needs[plotting]` to use. [needs.mpl]\nWARNING: Matplotlib is not installed and required by needpie. Install with `sphinx-needs[plotting]` to use. [needs.mpl]\n"
     },
     {
@@ -5302,7 +5302,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "e500cc4337549673f27b3fe36df3c8dbe1bcefc71b65681fcba3834b623f387d",
+          "sha256": "8ba62c3d3195a83691d4a08a5c07fe22e2f886ba30489c983484a2d9724faf27",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_github_issue_21/schema_violations.json"
@@ -5358,7 +5358,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "864c26fe6de67e6106b55560a4e3441206839a2c0d1a517b4aa159a25f2fce38",
+      "tree_sha256": "0107cba4987be78cfe9a85d18e2b455a0db3ab3d95594bb5219255f9893d8f65",
       "warnings": "<SRCDIR>/index.rst:6: ERROR: Unexpected indentation. [docutils]\n<SRCDIR>/index.rst:44: ERROR: Error in \"needlist\" directive:\nunknown option: \"layout\".\n\n.. needlist::\n   :tags: test\n   :status: implemented\n   :show_filters:\n   :layout: table [docutils]\n<SRCDIR>/index.rst:52: ERROR: Error in \"needlist\" directive:\nunknown option: \"layout\".\n\n.. needlist::\n  :layout: diagram [docutils]\n<SRCDIR>/index.rst:12: WARNING: Need 'OWN_ID_123' has unknown outgoing link 'R_F4722' in field 'links' [needs.link_outgoing]\n<SRCDIR>/index.rst:24: WARNING: Need 'TC_C3893' has unknown outgoing link 'impl_01' in field 'links' [needs.link_outgoing]\n<SRCDIR>/index.rst:29: WARNING: linked need impl_01 not found [needs.link_ref]\n"
     },
     {
@@ -5621,8 +5621,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "4964180a7ee583976594f245e3975f6587e8ad33d37e468dc3ef6adebf43600b",
-          "size": 214,
+          "sha256": "e164a725fb21b5a0cb8cd95926d0cd231ed62b1bf5b1063b01faff5331512e09",
+          "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_github_issue_44/schema_violations.json"
         },
@@ -5679,7 +5679,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "302724c3f3ea26be21ac51e38b9e0ef5e26611dae84e31095335ae0556bd62fc",
+      "tree_sha256": "499ec569d59ce01c4f929fa7aa55b83250faf70c5b68a26239a1c3c428e850b2",
       "warnings": "<SRCDIR>/index.rst:11: WARNING: Need 'test_3' has unknown outgoing link 'test_123_broken' in field 'links' [needs.link_outgoing]\n"
     },
     {
@@ -5975,7 +5975,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "e04209ea3a66b06dfcba10227b8cc8f91da60eca513a3daf2da80bb24b44a3d6",
+          "sha256": "b78b1d1ad4db007e8d7a87eab12641c2339f7ca32b071381cb59e55037b9029e",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_global_options/schema_violations.json"
@@ -6033,7 +6033,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "a47fe09f8cf5df7584de395b9c6c1c60cee0b1efeeb174c7377456d7cb3ed269",
+      "tree_sha256": "57bfe3dc7ecccbb2f7ae101ca433d88e12428802ff0c589006ac006f5bb100e6",
       "warnings": "WARNING: Config option \"needs_global_options\" is deprecated. Please use needs_fields and needs_links instead. [needs.deprecated]\nWARNING: needs_global_options['link3']['default'] value is incorrect: Invalid value for field 'link3': 1 [needs.config]\nWARNING: needs_global_options['bad_value_type']['default'] value is incorrect: Invalid value for field 'bad_value_type': 1.27 [needs.config]\nWARNING: needs_global_options['too_many_params']['predicates'] value is incorrect: defaults must be a list of (filter, value) pairs. [needs.config]\nWARNING: needs_global_options['unknown'] does not correspond to any defined field [needs.config]\n"
     },
     {
@@ -6296,7 +6296,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "8de664c994dac1f7afefd17949615740d63272de132b2a8a11f8a82920ec0243",
+          "sha256": "68d3426eecdff8a871fd0bd3f89b58cd2790d798ee0be89a57af887eff89526c",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_if_directive/schema_violations.json"
@@ -6354,7 +6354,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "3c906321e962af57629e64d7a62405c0c307fcfbbcde90cc4152ee2401c5fc96",
+      "tree_sha256": "1a0ecac2fece907cabd0db54664869c616da56efa6816d91f8e9b7bcb6b91104",
       "warnings": ""
     },
     {
@@ -6966,7 +6966,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "f0c65d60b11c882544a7d3155b3d15b3c4533cdc34275f714d80d6a0e474a267",
+          "sha256": "4f7c4739cc968d26dfbcc0a07edbdc561e41682538b944d967e7777fad3f1f5a",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_layout/schema_violations.json"
@@ -7066,7 +7066,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "14bf0125034a0482b4430378b6eec8ffe1a5b286aa47f26af7a6302f9bf9bddc",
+      "tree_sha256": "c67a69bc59a472d1dec6696a1acd8a1936bec7bd7969ec0cc62d700f18a4cb4c",
       "warnings": ""
     },
     {
@@ -7436,7 +7436,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "4a72589e307931213c28db3df13487fde5bbca1c4d75402e6ae22da4071e108c",
+          "sha256": "e9359bdc33bfa15f9cad7f2e85aea2503c27f64dec735397db91c708a46066d2",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_need_count/schema_violations.json"
@@ -7494,7 +7494,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "edd56a13982be74f485b4c585daa4b97f70b884bf7f5369ae8bc8281c337b511",
+      "tree_sha256": "44d77f2547093431ff8f33f994555373bb688486b8d8e82f939c769849582f93",
       "warnings": ""
     },
     {
@@ -7783,7 +7783,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "9aa96343f249c271c1270d6cc9b361a8ab2ae6dbbe7ad780e46175d343a8d4fb",
+          "sha256": "92bc472d27d1f0a2f7d19a4f21cdfe6db74ce052669c670acf9a45265734c3fc",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_need_id_from_title/schema_violations.json"
@@ -7841,7 +7841,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "67860bdf566cabe158fea10d49ee2ebd2d5e2f9e39ed4af9e2a5347bbe803358",
+      "tree_sha256": "8bbc8851c83f021dc0d0a0ff03cec68d6e969bfc8ab68d5fd899afc9af4b32db",
       "warnings": "<SRCDIR>/index.rst:4: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n<SRCDIR>/index.rst:13: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n<SRCDIR>/index.rst:18: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n"
     },
     {
@@ -8137,8 +8137,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "4d151cb6069b1c4f77552d6192045f71ed6ca2c67cfef98f027561fcd3e23b62",
-          "size": 212,
+          "sha256": "2c935861c26e4ad41747e76c51855c969d75f505ca33d2b9c1ba97141638c8e4",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_need_parts/schema_violations.json"
         },
@@ -8195,7 +8195,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "19f0c14c96c9afba3d4ea2a925b2fd86c79a715495a08277f74309bfcc68e353",
+      "tree_sha256": "eb1f041bf64776f02b88a2efb70dd458fc44c14fef5e21034ea6061af2f520d1",
       "warnings": "<SRCDIR>/index.rst:38: WARNING: Need 'OTHER_1' has unknown outgoing link 'SP_TOO_001.unknown_part' in field 'links' [needs.link_outgoing]\n<SRCDIR>/index.rst:26: WARNING: Need part not associated with a need. [needs.part]\n<SRCDIR>/index.rst:36: WARNING: linked need part SP_TOO_001.unknown_part not found [needs.link_ref]\n"
     },
     {
@@ -8565,7 +8565,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "c9d3b681d1acb81637952b91a8e40f8146ce0eedb90a1607a68acb4c6a2b7361",
+          "sha256": "98aff88d2d8e732d5810d4cc1a9ece752994e0252692b1b4646f4d74a2c966b3",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needbar/schema_violations.json"
@@ -8627,7 +8627,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "5d4abe51b085559ed8739442fd508cde6193b226ae3e04adc3ab5e9952ada895",
+      "tree_sha256": "fe0cf8ad9326bc41ad0dd584b477fd4922d4376bfce13e9bd69193215ef5f9d6",
       "warnings": "WARNING: Matplotlib is not installed and required by needbar. Install with `sphinx-needs[plotting]` to use. [needs.mpl]\n"
     },
     {
@@ -8890,7 +8890,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ee946fa558d1aa270998c94bfbbf98fcb24409d1c64d5915774eb4d3dc7ea174",
+          "sha256": "bd05c7466fc3ffe0a44aaa5df34d8ba42ae7cec40afef9e60e555ae2d8c4c95e",
           "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needbar_from_data/schema_violations.json"
@@ -8949,7 +8949,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "abd3a93ee673594b5a52d0998f985e3d5d80e7683e3bf778dd2dbc7a61fef5e5",
+      "tree_sha256": "8cf2b47c6178efdf65badbfee6de14713bd293f66031506d48411f415f6ea131",
       "warnings": "WARNING: Matplotlib is not installed and required by needbar. Install with `sphinx-needs[plotting]` to use. [needs.mpl]\n"
     },
     {
@@ -9247,7 +9247,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "b9f0ece0ba21f639ad176b309b8dfd88f971c1d0cd24af0ac87ae9668dc5670d",
+          "sha256": "b1d8c412d17ecc8090126f10ef9482a4f2f7d6f33e5e22338f2f577696386a08",
           "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needextend/schema_violations.json"
@@ -9321,7 +9321,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "6c43ad773bd4ab8b8fa839c678e324a091bd8e1f3aff8c6a0575751f231d4e4e",
+      "tree_sha256": "90c56bf16c3e5d037201bdc92c9cda2d271391cc33188278fea182efc50d52b4",
       "warnings": ""
     },
     {
@@ -9591,7 +9591,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "e6e707db2b6addde0ea1bc79d5c41dc9271226e1ffea716f87704933a8549534",
+          "sha256": "f34b9052d74e8c81f0e551d65eadba24fe64ffc6c588666ed0cc51060a48de8d",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needextend_dynamic/schema_violations.json"
@@ -9649,7 +9649,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "a15e5ccba4f4f9c06f838e98b51ad4446dfb2487c559fdbfdbaeb71e160279b6",
+      "tree_sha256": "c0cb4e3064631be8d816847bade4a999a57142b97e81039bc147701f9ea75419",
       "warnings": "WARNING: cannot cache unpickleable configuration value: 'needs_functions' (because it contains a function, class, or module object) [config.cache]\n"
     },
     {
@@ -9912,7 +9912,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "076e597729a73c2cf8133d1988bc6ede9814d49fd511df6a6838bedd2851457f",
+          "sha256": "7b3de4801b8b164caf17e7da155066fab635fe7ede8a48e4a4ce038cf5a55f2f",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needextend_warnings/schema_violations.json"
@@ -9970,7 +9970,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "2cecbfc16d4c20daf2602fc5d31df3f830eb039756eed85e9cabae701961180a",
+      "tree_sha256": "6b15f9c4bab3b88fcc7073beb6a50f314695633712f99312080d486467dcac35",
       "warnings": "<SRCDIR>/index.rst:25: WARNING: Empty ID/filter argument in needextend directive. [needs.needextend]\n<SRCDIR>/index.rst:26: WARNING: Empty ID/filter argument in needextend directive. [needs.needextend]\n<SRCDIR>/index.rst:28: WARNING: Cannot append to option '+hide' with type 'boolean'. [needs.needextend]\n<SRCDIR>/index.rst:28: WARNING: Invalid value for 'hide' option: Cannot convert 'bad' to boolean [needs.needextend]\n<SRCDIR>/index.rst:28: WARNING: Unknown option '-unknown' [needs.needextend]\n<SRCDIR>/index.rst:28: WARNING: Unknown option '+unknown' [needs.needextend]\n<SRCDIR>/index.rst:28: WARNING: Unknown option 'unknown' [needs.needextend]\n<SRCDIR>/index.rst:19: WARNING: Provided id 'unknown_id' for needextend does not exist. [needs.needextend]\n<SRCDIR>/index.rst:22: WARNING: Provided id 'id with space' for needextend does not exist. [needs.needextend]\n<SRCDIR>/index.rst:23: WARNING: Filter 'bad_filter' not valid. Error: name 'bad_filter' is not defined. [needs.filter]\n<SRCDIR>/index.rst:24: WARNING: Filter 'bad == filter' not valid. Error: name 'bad' is not defined. [needs.filter]\n<SRCDIR>/index.rst:10: WARNING: Need 'extend_test_004' has unknown outgoing link 'unknown1' in field 'links' [needs.link_outgoing]\n"
     },
     {
@@ -10296,7 +10296,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "9081230aea0e2e06e1d2b485baf1e736724b2ffd963b81a65518d39497a92bfa",
+          "sha256": "84fffa6ccebca88f415665d381e16b05c095b7725c5d5793ab5f427c9448be42",
           "size": 215,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needextract/schema_violations.json"
@@ -10417,7 +10417,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "e5fb425ec498c3126af8aed5e510ff51fae943444ba34509b5a4b8c8dda9de63",
+      "tree_sha256": "fb0d05e2149701799adea59de51678ad439668e58f5bd3a7423a7a3efa35c92b",
       "warnings": ""
     },
     {
@@ -10879,7 +10879,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ce7be69f8089451711a9a19ddae20b71fe848c987a60900c8f0893c2a6b9d5a5",
+          "sha256": "e5d4c64b34ecfd81c210033f235e783b93e60ce19a3064f295e8559370f0dfef",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needlist/schema_violations.json"
@@ -10951,7 +10951,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "e9b1dc803dcebb03135d90a9874e6eea618b6df283c00e59cf2ccaaa65f7dd81",
+      "tree_sha256": "b38c76e2f25a843228bbeb04aa3376699887a853ecaf7705f62d9516bd807471",
       "warnings": "<SRCDIR>/test_options.rst: WARNING: document isn't included in any toctree [toc.not_included]\n"
     },
     {
@@ -11243,7 +11243,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "68d3426eecdff8a871fd0bd3f89b58cd2790d798ee0be89a57af887eff89526c",
+          "sha256": "57a5a84e67c4d5e322625353c2c53b2b7d172f28edf313bf249bc57111d44d25",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needreport/schema_violations.json"
@@ -11302,7 +11302,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "cb8182cf1c179653bd7d0460f3d28604c3b7d46b38b1aedcd74adf5959036c36",
+      "tree_sha256": "94aeb648e0d886c46169a2cef02c1d3e70fd001be35042f471e9d7fd09be46b2",
       "warnings": "<SRCDIR>/index.rst:6: WARNING: No options specified to generate need report [needs.needreport]\n<SRCDIR>/index.rst:8: WARNING: Could not load needs report template file <SRCDIR>/unknown.rst [needs.needreport]\n"
     },
     {
@@ -11591,7 +11591,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "444db40f9cbc9fa533e26000c5253b8ad1eac0c99f8659954c8372f436a7ea76",
+          "sha256": "04f0469a69595dbd69f9d292b8094472ac55866d5eb7317b4884aecde3742dd7",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needs_builder/schema_violations.json"
@@ -11662,7 +11662,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "b19465c69ae09b6e4a06f72dd60df76fcbf8665de27c38a87a4ccc504878adf8",
+      "tree_sha256": "442af1dbd2c84f62596efb10f413546e08b45df176bac8b9570e4643837d0727",
       "warnings": ""
     },
     {
@@ -12246,8 +12246,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "6cafe9e63256e7361fa5dff63e372491a27f9d8f10724dd9a1e610e63d42a1ba",
-          "size": 212,
+          "sha256": "20ab9cbec43c9ccfd15f6f8372c97ff92c2c87a9ff625e5c30d8f5bc330ed62a",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needs_builder_negative_tests/schema_violations.json"
         },
@@ -12311,7 +12311,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "f4506a40b14851d0f5ab9926a8be142505decccd579a31dae71977d7520cb8d0",
+      "tree_sha256": "4c5eaf7215410f6452d5fb409945e710ecf39e5442f4b2818c3e36a15d432120",
       "warnings": ""
     },
     {
@@ -12581,7 +12581,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "59b69049db011e3afb74d4fed93c4d366b3937c8b5141390883ad972704f244b",
+          "sha256": "bea5b46879014169369b0a7792b82bb2830a526826a6443790825bc03a1e9107",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needs_builder_parallel/schema_violations.json"
@@ -12646,7 +12646,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "db6f2c4a1b19ea83d1d5ca0622db98c2e3dba7d8cf9b44434d5c8e3f92ba91f6",
+      "tree_sha256": "62920e7bc5e41a7d29c5de27c7db8611a852b7288d87bc845008bbaacb65d85f",
       "warnings": ""
     },
     {
@@ -13070,7 +13070,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "96e97bdaae48a2a234ba3ed027d782c79cd1c25aa72183fdb64db0b0846bb5b8",
+          "sha256": "6fc8256ef374c62d63a47c1e1151be3fefd50c265a3e5e9bc6e5025f13f49ee7",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needs_warnings_return_status_code/schema_violations.json"
@@ -13128,7 +13128,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "e48e23dc6742dfd6b11cfe0b821cf7527d00a4d5a7a746fb87d8b54449544ced",
+      "tree_sha256": "16160d67ab4c0c4f64c67e1a096ac951ba373574634052473615243a1f310a00",
       "warnings": "WARNING: cannot cache unpickleable configuration value: 'needs_warnings' (because it contains a function, class, or module object) [config.cache]\nWARNING: invalid_status: failed\n\t\tfailed needs: 2 (SP_TOO_001, US_63252)\n\t\tused filter: status not in ['open', 'closed', 'done', 'example_2', 'example_3'] [needs.warnings]\nWARNING: type_match: failed\n\t\tfailed needs: 1 (TC_001)\n\t\tused filter: my_custom_warning_check [needs.warnings]\n"
     },
     {
@@ -13391,7 +13391,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "68215c36564035bc4183555c1328689343aa9c4c607e9599f54f30c57904e2c5",
+          "sha256": "9d680fa0dd11330f9e293560f526eb996483e29bd0f9b72fc8b9b54d5906b6df",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needsfile/schema_violations.json"
@@ -13456,7 +13456,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "152b15aee342583a482adeff2598846777c19e37493926e03ae549730f52037b",
+      "tree_sha256": "dbd2c8676aa27a99dcc7f94820bf2c16ed341ef29bd9da4582152f177e6c21c6",
       "warnings": ""
     },
     {
@@ -13754,7 +13754,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "083ad0b7a5ea4cfd1815906c849d460e8a1f11dae126a18ff4fcaaa5ecb523a1",
+          "sha256": "4826ef6e45c59244148d82cef48a451f94a5c10519de9a3cdaa02bd2082ff25a",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needtable_bad_page_size/schema_violations.json"
@@ -13812,7 +13812,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "00659d03f47072c12e2085713d53770cace1fce39e90e70d8d6b9446a80b0c03",
+      "tree_sha256": "c240a72a7df63b436ed9b331185ee7a634755ec09cfa7c32ad7f41c776dd86c0",
       "warnings": "<SRCDIR>/index.rst:7: WARNING: The 'page_size' option must be a positive integer, got '0'; ignoring it. [needs.directive]\n<SRCDIR>/index.rst:10: WARNING: The 'page_size' option must be a positive integer, got 'lots'; ignoring it. [needs.directive]\n"
     },
     {
@@ -14117,8 +14117,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ec7bdebcd4bf6447f233f24b1448e7b608fb9a81745493a46c7ca28ecf28bb99",
-          "size": 215,
+          "sha256": "76d4281ee20a4a603d2a8044a56e762833e831d8fe853327ae13853b108e365a",
+          "size": 217,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needtable_enhancer/schema_violations.json"
         },
@@ -14210,7 +14210,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "5c6c845d321842704343f70be91a4c43bf36fd0e7371a50e40eaa9c59d0a440f",
+      "tree_sha256": "222e3909d33380c356cfa9a55b29be13c6bfcee3db1605ec26c45be1a52b739f",
       "warnings": ""
     },
     {
@@ -14473,7 +14473,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "34558e8845d8d595af1b3f8f8ae23c7a3c7c6c65ece20f59f06597375bdc21da",
+          "sha256": "f2c1bfea15628d49316a7ff886322f469b98ab5e4486c6bf75723945b6bd5dd3",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needtable_translator_patch/schema_violations.json"
@@ -14538,7 +14538,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "d711fafe0b9ab6301150b7e2d2081a01497674afc94c1f5b7f5bf7a6dfa0e39c",
+      "tree_sha256": "de1320fcefd7cfd1c2eabcbb996336feb5123907fc3605047b8ab04b22172290",
       "warnings": ""
     },
     {
@@ -14801,7 +14801,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "46c90ea0cde136980d9f7738f9f5cea6b6c72da84f39506b2cba818084cbff6b",
+          "sha256": "7979a1a922f05d48e678f1eb743e13f51c2052bb813565a43a3109f9a694ddc0",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_needtable_truncated/schema_violations.json"
@@ -14859,7 +14859,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "0d106127a0f7ab83159e1e96d987d205cbbac274afce83ae57c93f4ec83d9b79",
+      "tree_sha256": "ce36894baa3b4513c49261925142a5d5f2f2b35011df85ee12d3c109f94e2419",
       "warnings": "<SRCDIR>/index.rst:19: WARNING: needtable: showing the first 2 of 3 needs, due to the max_items limit. [needs.max_items]\n"
     },
     {
@@ -15907,7 +15907,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "da5453c8575a743f38d3d9bdaa6387f0b0d980bb857627b00830922d06e6c0bb",
+          "sha256": "971ad93a1840e2288d7e03f60faf47f42333e2a5854df7670278f89f8219f18f",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_role_need_in_heading/schema_violations.json"
@@ -15965,7 +15965,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "3ca628e10c10f2fd8b8b53919126bd9297f062081a7154862a8d219e72b5e243",
+      "tree_sha256": "d7cbdde0ff798a10c64d59cbf96df1d94522eaf41a42431a1d665728fe739d96",
       "warnings": ""
     },
     {
@@ -16228,8 +16228,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ea1d5b410ca58ca00265058526a98cec0d53cca5f1912ebc87626fa611c1733c",
-          "size": 212,
+          "sha256": "a250644a70c4125ac326894f89ec282ff0f4c6f90d818c23c56c92591a3d3485",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_role_need_max_title_length/schema_violations.json"
         },
@@ -16287,7 +16287,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "2ee8ff0e7a3915d4db88382b472e86fade0aceb0c49c19e2f6f397bf17312d17",
+      "tree_sha256": "7f7d1f0767aa5f4aa7b24761262edcbca378d8e2e547126b93f9a62a44bcd634",
       "warnings": ""
     },
     {
@@ -16550,7 +16550,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "893e827cc6cc4a020b0c1c60ae01699b1ba7f6ba701d7236702f005653273647",
+          "sha256": "ae73692b3a8db488cd695770418e5c92a71950d46ceac784886cbe92882a0f09",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_role_need_max_title_length_unlimited/schema_violations.json"
@@ -16608,7 +16608,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "81eabe17415af50d9ec48b1ec1c94c6fe652b4412bfe217254cc920036599155",
+      "tree_sha256": "eae19f523038d0bb378ee33a89169e460110ab8cac939d23c6bcf258583a4a45",
       "warnings": ""
     },
     {
@@ -16878,8 +16878,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "950ad435ebadd8f86ebb7514b43affb0e915d53ee7005b6b1d8ee424bb9c74df",
-          "size": 212,
+          "sha256": "2c982d930c6ef5548adf2240cd95f1d8cc4b391f0b25d69b5ee6423185ab10aa",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_role_need_template/schema_violations.json"
         },
@@ -16938,7 +16938,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "00d20636c9e301b6067e0d5cc9d541159c89a74bf42757a2c6588458aec7e028",
+      "tree_sha256": "620ce662fa9a13b4ff6ee5d27d8dfd9877ec832016332238ffe3d9012a29e530",
       "warnings": ""
     },
     {
@@ -17522,7 +17522,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "b296b52418074e212da10271c228657e062f64e2217aa6d51c4eade98bb46edc",
+          "sha256": "b9dd7f1f0fdf49434ec73f945696d4e3d47d240614a7b609e1fd92ebeabc6441",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_role_need_template_legacy/schema_violations.json"
@@ -17580,7 +17580,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "184db65d15d64920b711e0f6b5ce31c2d004990bc220638378374162ede37970",
+      "tree_sha256": "75926ad1fba74352e48a62bac0a93cee441eb37b7a1204fa4444145ece821269",
       "warnings": "WARNING: needs_role_need_template uses the deprecated str.format syntax; migrate '{field}' placeholders to Jinja '{{ field }}' (this will be rendered with str.format for now, but support will be removed in a future release) [needs.deprecated]\n"
     },
     {
@@ -17638,7 +17638,7 @@
       "needs_exit_code": 2,
       "needs_json": null,
       "needs_status": "build-error",
-      "needs_warnings": "\nSphinx error!\n\nVersions\n========\n\n* Platform:         linux; (Linux-6.17.0-1022-azure-x86_64-with-glibc2.39)\n* Python version:   3.12.14 (CPython)\n* Sphinx version:   9.1.0\n* Docutils version: 0.21.2\n* Jinja2 version:   3.1.6\n* Pygments version: 2.21.0\n\nLast Messages\n=============\n\n    done\n    building [mo]: targets for 0 po files that are out of date\n    writing output...\n\n    building [needs]: targets for 0 source files that are out of date\n    updating environment:\n    [new config]\n    0 added, 0 changed, 0 removed\n    reading sources...\n\nLoaded Extensions\n=================\n\n* sphinx.ext.mathjax (9.1.0)\n* alabaster (1.0.0)\n* sphinxcontrib.applehelp (2.0.0)\n* sphinxcontrib.devhelp (2.0.0)\n* sphinxcontrib.htmlhelp (2.1.0)\n* sphinxcontrib.serializinghtml (2.0.0)\n* sphinxcontrib.qthelp (2.0.0)\n* sphinx_data_viewer (0.1.5)\n* sphinxcontrib.jquery (4.1)\n* sphinx.ext.graphviz (9.1.0)\n* sphinx_needs (8.5.0)\n\nTraceback\n=========\n\n      File \"/home/runner/work/sphinx-ultra/sphinx-ultra/tools/oracle_profiles/local_needs/.venv/lib/python3.12/site-packages/sphinx/builders/__init__.py\", line 568, in read\n        raise SphinxError(msg % master_doc_path)\n    sphinx.errors.SphinxError: Sphinx is unable to load the master document (<SRCDIR>/index.rst). The master document must be within the source directory or a subdirectory of it.\n\n\nThe full traceback has been saved in:\n/tmp/sphinx-err-4mbjte1n.log\n\nTo report this error to the developers, please open an issue at <https://github.com/sphinx-doc/sphinx/issues/>. Thanks!\nPlease also report this if it was a user error, so that a better error message can be provided next time.\n",
+      "needs_warnings": "\nSphinx error!\n\n    sphinx.errors.SphinxError: Sphinx is unable to load the master document (<SRCDIR>/index.rst). The master document must be within the source directory or a subdirectory of it.\n",
       "origin": {
         "origin_path": "packages/sphinx-needs/tests/doc_test/doc_schema_benchmark",
         "pytest_node_ids": [],
@@ -17649,7 +17649,7 @@
       "source_set": "sphinx_needs_doc_tests",
       "status": "build-error",
       "tree_sha256": "566d416a8822ac7ab6226bd5a660e9f09117a0b8a01e36fa9d4192f29a68f4da",
-      "warnings": "\nSphinx error!\n\nVersions\n========\n\n* Platform:         linux; (Linux-6.17.0-1022-azure-x86_64-with-glibc2.39)\n* Python version:   3.12.14 (CPython)\n* Sphinx version:   9.1.0\n* Docutils version: 0.21.2\n* Jinja2 version:   3.1.6\n* Pygments version: 2.21.0\n\nLast Messages\n=============\n\n    done\n    building [mo]: targets for 0 po files that are out of date\n    writing output...\n\n    building [html]: targets for 0 source files that are out of date\n    updating environment:\n    [new config]\n    0 added, 0 changed, 0 removed\n    reading sources...\n\nLoaded Extensions\n=================\n\n* sphinx.ext.mathjax (9.1.0)\n* alabaster (1.0.0)\n* sphinxcontrib.applehelp (2.0.0)\n* sphinxcontrib.devhelp (2.0.0)\n* sphinxcontrib.htmlhelp (2.1.0)\n* sphinxcontrib.serializinghtml (2.0.0)\n* sphinxcontrib.qthelp (2.0.0)\n* sphinx_data_viewer (0.1.5)\n* sphinxcontrib.jquery (4.1)\n* sphinx.ext.graphviz (9.1.0)\n* sphinx_needs (8.5.0)\n\nTraceback\n=========\n\n      File \"/home/runner/work/sphinx-ultra/sphinx-ultra/tools/oracle_profiles/local_needs/.venv/lib/python3.12/site-packages/sphinx/builders/__init__.py\", line 568, in read\n        raise SphinxError(msg % master_doc_path)\n    sphinx.errors.SphinxError: Sphinx is unable to load the master document (<SRCDIR>/index.rst). The master document must be within the source directory or a subdirectory of it.\n\n\nThe full traceback has been saved in:\n/tmp/sphinx-err-7img4j7t.log\n\nTo report this error to the developers, please open an issue at <https://github.com/sphinx-doc/sphinx/issues/>. Thanks!\nPlease also report this if it was a user error, so that a better error message can be provided next time.\n"
+      "warnings": "\nSphinx error!\n\n    sphinx.errors.SphinxError: Sphinx is unable to load the master document (<SRCDIR>/index.rst). The master document must be within the source directory or a subdirectory of it.\n"
     },
     {
       "case_id": "doc_schema_e2e",
@@ -17918,7 +17918,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "51909f423f1fce9689e8d622711e30ad4fb052a5e6e25b7670a96367b5a4fc7f",
+          "sha256": "be2af96300b2b15c9cff09120504f29cf9b22fd05f7fc16890f0d0400d27a5cd",
           "size": 5389,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_schema_e2e/schema_violations.json"
@@ -17990,7 +17990,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "513b42ab1e2ae31ba422c3b0734144af9bb3ab58f108ca2362eee270145f4a0c",
+      "tree_sha256": "e02e9776c574df387c7ed2a3dfa9b84f7221be72af83d0fb3d09796d16f9316e",
       "warnings": "WARNING: Need 'FEAt' has schema warnings:\n  Severity:       warning\n  Field:          id\n  Need path:      FEAt\n  Schema path:    [0] > local > properties > id > pattern\n  User message:   id must be uppercase with numbers and underscores\n  Schema message: \"FEAt\" does not match \"^[A-Z0-9_]+$\" [sn_schema_warning.local_fail]\nERROR: Need 'SPEC_MISSING_APPROVAL' has schema violations:\n  Severity:       violation\n  Need path:      SPEC_MISSING_APPROVAL\n  Schema path:    spec[1] > local > unevaluatedProperties\n  Schema message: Unevaluated properties are not allowed ('priority', 'asil' were unexpected) [sn_schema_violation.local_fail]\nERROR: Need 'SPEC_MISSING_APPROVAL' has schema violations:\n  Severity:       violation\n  Need path:      SPEC_MISSING_APPROVAL\n  Schema path:    spec-approved-required[2] > local > required\n  User message:   Approval required due to high efforts\n  Schema message: \"approved\" is a required property [sn_schema_violation.local_fail]\nWARNING: Need 'SPEC_MISSING_APPROVAL' has schema infos:\n  Severity:       info\n  Need path:      SPEC_MISSING_APPROVAL\n  Schema path:    spec-approved-not-given[3] > local > required\n  User message:   Approval not given\n  Schema message: \"approved\" is a required property [sn_schema_info.local_fail]\nERROR: Need 'SPEC' has schema violations:\n  Severity:       violation\n  Field:          id\n  Need path:      SPEC\n  Schema path:    spec[1] > local > properties > id > pattern\n  Schema message: \"SPEC\" does not match \"^SPEC_[a-zA-Z0-9_-]*$\" [sn_schema_violation.local_fail]\nERROR: Need 'SPEC' has schema violations:\n  Severity:       violation\n  Need path:      SPEC\n  Schema path:    spec[1] > local > unevaluatedProperties\n  Schema message: Unevaluated properties are not allowed ('priority', 'asil' were unexpected) [sn_schema_violation.local_fail]\nERROR: Need 'SPEC_SAFE_UNSAFE_FEAT' has schema violations:\n  Severity:       violation\n  Need path:      SPEC_SAFE_UNSAFE_FEAT\n  Schema path:    spec[1] > local > unevaluatedProperties\n  Schema message: Unevaluated properties are not allowed ('priority', 'asil', 'approved', 'links' were unexpected) [sn_schema_violation.local_fail]\nERROR: Need 'SPEC_SAFE_UNSAFE_FEAT' has schema violations:\n  Severity:       violation\n  Need path:      SPEC_SAFE_UNSAFE_FEAT > links\n  Schema path:    safe-spec-[links]->safe-feat[4] > validate > network > links > contains\n  Schema message: Too few valid links of type 'links' (0 < 1) / nok: FEAT\n\n    Details for FEAT\n    Field:          asil\n    Need path:      SPEC_SAFE_UNSAFE_FEAT > links > FEAT\n    Schema path:    safe-spec-[links]->safe-feat[4] > validate > network > links > contains > local > allOf > 0 > properties > asil > enum\n    Schema message: \"QM\" is not one of \"A\", \"B\" or 2 other candidates [sn_schema_violation.network_contains_too_few]\nERROR: Need 'SPEC_SAFE_ADD_UNSAFE_FEAT' has schema violations:\n  Severity:       violation\n  Need path:      SPEC_SAFE_ADD_UNSAFE_FEAT\n  Schema path:    spec[1] > local > unevaluatedProperties\n  Schema message: Unevaluated properties are not allowed ('priority', 'asil', 'approved', 'links' were unexpected) [sn_schema_violation.local_fail]\nERROR: Need 'SPEC_SAFE' has schema violations:\n  Severity:       violation\n  Need path:      SPEC_SAFE\n  Schema path:    spec[1] > local > unevaluatedProperties\n  Schema message: Unevaluated properties are not allowed ('priority', 'asil', 'approved', 'links' were unexpected) [sn_schema_violation.local_fail]\n"
     },
     {
@@ -18260,8 +18260,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "3170466bae3b70d531cb3c53b7d47a4da1daf620cac8669b6b2e2e093102c819",
-          "size": 214,
+          "sha256": "449c47ddcf1b99eededffccffb3ea08919b75cdf9e2faca4789c8cd8674e748f",
+          "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_schema_example/schema_violations.json"
         },
@@ -18339,7 +18339,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "994425ed7ea490b00d5a6ad22b829ed614a484719a56bdb796033b0ab00f0eb4",
+      "tree_sha256": "e7242c1188ada706eac618c2f5c2bfd319a626cfbbb1dfb94f3e6f7d719df1f8",
       "warnings": ""
     },
     {
@@ -18602,7 +18602,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "1f3a53445a0096e2471279f4196fc6904fef2f7d457881f631eca4be14afbe68",
+          "sha256": "5221f59ccbc58513ac95c1b91575e91906a717d9c4e9556f316833130fc888b8",
           "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_schema_incremental/schema_violations.json"
@@ -18665,7 +18665,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "8206c48036e46d44fc175dda550f3ace7649be80ecf885fe8a4bcd2d574cfb85",
+      "tree_sha256": "76b2950696645d2d318e0b00add3bde54df562e967d051fa6542a95b69fe2816",
       "warnings": ""
     },
     {
@@ -18729,7 +18729,7 @@
       "source_set": "sphinx_needs_doc_tests",
       "status": "reference-crash",
       "tree_sha256": "a0e3a75c2ce1b55a84409b7c0225aa8f6c4aa4d0143e4af3d3a99149341c2999",
-      "warnings": "<SRCDIR>/index.rst:4: WARNING: \"query\" or \"specific\" missing as option for github service. [needs.github]\n\n\nVersions\n========\n\n* Platform:         linux; (Linux-6.17.0-1022-azure-x86_64-with-glibc2.39)\n* Python version:   3.12.14 (CPython)\n* Sphinx version:   9.1.0\n* Docutils version: 0.21.2\n* Jinja2 version:   3.1.6\n* Pygments version: 2.21.0\n\nLast Messages\n=============\n\n    building [html]: targets for 1 source files that are out of date\n    updating environment:\n    [new config]\n    1 added, 0 changed, 0 removed\n\n    reading sources... [100%]\n    index\n\n    Service github-issues requesting data for query: repo:useblocks/sphinx-needs is:issue\n    Needs successfully exported\n\nLoaded Extensions\n=================\n\n* sphinx.ext.mathjax (9.1.0)\n* alabaster (1.0.0)\n* sphinxcontrib.applehelp (2.0.0)\n* sphinxcontrib.devhelp (2.0.0)\n* sphinxcontrib.htmlhelp (2.1.0)\n* sphinxcontrib.serializinghtml (2.0.0)\n* sphinxcontrib.qthelp (2.0.0)\n* sphinx_data_viewer (0.1.5)\n* sphinxcontrib.jquery (4.1)\n* sphinx.ext.graphviz (9.1.0)\n* sphinx_needs (8.5.0)\n\nTraceback\n=========\n\n      File \"/home/runner/work/sphinx-ultra/sphinx-ultra/tools/html_oracle_runner.py\", line 20, in reject_network\n        raise RuntimeError(\"network disabled by html oracle\")\n    RuntimeError: network disabled by html oracle\n\n\nThe full traceback has been saved in:\n/tmp/sphinx-err-zeqsi0y0.log\n\nTo report this error to the developers, please open an issue at <https://github.com/sphinx-doc/sphinx/issues/>. Thanks!\nPlease also report this if it was a user error, so that a better error message can be provided next time.\n"
+      "warnings": "<SRCDIR>/index.rst:4: WARNING: \"query\" or \"specific\" missing as option for github service. [needs.github]\n\n\n    RuntimeError: network disabled by html oracle\n"
     },
     {
       "case_id": "doc_style_blank",
@@ -18991,7 +18991,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "dc7021d9b134db797f70bff89b9114ce7d96a092cba1e0d3cfc6a11086f22dd9",
+          "sha256": "9579d6a8da7a9f0cdaa8fb79a76d03bcfd06325057c2cbe85a210ef16534075c",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_style_blank/schema_violations.json"
@@ -19049,7 +19049,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "cb4098e25f606ac65a15df6a9f102e7fbd45adfbcea47a5ba8f0ad51b4e0cae5",
+      "tree_sha256": "835dc25ace7adc8acb3983c5b2b1718428b4408bc41aff940eb65f8020d79e85",
       "warnings": ""
     },
     {
@@ -19060,7 +19060,7 @@
       "files": [
         {
           "logical_path": ".buildinfo",
-          "sha256": "d8d6f4480e827b9bc3c11a0cb8ca6b1638da8dd06450c7ac3902e45af4ff2149",
+          "sha256": "fa1992474c6eb64ce065ab11b8c63f78a368b495756932edca198bc6c1f8d6d3",
           "size": 231,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_style_custom/.buildinfo"
@@ -19312,7 +19312,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "967c2bb60c5601a2919a18b87aa371b5bff6308f6748d08aa407a1741e3f8607",
+          "sha256": "9f2d1208669f128bbe23b048b783cddae0498f212ee7a5c1230ed51d2926091c",
           "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_style_custom/schema_violations.json"
@@ -19377,7 +19377,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "cc89af7d747895cb49124218d92b0a568d7ecc3cfd6b991958b914af2cb996f7",
+      "tree_sha256": "ded8c2da39075443f96a672ed393511e6ff22beb41ae595459dd8314028a4835",
       "warnings": ""
     },
     {
@@ -19640,7 +19640,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "0224f088cbdbfc9a271820c1a2091d7d9f9da3f3c9a94131be1e0163c99d0613",
+          "sha256": "68511d05b4db35b7e27e744496b4e67f6e7bc3e870ee355cde90493014e8103c",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_style_modern/schema_violations.json"
@@ -19699,7 +19699,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "37bb8c047baca533c05ff3f595e25bf81b33db4d1239482d88527e3a971bbebf",
+      "tree_sha256": "c9648c6f28104d1af749ab3c106a77fa2d559d633b797d8dc80f448947ab8f48",
       "warnings": ""
     },
     {
@@ -19955,7 +19955,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "577067edc0013d4ad5d4c32aadbe427e524588add0d86ee3c53edbdd29394cc3",
+          "sha256": "5f671047d573334ae271dd78d53ea569183910179c5bbe39b1dbd561863a66d6",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_style_unknown/schema_violations.json"
@@ -20013,7 +20013,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "1df87dffbbf969629cabea65862bda09666461b0a6973b0781eb9a50dccab916",
+      "tree_sha256": "b3a937356065f6a5a143c5b9cdf3c54535ad65053da203ad8671dee3d7c5d4f5",
       "warnings": "WARNING: needs_css not an existing file: UNKNOWN.css [needs.config]\n"
     },
     {
@@ -20303,8 +20303,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "514b35750830ea8dc80b739dd0762dbd787d6e1e981a64cbd9ddde9b92d3b609",
-          "size": 214,
+          "sha256": "97dc9ab4041a00c5916e58c34695118ee4b75d21ae0c967aefe6c2042adaaa50",
+          "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_variant_data/schema_violations.json"
         },
@@ -20367,7 +20367,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "8ae75eb3b5c55a45aca585cd24c1f5b697edefdf992f6072197561cf423df50f",
+      "tree_sha256": "8c21d0ca5c5188d8226660152593027845dc1992aada65b650f90e57cd82c134",
       "warnings": "WARNING: wrong_platform: failed\n\t\tfailed needs: 1 (REQ_002)\n\t\tused filter: platform is not None and var.platform != platform [needs.warnings]\n"
     },
     {
@@ -20630,7 +20630,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "56fbecb283f9ec14c905e38ed56a2593c20807fab98baf8c515dc6dc284d5b0a",
+          "sha256": "bd1f247cd542d91621b60b587f487b7368df02b25ee6a417aea7dea9065a7395",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_variant_data_config_inited/schema_violations.json"
@@ -20696,7 +20696,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "46d19fb4169f46d80fc99432e7b1bc55b7c02678a08061e189081219e9ce586f",
+      "tree_sha256": "e57b6a14143acaf1efc96f508d791dd6beb85e95b2598d7e5bd47d485ae73ac9",
       "warnings": ""
     },
     {
@@ -20959,7 +20959,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "4826ef6e45c59244148d82cef48a451f94a5c10519de9a3cdaa02bd2082ff25a",
+          "sha256": "685d9ad4106cd729c597562bbbb7ee71cd89ddadabce78d0f8a97babec6bff2c",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_variant_data_extension_write/schema_violations.json"
@@ -21024,7 +21024,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "7d6a5ec6fe6ce27506383dedc157bc071cc5da6094faf2103944727272ab851b",
+      "tree_sha256": "5e1afdd1bf0dfb5f625ee08df31ec85893b538c67ad5a918dde1861c05086e6b",
       "warnings": ""
     },
     {
@@ -21294,7 +21294,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "417a03309000bcefc3549cdfc915a1ede165d899198be6e15e482a1700e12049",
+          "sha256": "20498018682f0aa23c386ac031eb5143261f57823dfc4609fa9522e95f34d876",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_variant_data_field_errors/schema_violations.json"
@@ -21352,7 +21352,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "6f8fc6ce08ed601e5f3591e17ef39bbcdc597a535d450015cce21639afb1dd2e",
+      "tree_sha256": "c883655190e5c500e0210362d41c4e5ad44edfe2df6a9dae4c00213ad8a3ada0",
       "warnings": "<SRCDIR>/index.rst:4: WARNING: Error while resolving dynamic values for field 'mystring', of need 'REQ_SYNTAX': variant data reference 'platform' is invalid: expected a dotted 'var.*' path [needs.dynamic_function]\n<SRCDIR>/index.rst:8: WARNING: Error while resolving dynamic values for field 'mystring', of need 'REQ_MISSING': Unknown variant data key: 'var.nonexistent' [needs.dynamic_function]\n<SRCDIR>/index.rst:12: WARNING: Error while resolving dynamic values for field 'mystring', of need 'REQ_MISSING_NESTED': Unknown variant data key: 'var.build.missing' [needs.dynamic_function]\n<SRCDIR>/index.rst:16: WARNING: Error while resolving dynamic values for field 'myint', of need 'REQ_BADTYPE_STR': variant data value <class 'str'> is not of type 'integer' [needs.dynamic_function]\n<SRCDIR>/index.rst:20: WARNING: Error while resolving dynamic values for field 'mystring', of need 'REQ_BADTYPE_STRING': variant data reference 'var.build' resolves to a mapping ('var.build'); access a leaf value instead [needs.dynamic_function]\n<SRCDIR>/index.rst:24: WARNING: Error while resolving dynamic values for field 'myarray', of need 'REQ_BADTYPE_ARRAY': variant data value <class 'int'> is not of type 'array' or item type 'string' [needs.dynamic_function]\n"
     },
     {
@@ -21622,7 +21622,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "169e7cf46053a3a1f1723abc4320f7f8434e915474b0691ab0930be31f83a28e",
+          "sha256": "f0f4e4d06f87bd34c76dc9a37300a969686a3c63f310b32f20d2be894ef666c4",
           "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_variant_data_fields/schema_violations.json"
@@ -21680,7 +21680,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "d3d87d65a72c8566bb6b594b3942513f6d01a10b7684e533929d1c8efa424ef4",
+      "tree_sha256": "f234ebe87a6642cb45e313e7b22847bb44b5781e3c64e1efcd4f083353f80f80",
       "warnings": ""
     },
     {
@@ -21943,7 +21943,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ea060657992a086a5796c71e4d7fccb0d8640324f39f47988d3cc36aef5585f1",
+          "sha256": "e983f57a95e41b03a2b66c1894cbe836db3fab08e190e8869a4920ac62b58137",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_variant_data_file/schema_violations.json"
@@ -22008,7 +22008,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "f633f553830600467ed3674cb653ce1c0ea22159dc22b5abb08534b1921da943",
+      "tree_sha256": "e2369a6d34872f07c38bb79aa2fea3e6c733e370ba90e296e148b301db70c3c1",
       "warnings": ""
     },
     {
@@ -23243,7 +23243,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "55b5384f4d2131a61a9f8d4a9400a9e5bc7b26389f37cc3e07cd73e7bcea8e4b",
+          "sha256": "c1d02e34a6ab517a0563fd9049e3e27e4d3f6a903fec84380561568d659d666c",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/doc_warning/schema_violations.json"
@@ -23317,7 +23317,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "72d4cb0275e66562db03a13202eea75562a8439ce8d58897fc60d56a74351c8b",
+      "tree_sha256": "39c2ce29042bb965d5d304e830134d73066ae8b0927c2a70db09345dff3ce7c7",
       "warnings": "<SRCDIR>/index.rst:9: ERROR: Unknown interpreted text role \"unknown0\". [docutils]\n<SRCDIR>/index.rst:16: ERROR: Unknown interpreted text role \"unknown1\". [docutils]\n<SRCDIR>/index.rst:24: ERROR: Unknown interpreted text role \"unknown2\". [docutils]\n<SRCDIR>/index.rst:31: ERROR: Unknown interpreted text role \"unknown3\". [docutils]\n<SRCDIR>/index.rst:6: ERROR: Unknown interpreted text role \"unknown4\". [docutils]\n"
     },
     {
@@ -23614,8 +23614,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "a2f1ce8820a5fa0d5e0e9550fff6cb2d66f53e9cbc441ed12361d686a6225857",
-          "size": 212,
+          "sha256": "a1150452c3ad0a7462f701cff8483ec4a91ac2fa2e7f014c772a9b49d1888bda",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/extra_options/schema_violations.json"
         },
@@ -23672,7 +23672,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "8505c7241e1132181ef0662e3338760acf2dbff4421d0431c9ae754110aee07f",
+      "tree_sha256": "192feedd5539ee784d5d8b9a4e8ec265ebeb3fbbf960ec3eacafae1b621586c1",
       "warnings": "WARNING: Config option \"needs_extra_options\" is deprecated. Please use \"needs_fields\" instead. [needs.deprecated]\nWARNING: Duplicate need field 'introduced', registered via add_field('When was this need introduced?') and needs_fields('When was this need introduced?'). [needs.config]\nWARNING: needs_fields key is not a string: 1 [needs.config]\nWARNING: needs_fields entry for 'a' is not a dict: 1 [needs.config]\n"
     },
     {
@@ -23982,7 +23982,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "d808134c57e35f040c4a1042de9f1f55efdb46c30086b2f1ecdb979579c3855f",
+          "sha256": "66856f8ce5b717f11dc125fc0031fc82f1b28e24bbdc67b10f247e66cbef4480",
           "size": 215,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/import_doc/schema_violations.json"
@@ -24101,7 +24101,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "a01adceb44ea2cf4d3baeb54c36ebcbe98ecfef8ba0dff8fb2a9c8ea3486d39a",
+      "tree_sha256": "070d3b9c1a5ceca41dda0070aaeb69ee74c8bb8df36cfd0b54ce33d459d300b2",
       "warnings": ""
     },
     {
@@ -24427,7 +24427,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "a5928daa2efca423774e86507d87f7712f364b69b033dc7cbc2e09011b35fd95",
+          "sha256": "897fff569428f8706f22f7797ce8e2be1fe48b06fae14498da2c7c108ff6e983",
           "size": 215,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/import_doc_invalid/schema_violations.json"
@@ -24499,7 +24499,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "1b76c71b6165dd7551a534c3cd09a95644c3a105174380fc45a2b1f3be7e4198",
+      "tree_sha256": "e332583f0a852444191f51471144ded6d4426e4c1329bc60399aeb8d5f832ef1",
       "warnings": ""
     },
     {
@@ -25097,8 +25097,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ada373a07cb02aa66760e95640311f4f8b354f80e9f073a01a40add7479d316f",
-          "size": 212,
+          "sha256": "9fb49bb767354a6b93b99dcfe4c24f98320332e5e4fdebf87bb488427f8c8852",
+          "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/multiple_link_backs/schema_violations.json"
         },
@@ -25155,7 +25155,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "a9ead24d0355e23c8906bdb749f914992b5c95aa2e8e3365c576262a0b53d1b7",
+      "tree_sha256": "c927744df4e934125a8be6d0598c8860b1eb4542a51e833b3126669189eb3f79",
       "warnings": ""
     },
     {
@@ -25780,7 +25780,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "7414c0f2f5bfac074a77801256d5b98a0f829cbddce992d824e100aae46c3a51",
+          "sha256": "df027c204ec61637c3b5f1f970be25e780f98c411cfd780f1353f88ff247d8b7",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/needextract_with_nested_needs/schema_violations.json"
@@ -25845,7 +25845,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "aef6dd6d92bab58c90dcf42c3580df1307d80ba19f4249fc180a5840322aafed",
+      "tree_sha256": "bf3013991002871c847cd6538fe252a303fb0ab3cbf6b2cb85bd80454279a9a8",
       "warnings": ""
     },
     {
@@ -26177,7 +26177,7 @@
       "files": [
         {
           "logical_path": ".buildinfo",
-          "sha256": "e50eb7ac001ba9a7e14eb9dba4b44523e51452544d1161672ba97e2e3834af74",
+          "sha256": "8af5418eae551729b1bb8295559a17bd216a0a1073d7b3d8f5f003b2b594359f",
           "size": 231,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/needs_from_toml/.buildinfo"
@@ -26436,8 +26436,8 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ba31dcfbcc24d37746f58dbe7d599ecb63537e89317b0f4a06784acb83512866",
-          "size": 214,
+          "sha256": "ee946fa558d1aa270998c94bfbbf98fcb24409d1c64d5915774eb4d3dc7ea174",
+          "size": 212,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/needs_from_toml/schema_violations.json"
         },
@@ -26516,7 +26516,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "24fa9e6bcb3d0c9d0c8086f6c379d164f6ef94a04435f86ae66abd03f6eeb1e9",
+      "tree_sha256": "b28c05a27c8cd2c9636e17128d3f7a3e62e21cf7ce9f42beace5f2239d14d268",
       "warnings": ""
     },
     {
@@ -26779,7 +26779,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "ae11171beaca0df1b0fde6671ac80f4568b9db6c3ba093855e6297c0ba249ed3",
+          "sha256": "0a12c7a5fab866642af923b0c8e9ca7b81ac8a4a2e4d6a227dc79272f53f6d01",
           "size": 208,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/non_exists_file_import/schema_violations.json"
@@ -26793,7 +26793,7 @@
         },
         {
           "logical_path": "searchindex.js",
-          "sha256": "96a900a71d0c1e7b9a2653cfffe1b682edcad28a6e32afa3a7256bcee04516ed",
+          "sha256": "79e34539f037841b32289b2e12607e67f7ed1c0b652c3604d0350fb193d0ea53",
           "size": 766,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/non_exists_file_import/searchindex.js"
@@ -26837,7 +26837,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "666763a366fb24fe3e1663729ba5134894a4a17974056623ce34a1f0503f7b77",
+      "tree_sha256": "080aa44d92af1f17713b9a7ab783aa9ab3ccb7a090bf9e65ff48e57597df2494",
       "warnings": "<SRCDIR>/index.rst:4: WARNING: Could not load needs import file <SRCDIR>/non_exists_file.json [needs.needimport]\n"
     },
     {
@@ -27170,7 +27170,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "f1f3cb7fe7fde03df294a5994e1e3d0e333cc34d117484cf8764d31340065918",
+          "sha256": "ef2aef508526e7d339f023b4a867f89b7199445f12219999343c5ba4d41264b9",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/parallel_doc/schema_violations.json"
@@ -27270,7 +27270,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "399bf2078b6161f0481cdc79a91e5a67ccfaba0593cc805a03f273e773c01cdf",
+      "tree_sha256": "56584ad0a6b142d6bd8257e6cc9c326418fa81eb85857992ba277073d472e07d",
       "warnings": "WARNING: needs_filter_data is deprecated and will be removed in a future version. Use needs_variant_data instead. [needs.deprecated]\n<SRCDIR>/page_5.rst:4: WARNING: Need could not be created: A need with ID 'STORY_PAGE_1' already exists. [needs.create_need]\n"
     },
     {
@@ -27585,7 +27585,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "94e9d09d2a79c6a6da04c20a448f87a083abeeef2ed8fe3311e648b4fb472109",
+          "sha256": "93ff93f6f4c98610d897f4d1c1c9f46912d3b17c6ec156e0758a4981f89506a1",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/plantuml_unconfigured/schema_violations.json"
@@ -27643,7 +27643,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "0bc6aa69b732f5aaa67b7328cd807f772a78b93fddaf6937421915780bb67834",
+      "tree_sha256": "32224d9a52c18e3fa42d4bf6556690d4372f0c483df69b390d8af5e1b778067d",
       "warnings": "<SRCDIR>/index.rst:24: WARNING: PlantUML is not available, so the diagram was not rendered. Install 'sphinxcontrib-plantuml' and add it to the 'extensions' list to render it. [needs.needuml]\n"
     },
     {
@@ -27939,7 +27939,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "de339f55565b253b5c5ed242f97f874d7463942f6503aa2cc139f88d21e926a6",
+          "sha256": "7cc49ff014feaabe43fb608cf96e331d9d0da625e79e56ab7025c048e57ca031",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/schema_typing/schema_violations.json"
@@ -28004,7 +28004,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "cd34a04d4a19738aa15fea0cf636242282b640fe62077a43b5f181a6048b1ed5",
+      "tree_sha256": "b25ebb7c87e6d8ad699cb0ea61c4f8e65e29038391ef721c4dada846c3d690af",
       "warnings": ""
     },
     {
@@ -28033,7 +28033,7 @@
       "needs_exit_code": 2,
       "needs_json": null,
       "needs_status": "build-error",
-      "needs_warnings": "\nConfiguration error!\n\nVersions\n========\n\n* Platform:         linux; (Linux-6.17.0-1022-azure-x86_64-with-glibc2.39)\n* Python version:   3.12.14 (CPython)\n* Sphinx version:   9.1.0\n* Docutils version: 0.21.2\n* Jinja2 version:   3.1.6\n* Pygments version: 2.21.0\n\nLast Messages\n=============\n\nNone.\n\nLoaded Extensions\n=================\n\nNone.\n\nTraceback\n=========\n\n      File \"/home/runner/work/sphinx-ultra/sphinx-ultra/tools/oracle_profiles/local_needs/.venv/lib/python3.12/site-packages/sphinx/config.py\", line 611, in eval_config_file\n        raise ConfigError(msg % traceback.format_exc()) from exc\n    sphinx.errors.ConfigError: There is a programmable error in your configuration file:\n    \n    Traceback (most recent call last):\n      File \"/home/runner/work/sphinx-ultra/sphinx-ultra/tools/oracle_profiles/local_needs/.venv/lib/python3.12/site-packages/sphinx/config.py\", line 596, in eval_config_file\n        exec(code, namespace)  # NoQA: S102\n        ^^^^^^^^^^^^^^^^^^^^^\n      File \"<SRCDIR>/conf.py\", line 1, in <module>\n        from tests.test_services.test_service_basics import NoDebugService, ServiceTest\n    ModuleNotFoundError: No module named 'tests.test_services'\n\n\nThe full traceback has been saved in:\n/tmp/sphinx-err-0ukxqxo0.log\n\nTo report this error to the developers, please open an issue at <https://github.com/sphinx-doc/sphinx/issues/>. Thanks!\nPlease also report this if it was a user error, so that a better error message can be provided next time.\n",
+      "needs_warnings": "\nConfiguration error!\n\n    ModuleNotFoundError: No module named 'tests.test_services'\n",
       "origin": {
         "origin_path": "packages/sphinx-needs/tests/doc_test/service_doc",
         "pytest_node_ids": [
@@ -28046,7 +28046,7 @@
       "source_set": "sphinx_needs_doc_tests",
       "status": "build-error",
       "tree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "warnings": "\nConfiguration error!\n\nVersions\n========\n\n* Platform:         linux; (Linux-6.17.0-1022-azure-x86_64-with-glibc2.39)\n* Python version:   3.12.14 (CPython)\n* Sphinx version:   9.1.0\n* Docutils version: 0.21.2\n* Jinja2 version:   3.1.6\n* Pygments version: 2.21.0\n\nLast Messages\n=============\n\nNone.\n\nLoaded Extensions\n=================\n\nNone.\n\nTraceback\n=========\n\n      File \"/home/runner/work/sphinx-ultra/sphinx-ultra/tools/oracle_profiles/local_needs/.venv/lib/python3.12/site-packages/sphinx/config.py\", line 611, in eval_config_file\n        raise ConfigError(msg % traceback.format_exc()) from exc\n    sphinx.errors.ConfigError: There is a programmable error in your configuration file:\n    \n    Traceback (most recent call last):\n      File \"/home/runner/work/sphinx-ultra/sphinx-ultra/tools/oracle_profiles/local_needs/.venv/lib/python3.12/site-packages/sphinx/config.py\", line 596, in eval_config_file\n        exec(code, namespace)  # NoQA: S102\n        ^^^^^^^^^^^^^^^^^^^^^\n      File \"<SRCDIR>/conf.py\", line 1, in <module>\n        from tests.test_services.test_service_basics import NoDebugService, ServiceTest\n    ModuleNotFoundError: No module named 'tests.test_services'\n\n\nThe full traceback has been saved in:\n/tmp/sphinx-err-v3s2zw5x.log\n\nTo report this error to the developers, please open an issue at <https://github.com/sphinx-doc/sphinx/issues/>. Thanks!\nPlease also report this if it was a user error, so that a better error message can be provided next time.\n"
+      "warnings": "\nConfiguration error!\n\n    ModuleNotFoundError: No module named 'tests.test_services'\n"
     },
     {
       "case_id": "title_from_content",
@@ -28308,7 +28308,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "69275862a5e037fca559adaa0f099298f0bcb2a55ea8df8fbe273eb4c4c5e54d",
+          "sha256": "04aceaeda5c0cd28b12745bdd7c459cf6e4e1fe1bb72c33a5c5bf88c1c41fe52",
           "size": 215,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/title_from_content/schema_violations.json"
@@ -28366,7 +28366,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "a792fd9eabf1e4cfb731b07a94a8209940d8f9cb702ac50bdf44f10533671b8b",
+      "tree_sha256": "ebf59aaae6be3b2872e10df0b031f4ab82deed0bc3d3ae345bc018971c6b2ef3",
       "warnings": "<SRCDIR>/index.rst:47: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n<SRCDIR>/index.rst:53: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n<SRCDIR>/index.rst:58: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n<SRCDIR>/index.rst:66: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n"
     },
     {
@@ -28629,7 +28629,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "b2e338c859c8f82e90f26ac820db8833d19544255b8f801668c408607fd9ed05",
+          "sha256": "8bdfd9cbfd4edb4ea0432409298e62a321ed69140c6908e3e5e51979380cf61a",
           "size": 215,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/title_optional/schema_violations.json"
@@ -28687,7 +28687,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "3d1ca2043e13c510dd565b4ec4fd815965cfaf0875bfb7dbaa5fdc6aed6b3549",
+      "tree_sha256": "1719a790a56593fa04920c199e8e7bf4e1ff207bbf466d2e4d1a9e8c5b509905",
       "warnings": "<SRCDIR>/index.rst:52: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n<SRCDIR>/index.rst:60: WARNING: title_from_content set to True, but a title was provided. [needs.directive]\n"
     },
     {
@@ -28950,7 +28950,7 @@
         },
         {
           "logical_path": "schema_violations.json",
-          "sha256": "179f0086f007e0c1be6e19964494541e3847d5a92dd300455561cf9c706e79d6",
+          "sha256": "2926e8a1ccfe1f7a928ff8da0f7291591286c86ed7d158fdda3a776e6628cc4d",
           "size": 214,
           "storage": "ref",
           "storage_path": "refs/sphinx_needs_doc_tests/unicode_support/schema_violations.json"
@@ -29008,7 +29008,7 @@
       "profile": "local_needs",
       "source_set": "sphinx_needs_doc_tests",
       "status": "built",
-      "tree_sha256": "8d2cb0995d4693d8afe58c0c26d47702090975638a7d667ac0960adce50a8296",
+      "tree_sha256": "cfc99f14efbebbcbcb19c81a1d82e9968043ac2f3abed7ffcbbc0ec9355091c4",
       "warnings": ""
     },
     {
