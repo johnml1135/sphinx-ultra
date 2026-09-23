@@ -158,3 +158,49 @@ over every runnable case and emits a complete, grouped failure report.
   to matching `profile/source_set/case_id` keys.
 - The existing seven `tests/fixtures/*` HTML projects and the env/sphinx/
   docutils fixtures are **read only**; nothing in `src/` changes.
+
+## Round 2 (re-review of f4a06d2) — decisions
+
+1. **Local-needs determinism — ACCEPT.** `tools/html_oracle_runner.py`
+   installs determinism shims before importing Sphinx, for every profile:
+   `uuid.uuid4` is replaced by a per-process counter
+   (`uuid.UUID(int=n, version=4)`, n = 1, 2, ...), and local-needs builds pass
+   `-D needs_reproducible_json=1`. The shim list is recorded in each profile
+   record (`determinism_shims: list[str]`). Test: build one local-needs project
+   that emits both need HTML and `needs.json` twice under different roots and
+   assert identical bytes. Ultra's IDs will not match the shimmed IDs until
+   Ultra adopts the same scheme; that's an honest known-red mismatch, not
+   something to hide.
+2. **Warnings capture — ACCEPT.** The child runs Sphinx with `-q -w
+   <warnings-file>`; the `warnings` field is that file only (normalized per the
+   table). Combined stdout+stderr is kept only for traceback/status
+   classification, and is not stored in `warnings`. Ultra is also run with
+   `-q -w <file>`, and its warnings are compared from that file.
+3. **`--verify` — ACCEPT.** `--verify --profile core` and `--verify --profile
+   local_needs --needs-root ...` are separate commands, each run in its own
+   locked environment. Task 9 runs both.
+4. **Fresh run dirs — ACCEPT.** Delete and recreate each case's run directory
+   before spawning Ultra; add a repeat-run test.
+5. **PlantUML detection — ACCEPT.** AST detection covers `extensions` list
+   entries, `import sphinxcontrib.plantuml`, and `app.setup_extension(...)`
+   calls; `plantuml_from_app_extension` is the regression case.
+6. **Reverse artifact validation — ACCEPT.** Validation fails on any file under
+   `inputs/`, `refs/` or `blobs/` that the ledger doesn't reference, except
+   `index.json`, `NOTICE.md` and per-case `warnings.txt`.
+
+## Added scope (user request): `needs.json` oracle layer
+
+For every local-needs case whose HTML reference status is `built` or
+`build-error`, the generator performs a second reference build with `-b needs
+-D needs_reproducible_json=1` into a separate output root and captures
+`needs.json` as a second artifact on the same case, stored at
+`refs/local_needs/sphinx_needs_doc_tests/<case_id>/needs/needs.json`. Schema:
+add `needs_json: FileRecord | null` and `needs_status: CaseStatus | null`
+(with `needs_exit_code`, `needs_warnings`) to `CaseRecord`, null for core
+cases. Policy: parse JSON, compare values with object-key order ignored and
+array order preserved. The exhaustive run invokes Ultra with `-b needs` for
+these cases; if Ultra rejects the builder, that's a `needs-builder` category
+mismatch, reported separately in `report.md`/`report.json` from HTML
+mismatches. `needs.json` files that an HTML build writes (because the project
+sets `needs_build_json = True`) stay in the HTML tree and get the same JSON
+policy.
