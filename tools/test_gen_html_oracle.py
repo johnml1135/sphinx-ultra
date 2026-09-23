@@ -29,6 +29,8 @@ from tools.gen_html_oracle import (
     generate_profile,
     profile_record,
     normalize_warnings,
+    reduce_sphinx_error_report,
+    _find_root_leaks,
     verify_profile_lock,
     store_output_files,
     validate_needs_metadata,
@@ -327,7 +329,7 @@ def test_intersphinx_remote_target_with_local_inventory_is_allowed():
 def _run_runner(
     tmp_path: Path,
     *,
-    conf: str,
+    conf: str | None,
     index: str = "Title\n=====\n",
     extra_args: list[str] | None = None,
 ):
@@ -337,7 +339,8 @@ def _run_runner(
     warnings = tmp_path / "warnings.txt"
     exception_file = tmp_path / "exception.txt"
     source.mkdir()
-    (source / "conf.py").write_text(conf, encoding="utf-8")
+    if conf is not None:
+        (source / "conf.py").write_text(conf, encoding="utf-8")
     (source / "index.rst").write_text(index, encoding="utf-8")
     command = [
         sys.executable,
@@ -421,6 +424,34 @@ def test_child_runner_records_qualified_exception_type(tmp_path, conf_extra, ind
     )
     assert result.returncode == 2
     assert exception_file.read_text(encoding="utf-8") == expected + "\n"
+
+
+def test_real_sphinx_error_report_reduction_keeps_prefix_header_and_exception(tmp_path):
+    result, _output, warnings = _run_runner(tmp_path, conf=None)
+    assert result.returncode == 2, result.stderr
+    raw = warnings.read_bytes()
+    assert b"Versions" in raw
+    assert b"Loaded Extensions" in raw
+    assert b"Traceback" in raw
+
+    source = tmp_path / "src"
+    normalized = normalize_warnings(
+        raw,
+        source,
+        output_root=tmp_path / "out",
+        doctree_root=tmp_path / "doctree",
+        case_root=tmp_path,
+    )
+    reduced = reduce_sphinx_error_report(normalized)
+    assert reduced.startswith("\nConfiguration error!\n")
+    assert "sphinx.errors.ConfigError: config directory doesn't contain a conf.py file" in reduced
+    assert "Versions" not in reduced
+    assert "Loaded Extensions" not in reduced
+    assert "Traceback" not in reduced
+    assert _find_root_leaks(
+        reduced.encode("utf-8"),
+        [source, tmp_path / "out", tmp_path / "doctree", tmp_path],
+    ) == []
 
 
 def test_case_record_stores_exception_type(tmp_path):
@@ -660,6 +691,17 @@ def test_root_leak_report_lists_all_case_files_in_sorted_order():
 def test_profile_record_includes_generator_platform():
     record = profile_record(REPO_ROOT, "core")
     assert record["platform"] == sys.platform
+
+
+def test_profile_lock_digest_normalizes_crlf(tmp_path):
+    lock_path = tmp_path / "tools" / "oracle_profiles" / "core" / "uv.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_bytes(b"version = 1\r\n\r\n[[package]]\r\n")
+    profile = profile_record(tmp_path, "core")
+    assert profile["lock_sha256"] == hashlib.sha256(
+        b"version = 1\n\n[[package]]\n"
+    ).hexdigest()
+    verify_profile_lock(tmp_path, profile)
 
 
 def test_rejects_profile_without_platform(tmp_path):

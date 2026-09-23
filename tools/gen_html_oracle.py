@@ -1130,7 +1130,11 @@ def validate_index_document(document: object, profile_root: Path) -> IndexDocume
 
 def _replace_runtime_root(data: bytes, root: Path, token: bytes) -> bytes:
     for spelling in sorted(_root_spellings(root), key=len, reverse=True):
-        data = re.sub(re.escape(spelling) + rb"(?=[\\/]|$)", token, data)
+        data = re.sub(
+            re.escape(spelling) + rb"(?=[\\/]|$|[^A-Za-z0-9_.-])",
+            token,
+            data,
+        )
     return data
 
 
@@ -1178,6 +1182,50 @@ def normalize_warnings(
         doctree_root=doctree_root,
         case_root=case_root,
     ).decode("utf-8", errors="replace")
+
+
+def reduce_sphinx_error_report(warnings: str) -> str:
+    """Keep stable context from Sphinx's fatal-error report."""
+    lines = warnings.splitlines(keepends=True)
+    header_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if re.fullmatch(r"[A-Za-z][A-Za-z ]+ error!\r?\n?", line)
+        ),
+        None,
+    )
+    if header_index is None:
+        return warnings
+    traceback_index = next(
+        (
+            index
+            for index in range(header_index + 1, len(lines))
+            if lines[index].rstrip("\r\n") == "Traceback"
+        ),
+        None,
+    )
+    if traceback_index is None:
+        return warnings
+    exception_index = next(
+        (
+            index
+            for index in range(len(lines) - 1, traceback_index, -1)
+            if re.fullmatch(r"    [A-Za-z_][A-Za-z0-9_.]*:.*\r?\n?", lines[index])
+        ),
+        None,
+    )
+    if exception_index is None:
+        return warnings
+    exception_end = exception_index + 1
+    while exception_end < len(lines) and lines[exception_end].strip():
+        if not lines[exception_end].startswith("    "):
+            break
+        exception_end += 1
+    prefix = "".join(lines[:header_index])
+    header = lines[header_index].rstrip("\r\n")
+    exception = "".join(lines[exception_index:exception_end]).rstrip("\r\n")
+    return f"{prefix}{header}\n\n{exception}\n"
 
 
 def _write_input_tree(case: DiscoveredCase, profile_root: Path) -> list[FileRecord]:
@@ -1233,7 +1281,9 @@ def profile_record(repo_root: Path, profile: str) -> ProfileRecord:
         "needs_commit": NEEDS_COMMIT if profile == "local_needs" else None,
         "needs_tree": NEEDS_TREE if profile == "local_needs" else None,
         "lock_path": lock_path.relative_to(repo_root).as_posix(),
-        "lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+        "lock_sha256": hashlib.sha256(
+            lock_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        ).hexdigest(),
         "determinism_shims": ["uuid.uuid4=counter"]
         + (["needs_reproducible_json=1"] if profile == "local_needs" else []),
     }
@@ -1247,7 +1297,9 @@ def verify_profile_lock(repo_root: Path, profile: ProfileRecord) -> None:
         raise StorageError(f"profile lock escapes repository: {profile['lock_path']}")
     if not lock_path.is_file():
         raise StorageError(f"profile lock does not exist: {lock_path}")
-    actual_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    actual_digest = hashlib.sha256(
+        lock_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    ).hexdigest()
     if actual_digest != profile["lock_sha256"]:
         raise StorageError(
             f"profile lock_sha256 mismatch for {profile['lock_path']}: "
@@ -1348,6 +1400,8 @@ def _run_reference_case(
                 doctree_root=doctree_root,
                 case_root=temporary,
             )
+            if status in {"build-error", "reference-crash"}:
+                warnings = reduce_sphinx_error_report(warnings)
             warning_leaks = _find_root_leaks(
                 warnings.encode("utf-8"),
                 [source_root, output_root, doctree_root, temporary],
