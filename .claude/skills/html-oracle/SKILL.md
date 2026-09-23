@@ -16,23 +16,33 @@ a reference file.
 ## Fix loop
 
 1. Run the exhaustive diff, optionally narrowed:
-   `HTML_ORACLE_FILTER=<substring> cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture`.
+   `HTML_ORACLE_FILTER=<substring> cargo test --release --test html_differential html_oracle_exhaustive -- --ignored --nocapture`.
    It is **red** by design until parity; nonzero exit is the normal signal.
-2. Open `target/html-oracle/report.md`. Pick from the *most common
-   first-divergence* table: one fix there clears many cases.
+   On a branch that doesn't contain the oracle, build Ultra there and run
+   the test from an oracle checkout with `HTML_ORACLE_ULTRA_BIN=<path to
+   sphinx-ultra>`.
+2. Open `target/html-oracle/report.md`. Pick from the *Common mismatches*
+   table (one mismatch shared across many cases) and the *most common
+   first-divergence* table (grouped by the first differing line's text): one
+   fix there clears many cases.
 3. For a failing case, work in
    `target/html-oracle/runs/<profile>/<source_set>/<case_id>/`: diff
-   `expected/` against `actual/`, and `warnings.txt` against
-   `actual-warnings.txt`. The report prints the exact filter to rerun only
+   `expected/` against `actual/`, and `expected/warnings.txt` against
+   `actual-warnings.txt`. Run dirs of passing cases are deleted unless
+   `HTML_ORACLE_KEEP=all`. The report prints the exact filter to rerun only
    that case.
 4. Fix Ultra under `src/` with a focused unit or e2e test, then rerun the
    filter until the case is green. Done when that case passes and default
    `cargo test` is still green.
 
-Read categories as a locator: `html-body` means content rendering,
-`html-chrome` means the theme/template around the body, `need-field`,
-`missing-need` and `extra-need` point at needs extraction and linking, and
-`status` or `warning` point at diagnostics.
+Read categories as a locator:
+- `html-body` means content rendering, and `html-chrome` the theme/template
+  around the body.
+- `html-body-fallback` means Ultra's page lacks Sphinx's body markers, so its
+  `role="main"`, `<main>` or `<body>` region was diffed instead.
+- `need-field`, `missing-need` and `extra-need` point at needs extraction and
+  linking.
+- `status` and the `warning-*` categories point at diagnostics.
 
 ## Regenerating references
 
