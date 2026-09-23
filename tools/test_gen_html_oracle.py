@@ -76,6 +76,7 @@ def _document(tmp_path: Path) -> dict:
                 "case_id": "case",
                 "status": "built",
                 "exit_code": 0,
+                "exception_type": None,
                 "warnings": "",
                 "excluded_reason": None,
                 "origin": {
@@ -275,11 +276,18 @@ def test_intersphinx_remote_target_with_local_inventory_is_allowed():
     assert classify_project(files) == (None, None)
 
 
-def _run_runner(tmp_path: Path, *, conf: str, index: str = "Title\n=====\n"):
+def _run_runner(
+    tmp_path: Path,
+    *,
+    conf: str,
+    index: str = "Title\n=====\n",
+    extra_args: list[str] | None = None,
+):
     source = tmp_path / "src"
     output = tmp_path / "out"
     doctree = tmp_path / "doctree"
     warnings = tmp_path / "warnings.txt"
+    exception_file = tmp_path / "exception.txt"
     source.mkdir()
     (source / "conf.py").write_text(conf, encoding="utf-8")
     (source / "index.rst").write_text(index, encoding="utf-8")
@@ -298,7 +306,11 @@ def _run_runner(tmp_path: Path, *, conf: str, index: str = "Title\n=====\n"):
         "html",
         "--warnings-file",
         str(warnings),
+        "--exception-file",
+        str(exception_file),
     ]
+    if extra_args:
+        command.extend(extra_args)
     return subprocess.run(command, capture_output=True, text=True), output, warnings
 
 
@@ -330,6 +342,85 @@ def test_child_runner_uses_pinned_core_versions(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (output / "index.html").is_file()
     assert warnings.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.parametrize(
+    ("conf_extra", "index", "expected"),
+    [
+        (
+            "from sphinx.errors import ConfigError\nraise ConfigError('bad config')",
+            "Title\n=====\n",
+            "sphinx.errors.ConfigError",
+        ),
+        (
+            "numfig = True\nnumfig_format = {'figure': 'Figure %s', 'table': 'Table {number}'}",
+            ".. table:: Table\n   :name: table\n\n   =====  =====\n   A      B\n   =====  =====\n   a      b\n   =====  =====\n",
+            "builtins.TypeError",
+        ),
+    ],
+)
+def test_child_runner_records_qualified_exception_type(tmp_path, conf_extra, index, expected):
+    exception_file = tmp_path / "exception.txt"
+    result, _output, _warnings = _run_runner(
+        tmp_path,
+        conf=(
+            "project = 'exception-test'\n"
+            "extensions = []\n"
+            "master_doc = 'index'\n"
+            f"{conf_extra}\n"
+        ),
+        index=index,
+    )
+    assert result.returncode == 2
+    assert exception_file.read_text(encoding="utf-8") == expected + "\n"
+
+
+def test_case_record_stores_exception_type(tmp_path):
+    case = DiscoveredCase(
+        profile="core",
+        source_set="docutils_snippets",
+        case_id="case",
+        origin_path="fixture",
+        files={"index.rst": b"Title\n=====\n"},
+    )
+    record = _case_record_from_result(
+        case,
+        {
+            "status": "reference-crash",
+            "exit_code": 2,
+            "exception_type": "builtins.TypeError",
+            "warnings": "",
+            "output_files": {},
+            "root_leaks": [],
+            "needs_status": None,
+            "needs_exit_code": None,
+            "needs_warnings": None,
+            "needs_json_bytes": None,
+        },
+        tmp_path,
+    )
+    assert record["exception_type"] == "builtins.TypeError"
+
+
+def test_validator_accepts_exception_type_for_reference_crash(tmp_path):
+    document = _document(tmp_path)
+    case = document["cases"][0]
+    case["status"] = "reference-crash"
+    case["exit_code"] = 2
+    case["exception_type"] = "builtins.TypeError"
+    case["input_sha256"] = canonical_hash(
+        [(item["logical_path"], item["sha256"]) for item in case["input_files"]]
+    )
+    case["tree_sha256"] = canonical_hash([])
+    validated = validate_index_document(document, tmp_path)
+    assert validated["cases"][0]["exception_type"] == "builtins.TypeError"
+
+
+def test_validator_rejects_exception_type_for_built_case(tmp_path):
+    document = _document(tmp_path)
+    document["cases"][0]["exception_type"] = "builtins.TypeError"
+    with pytest.raises(SchemaError, match="exception_type"):
+        validate_index_document(document, tmp_path)
 
 
 @pytest.mark.parametrize(

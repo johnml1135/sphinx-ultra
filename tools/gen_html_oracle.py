@@ -97,6 +97,7 @@ CASE_FIELDS = frozenset(
         "case_id",
         "status",
         "exit_code",
+        "exception_type",
         "warnings",
         "excluded_reason",
         "origin",
@@ -147,6 +148,7 @@ class CaseRecord(TypedDict):
     case_id: str
     status: CaseStatus
     exit_code: int | None
+    exception_type: str | None
     warnings: str
     excluded_reason: str | None
     origin: OriginRecord
@@ -972,6 +974,8 @@ def _validate_case(
     _require(status in STATUSES, f"{label}.status has unknown value {status!r}")
     exit_code = value["exit_code"]
     _require(exit_code is None or (isinstance(exit_code, int) and not isinstance(exit_code, bool)), f"{label}.exit_code must be integer or null")
+    exception_type = value["exception_type"]
+    _optional_string(exception_type, f"{label}.exception_type")
     warnings = _string(value["warnings"], f"{label}.warnings")
     excluded_reason = value["excluded_reason"]
     _optional_string(excluded_reason, f"{label}.excluded_reason")
@@ -1020,6 +1024,7 @@ def _validate_case(
 
     if excluded:
         _require(exit_code is None, f"excluded case {label} must have null exit_code")
+        _require(exception_type is None, f"excluded case {label} must have null exception_type")
         _require(warnings == "", f"excluded case {label} must have empty warnings")
         _require(isinstance(excluded_reason, str) and excluded_reason, f"excluded case {label} needs excluded_reason")
         _require(not input_files and not files and needs_json is None, f"excluded case {label} must not have files")
@@ -1029,6 +1034,9 @@ def _validate_case(
         _require(excluded_reason is None, f"{status} case {label} must have null excluded_reason")
         if status == "built":
             _require(exit_code == 0, f"built case {label} must have exit_code 0")
+            _require(exception_type is None, f"built case {label} must have null exception_type")
+        elif status == "reference-crash":
+            _require(isinstance(exception_type, str) and exception_type, f"reference-crash case {label} needs exception_type")
         else:
             _require(exit_code != 0, f"{status} case {label} must have nonzero exit_code")
     if profile == "core":
@@ -1065,6 +1073,7 @@ def _validate_case(
         "case_id": case_id,
         "status": status,
         "exit_code": exit_code,
+        "exception_type": exception_type,
         "warnings": warnings,
         "excluded_reason": excluded_reason,
         "origin": origin,
@@ -1208,6 +1217,7 @@ def _run_reference_case(
             output_root = temporary / name / "output"
             doctree_root = temporary / name / "doctree"
             warnings_path = temporary / name / "warnings.txt"
+            exception_path = temporary / name / "exception.txt"
             command = [
                 sys.executable,
                 str(repo_root / "tools" / "html_oracle_runner.py"),
@@ -1223,6 +1233,8 @@ def _run_reference_case(
                 builder,
                 "--warnings-file",
                 str(warnings_path),
+                "--exception-file",
+                str(exception_path),
             ]
             if needs_root is not None:
                 command.extend(["--needs-root", str(needs_root)])
@@ -1234,10 +1246,13 @@ def _run_reference_case(
                 stderr=subprocess.PIPE,
                 check=False,
             )
-            combined = result.stdout + result.stderr
+            exception_text = exception_path.read_text(encoding="utf-8").strip() if exception_path.is_file() else ""
+            exception_type = exception_text or None
             if result.returncode == 0:
                 status: CaseStatus = "built"
-            elif b"Traceback (most recent call last):" in combined:
+            elif exception_type is not None and exception_type.startswith("sphinx.errors."):
+                status = "build-error"
+            elif exception_type is not None:
                 status = "reference-crash"
             else:
                 status = "build-error"
@@ -1265,6 +1280,7 @@ def _run_reference_case(
             return {
                 "status": status,
                 "exit_code": result.returncode,
+                "exception_type": exception_type,
                 "warnings": normalize_warnings(raw_warnings, source_root),
                 "output_files": output_files,
                 "root_leaks": root_leaks,
@@ -1305,6 +1321,7 @@ def _build_case_worker(
         return {
             "status": case.status,
             "exit_code": None,
+            "exception_type": None,
             "warnings": "",
             "output_files": {},
             "root_leaks": [],
@@ -1349,6 +1366,7 @@ def _case_record_from_result(
         "case_id": case.case_id,
         "status": status,
         "exit_code": None if excluded else result["exit_code"],
+        "exception_type": None if excluded else result.get("exception_type"),
         "warnings": "" if excluded else warnings,
         "excluded_reason": case.excluded_reason if excluded else None,
         "origin": {

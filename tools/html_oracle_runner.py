@@ -74,6 +74,27 @@ def verify_profile_versions(profile: str) -> None:
         raise RuntimeError(f"Docutils {docutils.__version__!r} != {expected_docutils!r}")
 
 
+def qualified_exception_type(exception: BaseException) -> str:
+    exception_class = type(exception)
+    return f"{exception_class.__module__}.{exception_class.__qualname__}"
+
+
+def install_exception_handler(exception_file: Path) -> None:
+    import sphinx._cli.util.errors
+
+    original_handle_exception = sphinx._cli.util.errors.handle_exception
+
+    def recording_handle_exception(exception: BaseException, *args, **kwargs):
+        exception_file.write_text(
+            qualified_exception_type(exception) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return original_handle_exception(exception, *args, **kwargs)
+
+    sphinx._cli.util.errors.handle_exception = recording_handle_exception
+
+
 def build(args: argparse.Namespace) -> int:
     install_shims()
     if args.profile == "local_needs":
@@ -81,6 +102,10 @@ def build(args: argparse.Namespace) -> int:
             raise RuntimeError("--needs-root is required for local_needs")
         verify_needs_checkout(args.needs_root)
     verify_profile_versions(args.profile)
+
+    args.exception_file.parent.mkdir(parents=True, exist_ok=True)
+    args.exception_file.unlink(missing_ok=True)
+    install_exception_handler(args.exception_file)
 
     from sphinx.cmd.build import main
 
@@ -119,6 +144,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--doctree-dir", type=Path, required=True)
     parser.add_argument("--builder", required=True)
     parser.add_argument("--warnings-file", type=Path, required=True)
+    parser.add_argument("--exception-file", type=Path, required=True)
     parser.add_argument("--needs-root", type=Path)
     return parser.parse_args(argv)
 
