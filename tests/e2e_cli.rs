@@ -49,6 +49,14 @@ fn stderr_of(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn native_newline() -> &'static str {
+    if cfg!(windows) {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
 fn search_value(out: &Path) -> serde_json::Value {
     let raw = std::fs::read_to_string(out.join("searchindex.js")).unwrap();
     assert!(raw.starts_with("Search.setIndex("));
@@ -202,7 +210,7 @@ fn build_emits_sphinx_build_info() {
 
     assert!(result.status.success(), "stderr: {}", stderr_of(&result));
     let raw = std::fs::read_to_string(out.join(".buildinfo")).unwrap();
-    let mut lines = raw.split('\n');
+    let mut lines = raw.split(native_newline());
     assert_eq!(lines.next(), Some("# Sphinx build info version 1"));
     assert_eq!(
         lines.next(),
@@ -329,6 +337,7 @@ fn buildinfo_hashes_match_sphinx_for_all_html_fixtures() {
         ("toctree_forms", "bc9d5af5c9b6d45a25e31a5ff598283a"),
         ("toctree_glob", "bc9d5af5c9b6d45a25e31a5ff598283a"),
     ];
+    let newline = native_newline();
     for (name, config_hash) in expected {
         let out = out_dir(&format!("buildinfo-{name}"));
         let result = build(&fixture(name), &out, &[]);
@@ -337,7 +346,7 @@ fn buildinfo_hashes_match_sphinx_for_all_html_fixtures() {
         assert_eq!(
             raw,
             format!(
-                "# Sphinx build info version 1\n# This file records the configuration used when building these files. When it is not found, a full rebuild will be done.\nconfig: {config_hash}\ntags: 645f666f9bcd5a90fca523b33c5a78b7\n"
+                "# Sphinx build info version 1{newline}# This file records the configuration used when building these files. When it is not found, a full rebuild will be done.{newline}config: {config_hash}{newline}tags: 645f666f9bcd5a90fca523b33c5a78b7{newline}"
             ),
             "{name}"
         );
@@ -355,8 +364,11 @@ fn custom_tag_build_emits_sphinx_tag_hash() {
     ]);
     assert!(result.status.success(), "stderr: {}", stderr_of(&result));
     let raw = std::fs::read_to_string(out.join(".buildinfo")).unwrap();
-    assert!(raw.contains("config: bc9d5af5c9b6d45a25e31a5ff598283a\n"));
-    assert!(raw.contains("tags: c191a6fc30aa78c716b20a6a34088b42\n"));
+    let newline = native_newline();
+    assert!(raw.contains(&format!(
+        "config: bc9d5af5c9b6d45a25e31a5ff598283a{newline}"
+    )));
+    assert!(raw.contains(&format!("tags: c191a6fc30aa78c716b20a6a34088b42{newline}")));
 }
 
 #[test]

@@ -249,12 +249,13 @@ pub(crate) fn sphinx_build_info_contents(config: &BuildConfig, tags: &[String]) 
     let tags_hash = stable_hash(&StableValue::List(
         sphinx_tags.into_iter().map(StableValue::String).collect(),
     ));
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
 
     Ok(format!(
-        "# Sphinx build info version 1\n\
-         # This file records the configuration used when building these files. When it is not found, a full rebuild will be done.\n\
-         config: {config_hash}\n\
-         tags: {tags_hash}\n"
+        "# Sphinx build info version 1{newline}\
+         # This file records the configuration used when building these files. When it is not found, a full rebuild will be done.{newline}\
+         config: {config_hash}{newline}\
+         tags: {tags_hash}{newline}"
     ))
 }
 
