@@ -15,12 +15,13 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use support::diagnostics::{run_bounded, run_bounded_with_timeout, ExitStatusKind, ProcessOutput};
 use support::html_oracle::{
-    apply_retention, bounded_assertion_message, build_report, case_key, compare_file,
-    compare_trees, compare_warnings, diagnose_html, diagnose_inventory, diagnose_needs_json,
-    diagnose_searchindex, diagnose_warnings, group_first_divergences, load_fixture_suite,
-    materialize_case_expected, materialize_case_inputs, mismatch_diagnostics, parse_keep,
-    read_record, status_name, walk_tree, warning_diagnostics, write_logical_file, CaseRecord,
-    CaseResult, CaseStatus, IndexDocument, InventoryRecord, Keep, Policy,
+    apply_retention, bounded_assertion_message, build_report_with_platforms, case_key,
+    compare_file, compare_trees, compare_warnings, diagnose_html, diagnose_inventory,
+    diagnose_needs_json, diagnose_searchindex, diagnose_warnings, group_first_divergences,
+    load_fixture_suite, materialize_case_expected, materialize_case_inputs,
+    mismatch_diagnostics_with_source_root, parse_keep, read_record, status_name, walk_tree,
+    warning_diagnostics, write_logical_file, CaseRecord, CaseResult, CaseStatus, IndexDocument,
+    InventoryRecord, Keep, Policy,
 };
 
 fn minimal_case() -> serde_json::Value {
@@ -57,6 +58,7 @@ fn minimal_index(case_record: serde_json::Value) -> serde_json::Value {
             "core": {
                 "sphinx": "9.1.0",
                 "docutils": "0.22.4",
+                "platform": "linux",
                 "needs_version": null,
                 "needs_commit": null,
                 "needs_tree": null,
@@ -77,6 +79,7 @@ fn minimal_local_index(case_record: serde_json::Value) -> serde_json::Value {
             "local_needs": {
                 "sphinx": "9.1.0",
                 "docutils": "0.21.2",
+                "platform": "linux",
                 "needs_version": "8.5.0",
                 "needs_commit": "58bcb59d861da95f2aca79f343e8bae6ec5c1250",
                 "needs_tree": "958172a89defcec69704f6b9d61e482e7c4e8409",
@@ -95,6 +98,17 @@ fn schema_deserializes_complete_index_document() {
         .expect("complete schema should deserialize and validate");
     assert_eq!(document.schema_version, 1);
     assert_eq!(document.cases.len(), 1);
+    assert_eq!(document.profiles["core"].platform, "linux");
+}
+
+#[test]
+fn schema_rejects_missing_profile_platform() {
+    let mut index = minimal_index(minimal_case());
+    index["profiles"]["core"]
+        .as_object_mut()
+        .unwrap()
+        .remove("platform");
+    assert!(IndexDocument::from_value(index).is_err());
 }
 
 #[test]
@@ -272,6 +286,35 @@ fn comparator_replaces_source_root_only_for_warnings() {
         compare_file("index.html", b"/oracle/source", b"C:\\run\\source", None)[0].category,
         "text-value"
     );
+}
+
+#[test]
+fn comparator_replaces_source_root_in_text_and_searchindex_only() {
+    let source_root = Path::new("C:/run/source");
+    let text_expected = b"path=<SRCDIR>/index.rst\nliteral=C:/run/source-code\n";
+    let text_actual = b"path=C:/run/source/index.rst\nliteral=C:/run/source-code\n";
+    assert!(compare_file("index.html", text_expected, text_actual, Some(source_root)).is_empty());
+
+    let search_expected = br#"Search.setIndex({"filenames":["<SRCDIR>/index"]});"#;
+    let search_actual = br#"Search.setIndex({"filenames":["C:/run/source/index"]});"#;
+    assert!(compare_file(
+        "searchindex.js",
+        search_expected,
+        search_actual,
+        Some(source_root)
+    )
+    .is_empty());
+
+    let windows_root = Path::new(r"C:\run\source");
+    let windows_search_expected = br#"Search.setIndex({"filenames":["<SRCDIR>\\index"]});"#;
+    let windows_search_actual = br#"Search.setIndex({"filenames":["C:\\run\\source\\index"]});"#;
+    assert!(compare_file(
+        "searchindex.js",
+        windows_search_expected,
+        windows_search_actual,
+        Some(windows_root)
+    )
+    .is_empty());
 }
 
 #[test]
@@ -604,6 +647,17 @@ fn report_synthetic_data_is_sorted_and_contains_summary_counts() {
 }
 
 #[test]
+fn report_prints_reference_platform_and_host_difference_note() {
+    let results = vec![report_case("core", "synthetic", "case", true, None, None)];
+    let platforms = BTreeMap::from([(String::from("core"), String::from("reference-test"))]);
+    let (_report, markdown) =
+        support::html_oracle::build_report_with_platforms(1, 0, 0, &results, &platforms);
+    assert!(markdown.contains("| core | reference-test |"));
+    assert!(markdown.contains("Reference platform: `reference-test`"));
+    assert!(markdown.contains("Separator and path differences are expected when"));
+}
+
+#[test]
 fn report_synthetic_first_divergences_are_capped_at_twenty_five() {
     let results = (0..30)
         .map(|index| {
@@ -677,6 +731,19 @@ fn html_oracle_exhaustive() {
         .values()
         .flat_map(|document| document.cases.iter().cloned())
         .collect::<Vec<_>>();
+    let reference_platforms = suite
+        .profiles
+        .iter()
+        .map(|(profile, document)| {
+            let platform = document
+                .profiles
+                .get(profile)
+                .expect("fixture profile should be present")
+                .platform
+                .clone();
+            (profile.clone(), platform)
+        })
+        .collect::<BTreeMap<_, _>>();
     if let Some(filter) = &filter {
         if !all_cases.iter().any(|case| case_key(case).contains(filter)) {
             panic!("HTML_ORACLE_FILTER matched no ledger case: {filter}");
@@ -735,8 +802,13 @@ fn html_oracle_exhaustive() {
         worker.join().expect("HTML oracle worker should not panic");
     }
 
-    let (report, markdown) =
-        build_report(total_cases, excluded_cases, reference_crash_cases, &results);
+    let (report, markdown) = build_report_with_platforms(
+        total_cases,
+        excluded_cases,
+        reference_crash_cases,
+        &results,
+        &reference_platforms,
+    );
     let report_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/html-oracle");
     let report_json = report_root.join("report.json");
     let report_markdown = report_root.join("report.md");
@@ -807,6 +879,7 @@ fn run_html_case(
             &walk_tree(&actual_dir)?,
             case.status,
             actual_status,
+            Some(&input_dir),
         )
     } else {
         vec![process_diagnostic(&process)]
@@ -906,6 +979,7 @@ fn run_needs_case(
                 &actual_tree,
                 expected_status,
                 Some(actual_status),
+                Some(input_dir),
             )
         }
     } else {
@@ -958,6 +1032,7 @@ fn compare_output_trees(
     actual: &BTreeMap<String, Vec<u8>>,
     expected_status: CaseStatus,
     actual_status: Option<CaseStatus>,
+    source_root: Option<&Path>,
 ) -> Vec<support::html_oracle::Diagnostic> {
     let mut paths = expected
         .keys()
@@ -968,7 +1043,12 @@ fn compare_output_trees(
     for path in paths {
         match (expected.get(&path), actual.get(&path)) {
             (Some(expected), Some(actual)) => {
-                diagnostics.extend(mismatch_diagnostics(&path, expected, actual));
+                diagnostics.extend(mismatch_diagnostics_with_source_root(
+                    &path,
+                    expected,
+                    actual,
+                    source_root,
+                ));
             }
             (Some(expected), None) => diagnostics.push(support::html_oracle::Diagnostic {
                 category: "missing-file".to_string(),

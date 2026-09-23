@@ -66,6 +66,7 @@ pub struct IndexDocument {
 pub struct ProfileRecord {
     pub sphinx: String,
     pub docutils: String,
+    pub platform: String,
     pub needs_version: Option<String>,
     pub needs_commit: Option<String>,
     pub needs_tree: Option<String>,
@@ -611,7 +612,7 @@ pub fn compare_file(
     logical_path: &str,
     expected: &[u8],
     actual: &[u8],
-    _source_root: Option<&Path>,
+    source_root: Option<&Path>,
 ) -> Vec<Diagnostic> {
     match policy_for_path(logical_path) {
         Policy::SearchIndex => compare_json_file(
@@ -621,6 +622,7 @@ pub fn compare_file(
             "searchindex-value",
             "invalid-searchindex",
             true,
+            source_root,
         ),
         Policy::NeedsJson => compare_json_file(
             logical_path,
@@ -629,11 +631,12 @@ pub fn compare_file(
             "needs-json-value",
             "invalid-needs-json",
             false,
+            None,
         ),
         Policy::ObjectsInventory => compare_inventory_file(logical_path, expected, actual),
         Policy::TextCrlf => {
             let expected = normalize_crlf(expected);
-            let actual = normalize_crlf(actual);
+            let actual = replace_source_root_token(&normalize_crlf(actual), source_root, false);
             if expected == actual {
                 Vec::new()
             } else {
@@ -745,6 +748,7 @@ fn compare_json_file(
     value_category: &str,
     invalid_category: &str,
     searchindex_wrapper: bool,
+    actual_source_root: Option<&Path>,
 ) -> Vec<Diagnostic> {
     let expected_value = match parse_json_value(expected, searchindex_wrapper) {
         Ok(value) => value,
@@ -756,7 +760,12 @@ fn compare_json_file(
             )]
         }
     };
-    let actual_value = match parse_json_value(actual, searchindex_wrapper) {
+    let actual = if searchindex_wrapper {
+        replace_source_root_token(actual, actual_source_root, true)
+    } else {
+        actual.to_vec()
+    };
+    let actual_value = match parse_json_value(&actual, searchindex_wrapper) {
         Ok(value) => value,
         Err(error) => {
             return vec![invalid_diagnostic(
@@ -901,12 +910,50 @@ fn format_inventory(inventory: &(Vec<u8>, Vec<InventoryRecord>)) -> String {
 }
 
 fn normalize_warning_bytes(bytes: &[u8], source_root: Option<&Path>) -> String {
-    let mut value = String::from_utf8_lossy(&normalize_crlf(bytes)).into_owned();
-    if let Some(source_root) = source_root {
-        let root = source_root.to_string_lossy();
-        value = value.replace(root.as_ref(), "<SRCDIR>");
+    let normalized = replace_source_root_token(&normalize_crlf(bytes), source_root, false);
+    String::from_utf8_lossy(&normalized).into_owned()
+}
+
+fn replace_source_root_token(
+    bytes: &[u8],
+    source_root: Option<&Path>,
+    json_escaped: bool,
+) -> Vec<u8> {
+    let Some(source_root) = source_root else {
+        return bytes.to_vec();
+    };
+    let root = source_root.to_string_lossy();
+    if root.is_empty() {
+        return bytes.to_vec();
     }
-    value
+    let mut normalized = replace_token(bytes, root.as_bytes());
+    if json_escaped && root.contains('\\') {
+        let escaped = root.replace('\\', "\\\\");
+        normalized = replace_token(&normalized, escaped.as_bytes());
+    }
+    normalized
+}
+
+fn replace_token(bytes: &[u8], token: &[u8]) -> Vec<u8> {
+    if token.is_empty() {
+        return bytes.to_vec();
+    }
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let matches = bytes[cursor..].starts_with(token);
+        let boundary = bytes
+            .get(cursor + token.len())
+            .is_none_or(|byte| *byte == b'/' || *byte == b'\\');
+        if matches && boundary {
+            output.extend_from_slice(b"<SRCDIR>");
+            cursor += token.len();
+        } else {
+            output.push(bytes[cursor]);
+            cursor += 1;
+        }
+    }
+    output
 }
 
 fn normalize_crlf(bytes: &[u8]) -> Vec<u8> {
@@ -1410,6 +1457,22 @@ pub fn build_report(
     reference_crash_cases: usize,
     results: &[CaseResult],
 ) -> (Value, String) {
+    build_report_with_platforms(
+        total_cases,
+        excluded_cases,
+        reference_crash_cases,
+        results,
+        &BTreeMap::new(),
+    )
+}
+
+pub fn build_report_with_platforms(
+    total_cases: usize,
+    excluded_cases: usize,
+    reference_crash_cases: usize,
+    results: &[CaseResult],
+    reference_platforms: &BTreeMap<String, String>,
+) -> (Value, String) {
     let mut results = results.to_vec();
     results.sort_by(case_result_order);
     let passed_cases = results.iter().filter(|result| result.passed).count();
@@ -1484,6 +1547,8 @@ pub fn build_report(
         "summary_by_profile_source_set": summary_json,
         "categories": counts_by_category,
         "first_divergences": first_divergences,
+        "reference_platforms": reference_platforms,
+        "host_platform": std::env::consts::OS,
         "cases": results,
     });
     let markdown = render_report_markdown(&report, &results, &first_divergences);
@@ -1550,6 +1615,38 @@ fn render_report_markdown(
         report["excluded_cases"],
         report["reference_crash_cases"]
     ));
+    if let Some(platforms) = report["reference_platforms"].as_object() {
+        if !platforms.is_empty() {
+            output.push_str("## Reference platform\n\n");
+            output.push_str("| profile | platform |\n| --- | --- |\n");
+            for (profile, platform) in platforms {
+                output.push_str(&format!(
+                    "| {profile} | {} |\n",
+                    platform.as_str().unwrap_or_default()
+                ));
+            }
+            if platforms.len() == 1 {
+                let platform = platforms
+                    .values()
+                    .next()
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                output.push_str(&format!("\nReference platform: `{platform}`.\n"));
+            }
+            let host = report["host_platform"].as_str().unwrap_or_default();
+            output.push_str(&format!("\nHost platform: `{host}`.\n"));
+            if platforms
+                .values()
+                .any(|platform| platform.as_str() != Some(host))
+            {
+                output.push_str(
+                    "Separator and path differences are expected when the reference platform differs from the host.\n\n",
+                );
+            } else {
+                output.push('\n');
+            }
+        }
+    }
     output.push_str("## Category counts\n\n");
     output.push_str("| category | count |\n| --- | ---: |\n");
     if let Some(categories) = report["counts_by_category"].as_object() {
@@ -1864,21 +1961,38 @@ fn walk_tree_inner(
 }
 
 pub fn mismatch_diagnostics(logical_path: &str, expected: &[u8], actual: &[u8]) -> Vec<Diagnostic> {
-    if compare_file(logical_path, expected, actual, None).is_empty() {
+    mismatch_diagnostics_with_source_root(logical_path, expected, actual, None)
+}
+
+pub fn mismatch_diagnostics_with_source_root(
+    logical_path: &str,
+    expected: &[u8],
+    actual: &[u8],
+    source_root: Option<&Path>,
+) -> Vec<Diagnostic> {
+    if compare_file(logical_path, expected, actual, source_root).is_empty() {
         return Vec::new();
     }
     let mut diagnostics = if logical_path.ends_with(".html") {
-        match (std::str::from_utf8(expected), std::str::from_utf8(actual)) {
+        let expected = normalize_crlf(expected);
+        let actual = replace_source_root_token(&normalize_crlf(actual), source_root, false);
+        match (std::str::from_utf8(&expected), std::str::from_utf8(&actual)) {
             (Ok(expected), Ok(actual)) => vec![diagnose_html(expected, actual)],
-            _ => compare_file(logical_path, expected, actual, None),
+            _ => compare_file(
+                logical_path,
+                expected.as_slice(),
+                actual.as_slice(),
+                source_root,
+            ),
         }
     } else if logical_path == "searchindex.js" {
+        let actual = replace_source_root_token(actual, source_root, true);
         match (
             parse_json_value(expected, true),
-            parse_json_value(actual, true),
+            parse_json_value(&actual, true),
         ) {
             (Ok(expected), Ok(actual)) => diagnose_searchindex(&expected, &actual),
-            _ => compare_file(logical_path, expected, actual, None),
+            _ => compare_file(logical_path, expected, &actual, source_root),
         }
     } else if logical_path.rsplit('/').next() == Some("needs.json") {
         match (
@@ -1886,7 +2000,7 @@ pub fn mismatch_diagnostics(logical_path: &str, expected: &[u8], actual: &[u8]) 
             parse_json_value(actual, false),
         ) {
             (Ok(expected), Ok(actual)) => diagnose_needs_json(&expected, &actual),
-            _ => compare_file(logical_path, expected, actual, None),
+            _ => compare_file(logical_path, expected, actual, source_root),
         }
     } else if logical_path == "objects.inv" {
         match (parse_inventory(expected), parse_inventory(actual)) {
@@ -1899,16 +2013,16 @@ pub fn mismatch_diagnostics(logical_path: &str, expected: &[u8], actual: &[u8]) 
                         logical_path,
                         expected_header.as_slice(),
                         actual_header.as_slice(),
-                        None,
+                        source_root,
                     )
                 } else {
                     diagnostics
                 }
             }
-            _ => compare_file(logical_path, expected, actual, None),
+            _ => compare_file(logical_path, expected, actual, source_root),
         }
     } else {
-        compare_file(logical_path, expected, actual, None)
+        compare_file(logical_path, expected, actual, source_root)
     };
     for diagnostic in &mut diagnostics {
         diagnostic.logical_path = logical_path.to_string();
