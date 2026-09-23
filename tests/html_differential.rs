@@ -6,16 +6,21 @@ mod support {
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
-use support::diagnostics::{run_bounded_with_timeout, ExitStatusKind};
+use support::diagnostics::{run_bounded, run_bounded_with_timeout, ExitStatusKind, ProcessOutput};
 use support::html_oracle::{
-    compare_file, compare_trees, compare_warnings, diagnose_html, diagnose_inventory,
-    diagnose_needs_json, diagnose_searchindex, diagnose_warnings, group_first_divergences,
-    parse_keep, IndexDocument, InventoryRecord, Policy,
+    apply_retention, bounded_assertion_message, build_report, case_key, compare_file,
+    compare_trees, compare_warnings, diagnose_html, diagnose_inventory, diagnose_needs_json,
+    diagnose_searchindex, diagnose_warnings, group_first_divergences, load_fixture_suite,
+    materialize_case_expected, materialize_case_inputs, mismatch_diagnostics, parse_keep,
+    status_name, walk_tree, warning_diagnostics, CaseRecord, CaseResult, CaseStatus, IndexDocument,
+    InventoryRecord, Keep, Policy,
 };
 
 fn minimal_case() -> serde_json::Value {
@@ -463,4 +468,395 @@ fn diagnostics_reports_spawn_errors() {
     let command = Command::new("html-oracle-command-that-does-not-exist");
     let result = run_bounded_with_timeout(command, Duration::from_millis(100));
     assert!(matches!(result.status, ExitStatusKind::SpawnError(_)));
+}
+
+fn report_case(
+    profile: &str,
+    source_set: &str,
+    case_id: &str,
+    passed: bool,
+    category: Option<&str>,
+    line: Option<usize>,
+) -> CaseResult {
+    CaseResult {
+        profile: profile.to_string(),
+        source_set: source_set.to_string(),
+        case_id: case_id.to_string(),
+        html_status: "built".to_string(),
+        needs_status: None,
+        passed,
+        run_dir: format!("target/html-oracle/runs/{profile}/{source_set}/{case_id}"),
+        rerun_filter: format!("{profile}/{source_set}/{case_id}"),
+        diagnostics: category
+            .map(|category| {
+                vec![support::html_oracle::Diagnostic {
+                    category: category.to_string(),
+                    logical_path: format!("{case_id}.html"),
+                    first_expected_line: line,
+                    expected: "expected".to_string(),
+                    actual: "actual".to_string(),
+                    detail: "synthetic".to_string(),
+                }]
+            })
+            .unwrap_or_default(),
+    }
+}
+
+#[test]
+fn report_synthetic_data_is_sorted_and_contains_summary_counts() {
+    let results = vec![
+        report_case(
+            "local_needs",
+            "z-set",
+            "z-case",
+            false,
+            Some("html-body"),
+            Some(7),
+        ),
+        report_case("core", "a-set", "a-case", true, None, None),
+        report_case("core", "a-set", "b-case", false, Some("warning"), Some(2)),
+    ];
+    let (report, markdown) = support::html_oracle::build_report(5, 1, 1, &results);
+    assert_eq!(report["total_cases"], 5);
+    assert_eq!(report["scheduled_cases"], 3);
+    assert_eq!(report["passed_cases"], 1);
+    assert_eq!(report["failed_cases"], 2);
+    assert_eq!(report["excluded_cases"], 1);
+    assert_eq!(report["reference_crash_cases"], 1);
+    assert_eq!(report["cases"][0]["rerun_filter"], "core/a-set/a-case");
+    assert_eq!(report["cases"][1]["rerun_filter"], "core/a-set/b-case");
+    assert_eq!(report["counts_by_category"]["html-body"], 1);
+    assert_eq!(report["counts_by_category"]["warning"], 1);
+    assert!(markdown.contains("## Summary"));
+    assert!(markdown.contains("## Category counts"));
+    assert!(markdown.contains("## Most common first-divergence"));
+    assert!(markdown.contains("## core/a-set/a-case"));
+}
+
+#[test]
+fn report_synthetic_first_divergences_are_capped_at_twenty_five() {
+    let results = (0..30)
+        .map(|index| {
+            report_case(
+                "core",
+                "synthetic",
+                &format!("case-{index:02}"),
+                false,
+                Some("html-body"),
+                Some(index + 1),
+            )
+        })
+        .collect::<Vec<_>>();
+    let (report, markdown) = support::html_oracle::build_report(30, 0, 0, &results);
+    assert_eq!(report["first_divergences"].as_array().unwrap().len(), 25);
+    assert!(markdown.contains("| 1 | 1 |"));
+    assert!(!markdown.contains("| 30 | 1 |"));
+}
+
+#[test]
+fn report_assertion_text_is_capped_and_points_to_both_files() {
+    let message = support::html_oracle::bounded_assertion_message(
+        Path::new("target/html-oracle/report.md"),
+        Path::new("target/html-oracle/report.json"),
+        &"x".repeat(100 * 1024),
+    );
+    assert!(message.len() <= 64 * 1024 + 128);
+    assert!(message.contains("target/html-oracle/report.md"));
+    assert!(message.contains("target/html-oracle/report.json"));
+    assert!(message.contains("[output truncated]"));
+}
+
+#[test]
+fn report_retention_deletes_only_passing_failed_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let passing = root.path().join("passing");
+    let failing = root.path().join("failing");
+    std::fs::create_dir_all(&passing).unwrap();
+    std::fs::create_dir_all(&failing).unwrap();
+    support::html_oracle::apply_retention(&passing, true, Keep::Failed).unwrap();
+    support::html_oracle::apply_retention(&failing, false, Keep::Failed).unwrap();
+    assert!(!passing.exists());
+    assert!(failing.exists());
+
+    let all = root.path().join("all");
+    std::fs::create_dir_all(&all).unwrap();
+    support::html_oracle::apply_retention(&all, true, Keep::All).unwrap();
+    assert!(all.exists());
+}
+
+#[test]
+fn missing_fixture_corpus_has_a_clear_error() {
+    let root = tempfile::tempdir().unwrap();
+    let error = support::html_oracle::load_fixture_suite(root.path())
+        .expect_err("missing fixture corpus should be reported");
+    assert!(error.contains("core/index.json"));
+    assert!(error.contains("local_needs/index.json"));
+}
+
+#[test]
+#[ignore]
+fn html_oracle_exhaustive() {
+    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/html_oracle");
+    let suite = load_fixture_suite(&fixture_root)
+        .unwrap_or_else(|error| panic!("cannot run HTML oracle exhaustive test: {error}"));
+    let keep = parse_keep(std::env::var("HTML_ORACLE_KEEP").ok().as_deref())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let filter = std::env::var("HTML_ORACLE_FILTER").ok();
+    let all_cases = suite
+        .profiles
+        .values()
+        .flat_map(|document| document.cases.iter().cloned())
+        .collect::<Vec<_>>();
+    if let Some(filter) = &filter {
+        if !all_cases.iter().any(|case| case_key(case).contains(filter)) {
+            panic!("HTML_ORACLE_FILTER matched no ledger case: {filter}");
+        }
+    }
+    let total_cases = all_cases.len();
+    let excluded_cases = all_cases
+        .iter()
+        .filter(|case| case.status.is_excluded())
+        .count();
+    let reference_crash_cases = all_cases
+        .iter()
+        .filter(|case| case.status == CaseStatus::ReferenceCrash)
+        .count();
+    let jobs = all_cases
+        .into_iter()
+        .filter(|case| case.status.is_runnable())
+        .filter(|case| {
+            filter
+                .as_deref()
+                .is_none_or(|filter| case_key(case).contains(filter))
+        })
+        .collect::<Vec<_>>();
+    let run_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/html-oracle/runs");
+    fs::create_dir_all(&run_root).expect("create HTML oracle run root");
+    let worker_count = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1)
+        .min(jobs.len().max(1));
+    let queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
+    let (sender, receiver) = mpsc::channel();
+    let mut workers = Vec::new();
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
+        let sender = sender.clone();
+        let run_root = run_root.clone();
+        let fixture_root = fixture_root.clone();
+        workers.push(std::thread::spawn(move || loop {
+            let case = queue.lock().unwrap().pop_front();
+            let Some(case) = case else {
+                break;
+            };
+            let profile_root = fixture_root.join(&case.profile);
+            let result = run_html_case(&case, &profile_root, &run_root, keep);
+            sender
+                .send(result)
+                .expect("report receiver should remain open");
+        }));
+    }
+    drop(sender);
+    let mut results = Vec::new();
+    for result in receiver {
+        results.push(result.unwrap_or_else(|error| panic!("HTML oracle case failed: {error}")));
+    }
+    for worker in workers {
+        worker.join().expect("HTML oracle worker should not panic");
+    }
+
+    let (report, markdown) =
+        build_report(total_cases, excluded_cases, reference_crash_cases, &results);
+    let report_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/html-oracle");
+    let report_json = report_root.join("report.json");
+    let report_markdown = report_root.join("report.md");
+    fs::write(
+        &report_json,
+        serde_json::to_vec_pretty(&report).expect("report JSON serializes"),
+    )
+    .expect("write report.json");
+    fs::write(&report_markdown, markdown).expect("write report.md");
+    if report["failed_cases"].as_u64().unwrap_or_default() != 0 {
+        let details = serde_json::to_string_pretty(&report).unwrap_or_default();
+        panic!(
+            "{}",
+            bounded_assertion_message(&report_markdown, &report_json, &details)
+        );
+    }
+}
+
+fn run_html_case(
+    case: &CaseRecord,
+    profile_root: &Path,
+    run_root: &Path,
+    keep: Keep,
+) -> Result<CaseResult, String> {
+    let run_dir = run_root
+        .join(&case.profile)
+        .join(&case.source_set)
+        .join(&case.case_id);
+    if run_dir.exists() {
+        fs::remove_dir_all(&run_dir)
+            .map_err(|error| format!("remove stale run {}: {error}", run_dir.display()))?;
+    }
+    let input_dir = run_dir.join("input");
+    let expected_dir = run_dir.join("expected");
+    let actual_dir = run_dir.join("actual");
+    let cache_dir = run_dir.join("cache");
+    let warnings_path = run_dir.join("actual-warnings.txt");
+    let actual_needs_dir = run_dir.join("actual-needs");
+    for directory in [
+        &input_dir,
+        &expected_dir,
+        &actual_dir,
+        &cache_dir,
+        &actual_needs_dir,
+    ] {
+        fs::create_dir_all(directory)
+            .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    }
+    materialize_case_inputs(case, profile_root, &input_dir)?;
+    let expected_tree = materialize_case_expected(case, profile_root, &expected_dir)?;
+    fs::write(expected_dir.join("warnings.txt"), case.warnings.as_bytes())
+        .map_err(|error| format!("write expected warnings: {error}"))?;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sphinx-ultra"));
+    command
+        .arg(&input_dir)
+        .arg(&actual_dir)
+        .args(["-b", "html", "-d"])
+        .arg(&cache_dir)
+        .arg("-q")
+        .args(["-w"])
+        .arg(&warnings_path);
+    let process = run_bounded(command);
+    let actual_status = process_status(&process);
+    let mut diagnostics = if actual_status.is_some() {
+        compare_output_trees(
+            &expected_tree,
+            &walk_tree(&actual_dir)?,
+            case.status,
+            actual_status,
+        )
+    } else {
+        vec![process_diagnostic(&process)]
+    };
+    let actual_warnings = fs::read(&warnings_path).unwrap_or_default();
+    diagnostics.extend(warning_diagnostics(
+        case.warnings.as_bytes(),
+        &actual_warnings,
+        None,
+        Some(&input_dir),
+    ));
+    diagnostics.sort_by(|left, right| {
+        left.logical_path
+            .cmp(&right.logical_path)
+            .then_with(|| left.category.cmp(&right.category))
+            .then_with(|| left.first_expected_line.cmp(&right.first_expected_line))
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+    let passed = diagnostics.is_empty();
+    let result = CaseResult {
+        profile: case.profile.clone(),
+        source_set: case.source_set.clone(),
+        case_id: case.case_id.clone(),
+        html_status: actual_status
+            .map(status_name)
+            .unwrap_or("io-error")
+            .to_string(),
+        needs_status: None,
+        passed,
+        run_dir: run_dir.to_string_lossy().into_owned(),
+        rerun_filter: case_key(case),
+        diagnostics,
+    };
+    fs::write(
+        run_dir.join("result.json"),
+        serde_json::to_vec_pretty(&result).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("write result.json: {error}"))?;
+    apply_retention(&run_dir, passed, keep)?;
+    Ok(result)
+}
+
+fn process_status(process: &ProcessOutput) -> Option<CaseStatus> {
+    match process.status {
+        ExitStatusKind::Success => Some(CaseStatus::Built),
+        ExitStatusKind::BuildError(_) => Some(CaseStatus::BuildError),
+        ExitStatusKind::Timeout | ExitStatusKind::SpawnError(_) | ExitStatusKind::IoError(_) => {
+            None
+        }
+    }
+}
+
+fn process_diagnostic(process: &ProcessOutput) -> support::html_oracle::Diagnostic {
+    let (category, detail) = match &process.status {
+        ExitStatusKind::Timeout => ("timeout", "Ultra process exceeded the deadline".to_string()),
+        ExitStatusKind::SpawnError(error) => ("spawn", error.clone()),
+        ExitStatusKind::IoError(error) => ("io", error.clone()),
+        ExitStatusKind::Success | ExitStatusKind::BuildError(_) => {
+            ("process", "unexpected process status".to_string())
+        }
+    };
+    support::html_oracle::Diagnostic {
+        category: category.to_string(),
+        logical_path: String::new(),
+        first_expected_line: None,
+        expected: String::new(),
+        actual: format!("{}\n{}", process.stdout, process.stderr),
+        detail,
+    }
+}
+
+fn compare_output_trees(
+    expected: &BTreeMap<String, Vec<u8>>,
+    actual: &BTreeMap<String, Vec<u8>>,
+    expected_status: CaseStatus,
+    actual_status: Option<CaseStatus>,
+) -> Vec<support::html_oracle::Diagnostic> {
+    let mut paths = expected
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    paths.extend(actual.keys().cloned());
+    let mut diagnostics = Vec::new();
+    for path in paths {
+        match (expected.get(&path), actual.get(&path)) {
+            (Some(expected), Some(actual)) => {
+                diagnostics.extend(mismatch_diagnostics(&path, expected, actual));
+            }
+            (Some(expected), None) => diagnostics.push(support::html_oracle::Diagnostic {
+                category: "missing-file".to_string(),
+                logical_path: path,
+                first_expected_line: Some(1),
+                expected: String::from_utf8_lossy(expected).into_owned(),
+                actual: String::new(),
+                detail: "file exists only in expected output".to_string(),
+            }),
+            (None, Some(actual)) => diagnostics.push(support::html_oracle::Diagnostic {
+                category: "unexpected-file".to_string(),
+                logical_path: path,
+                first_expected_line: None,
+                expected: String::new(),
+                actual: String::from_utf8_lossy(actual).into_owned(),
+                detail: "file exists only in actual output".to_string(),
+            }),
+            (None, None) => unreachable!(),
+        }
+    }
+    if let Some(actual_status) = actual_status {
+        let expected_error = expected_status == CaseStatus::BuildError;
+        let actual_error = actual_status == CaseStatus::BuildError;
+        if expected_error != actual_error {
+            diagnostics.push(support::html_oracle::Diagnostic {
+                category: "status".to_string(),
+                logical_path: String::new(),
+                first_expected_line: None,
+                expected: status_name(expected_status).to_string(),
+                actual: status_name(actual_status).to_string(),
+                detail: "build status class differs".to_string(),
+            });
+        }
+    }
+    diagnostics
 }

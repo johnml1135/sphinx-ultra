@@ -1,4 +1,6 @@
-use serde::Deserialize;
+#![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,7 +20,7 @@ pub enum Policy {
     ExactBytes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
     pub category: String,
     pub logical_path: String,
@@ -26,6 +28,19 @@ pub struct Diagnostic {
     pub expected: String,
     pub actual: String,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CaseResult {
+    pub profile: String,
+    pub source_set: String,
+    pub case_id: String,
+    pub html_status: String,
+    pub needs_status: Option<String>,
+    pub passed: bool,
+    pub run_dir: String,
+    pub rerun_filter: String,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -37,7 +52,7 @@ pub struct InventoryRecord {
     pub display_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct IndexDocument {
     pub schema_version: u32,
@@ -46,7 +61,7 @@ pub struct IndexDocument {
     pub cases: Vec<CaseRecord>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ProfileRecord {
     pub sphinx: String,
@@ -59,7 +74,7 @@ pub struct ProfileRecord {
     pub determinism_shims: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct OriginRecord {
     pub source_set: String,
@@ -76,7 +91,7 @@ pub enum FileStorage {
     Blob,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FileRecord {
     pub logical_path: String,
@@ -106,7 +121,7 @@ impl CaseStatus {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CaseRecord {
     pub profile: String,
@@ -667,8 +682,8 @@ pub fn compare_trees(
                 category: "status".to_string(),
                 logical_path: String::new(),
                 first_expected_line: None,
-                expected: format_status(expected),
-                actual: format_status(actual),
+                expected: status_name(expected).to_string(),
+                actual: status_name(actual).to_string(),
                 detail: "build status class differs".to_string(),
             });
         }
@@ -721,7 +736,7 @@ fn compare_json_file(
     }
 }
 
-fn parse_json_value(bytes: &[u8], searchindex_wrapper: bool) -> Result<Value, String> {
+pub fn parse_json_value(bytes: &[u8], searchindex_wrapper: bool) -> Result<Value, String> {
     let text = match std::str::from_utf8(bytes) {
         Ok(text) => normalize_crlf(text.as_bytes()),
         Err(error) => {
@@ -775,7 +790,7 @@ fn compare_inventory_file(logical_path: &str, expected: &[u8], actual: &[u8]) ->
     }
 }
 
-fn parse_inventory(bytes: &[u8]) -> Result<(Vec<u8>, Vec<InventoryRecord>), String> {
+pub fn parse_inventory(bytes: &[u8]) -> Result<(Vec<u8>, Vec<InventoryRecord>), String> {
     const HEADER: &[u8] = b"# Sphinx inventory version 2\n# Project: ";
     if !bytes.starts_with(HEADER) {
         return Err("missing Sphinx inventory header".to_string());
@@ -909,7 +924,7 @@ fn first_difference_line(expected: &str, actual: &str) -> Option<usize> {
     }
 }
 
-fn format_status(status: CaseStatus) -> String {
+pub fn status_name(status: CaseStatus) -> &'static str {
     match status {
         CaseStatus::Built => "built",
         CaseStatus::BuildError => "build-error",
@@ -917,7 +932,6 @@ fn format_status(status: CaseStatus) -> String {
         CaseStatus::ExcludedNetwork => "excluded-network",
         CaseStatus::ExcludedPlantuml => "excluded-plantuml",
     }
-    .to_string()
 }
 
 fn diagnostic_order(left: &Diagnostic, right: &Diagnostic) -> std::cmp::Ordering {
@@ -1305,7 +1319,233 @@ pub fn rerun_filter(case_key: &str, filter: Option<&str>) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
+pub struct FixtureSuite {
+    pub root: PathBuf,
+    pub profiles: BTreeMap<String, IndexDocument>,
+}
+
+pub fn load_fixture_suite(root: &Path) -> Result<FixtureSuite, String> {
+    let required = [
+        ("core", root.join("core").join("index.json")),
+        ("local_needs", root.join("local_needs").join("index.json")),
+    ];
+    let missing = required
+        .iter()
+        .filter(|(_, path)| !path.is_file())
+        .map(|(profile, path)| format!("{profile}/index.json ({})", path.display()))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "HTML oracle fixture corpus is missing required ledgers: {}. Generate the profile corpus before running html_oracle_exhaustive.",
+            missing.join(", ")
+        ));
+    }
+    let mut profiles = BTreeMap::new();
+    for (profile, path) in required {
+        let document = IndexDocument::load(&path)?;
+        if !document.profiles.contains_key(profile) {
+            return Err(format!(
+                "{} does not contain its selected profile {profile:?}",
+                path.display()
+            ));
+        }
+        profiles.insert(profile.to_string(), document);
+    }
+    Ok(FixtureSuite {
+        root: root.to_path_buf(),
+        profiles,
+    })
+}
+
+pub fn build_report(
+    total_cases: usize,
+    excluded_cases: usize,
+    reference_crash_cases: usize,
+    results: &[CaseResult],
+) -> (Value, String) {
+    let mut results = results.to_vec();
+    results.sort_by(case_result_order);
+    let passed_cases = results.iter().filter(|result| result.passed).count();
+    let failed_cases = results.len() - passed_cases;
+
+    let mut summary = BTreeMap::<(String, String), (usize, usize, usize)>::new();
+    let mut counts_by_source_set = BTreeMap::<String, (usize, usize, usize)>::new();
+    let mut counts_by_category = BTreeMap::<String, usize>::new();
+    let mut all_diagnostics = Vec::new();
+    for result in &results {
+        let summary_entry = summary
+            .entry((result.profile.clone(), result.source_set.clone()))
+            .or_default();
+        summary_entry.0 += 1;
+        if result.passed {
+            summary_entry.1 += 1;
+        } else {
+            summary_entry.2 += 1;
+        }
+        let source_entry = counts_by_source_set
+            .entry(result.source_set.clone())
+            .or_default();
+        source_entry.0 += 1;
+        if result.passed {
+            source_entry.1 += 1;
+        } else {
+            source_entry.2 += 1;
+        }
+        for diagnostic in &result.diagnostics {
+            *counts_by_category
+                .entry(diagnostic.category.clone())
+                .or_default() += 1;
+            all_diagnostics.push(diagnostic.clone());
+        }
+    }
+    all_diagnostics.sort_by(diagnostic_order);
+    let first_divergences = group_first_divergences(&all_diagnostics);
+    let summary_json = summary
+        .iter()
+        .map(|((profile, source_set), (scheduled, passed, failed))| {
+            serde_json::json!({
+                "profile": profile,
+                "source_set": source_set,
+                "scheduled": scheduled,
+                "passed": passed,
+                "failed": failed,
+            })
+        })
+        .collect::<Vec<_>>();
+    let source_counts_json = counts_by_source_set
+        .iter()
+        .map(|(source_set, (scheduled, passed, failed))| {
+            (
+                source_set.clone(),
+                serde_json::json!({
+                    "scheduled": scheduled,
+                    "passed": passed,
+                    "failed": failed,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let report = serde_json::json!({
+        "total_cases": total_cases,
+        "scheduled_cases": results.len(),
+        "passed_cases": passed_cases,
+        "failed_cases": failed_cases,
+        "excluded_cases": excluded_cases,
+        "reference_crash_cases": reference_crash_cases,
+        "counts_by_source_set": source_counts_json,
+        "counts_by_category": counts_by_category,
+        "summary_by_profile_source_set": summary_json,
+        "categories": counts_by_category,
+        "first_divergences": first_divergences,
+        "cases": results,
+    });
+    let markdown = render_report_markdown(&report, &results, &first_divergences);
+    (report, markdown)
+}
+
+pub fn bounded_assertion_message(
+    report_markdown: &Path,
+    report_json: &Path,
+    details: &str,
+) -> String {
+    let prefix = format!(
+        "HTML oracle comparison failed. Complete reports: {} and {}.\n\n",
+        report_markdown.display(),
+        report_json.display()
+    );
+    cap_text(&format!("{prefix}{details}"))
+}
+
+pub fn apply_retention(run_dir: &Path, passed: bool, keep: Keep) -> Result<(), String> {
+    if passed && keep == Keep::Failed && run_dir.exists() {
+        fs::remove_dir_all(run_dir)
+            .map_err(|error| format!("remove passing run {}: {error}", run_dir.display()))?;
+    }
+    Ok(())
+}
+
+fn case_result_order(left: &CaseResult, right: &CaseResult) -> std::cmp::Ordering {
+    left.profile
+        .cmp(&right.profile)
+        .then_with(|| left.source_set.cmp(&right.source_set))
+        .then_with(|| left.case_id.cmp(&right.case_id))
+}
+
+fn render_report_markdown(
+    report: &Value,
+    results: &[CaseResult],
+    first_divergences: &[FirstDivergenceGroup],
+) -> String {
+    let mut output = String::new();
+    output.push_str("# HTML Oracle Report\n\n");
+    output.push_str("## Summary\n\n");
+    output.push_str("| profile | source_set | scheduled | passed | failed |\n");
+    output.push_str("| --- | --- | ---: | ---: | ---: |\n");
+    for row in report["summary_by_profile_source_set"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        output.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            row["profile"].as_str().unwrap_or_default(),
+            row["source_set"].as_str().unwrap_or_default(),
+            row["scheduled"],
+            row["passed"],
+            row["failed"],
+        ));
+    }
+    output.push_str(&format!(
+        "\nTotal: {} scheduled, {} passed, {} failed; {} excluded, {} reference crashes.\n\n",
+        report["scheduled_cases"],
+        report["passed_cases"],
+        report["failed_cases"],
+        report["excluded_cases"],
+        report["reference_crash_cases"]
+    ));
+    output.push_str("## Category counts\n\n");
+    output.push_str("| category | count |\n| --- | ---: |\n");
+    if let Some(categories) = report["counts_by_category"].as_object() {
+        for (category, count) in categories {
+            output.push_str(&format!("| {category} | {count} |\n"));
+        }
+    }
+    output.push_str("\n## Most common first-divergence\n\n");
+    output.push_str("| expected line | count | sample files |\n| ---: | ---: | --- |\n");
+    for group in first_divergences {
+        output.push_str(&format!(
+            "| {} | {} | {} |\n",
+            group.expected_line,
+            group.count,
+            group.sample_files.join(", ")
+        ));
+    }
+    for result in results {
+        let key = format!(
+            "{}/{}/{}",
+            result.profile, result.source_set, result.case_id
+        );
+        output.push_str(&format!("\n## {key}\n\n"));
+        output.push_str(&format!(
+            "- result: {}\n- run directory: {}\n- rerun: HTML_ORACLE_FILTER={} HTML_ORACLE_KEEP=all cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture\n",
+            if result.passed { "passed" } else { "failed" },
+            result.run_dir,
+            result.rerun_filter
+        ));
+        for diagnostic in &result.diagnostics {
+            output.push_str(&format!(
+                "\n### {} — {}\n\n{}\n",
+                diagnostic.category,
+                diagnostic.logical_path,
+                cap_text(&diagnostic.detail)
+            ));
+        }
+    }
+    output
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FirstDivergenceGroup {
     pub expected_line: usize,
     pub count: usize,
@@ -1491,4 +1731,175 @@ fn cap_text(value: &str) -> String {
         capped.extend_from_slice(b"\n[output truncated]\n");
         String::from_utf8_lossy(&capped).into_owned()
     }
+}
+
+pub fn case_key(case: &CaseRecord) -> String {
+    format!("{}/{}/{}", case.profile, case.source_set, case.case_id)
+}
+
+pub fn materialize_case_inputs(
+    case: &CaseRecord,
+    profile_root: &Path,
+    destination: &Path,
+) -> Result<(), String> {
+    for record in &case.input_files {
+        materialize_record(record, profile_root, destination)?;
+    }
+    Ok(())
+}
+
+pub fn materialize_case_expected(
+    case: &CaseRecord,
+    profile_root: &Path,
+    destination: &Path,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut tree = BTreeMap::new();
+    for record in &case.files {
+        let bytes = read_record(record, profile_root)?;
+        write_logical_file(destination, &record.logical_path, &bytes)?;
+        tree.insert(record.logical_path.clone(), bytes);
+    }
+    Ok(tree)
+}
+
+pub fn read_record(record: &FileRecord, profile_root: &Path) -> Result<Vec<u8>, String> {
+    let path = profile_root.join(native_relative_path(&record.storage_path));
+    fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))
+}
+
+pub fn write_logical_file(root: &Path, logical_path: &str, bytes: &[u8]) -> Result<(), String> {
+    validate_relative_path(logical_path, "logical_path")?;
+    let path = root.join(native_relative_path(logical_path));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    fs::write(&path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
+}
+
+pub fn walk_tree(root: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut tree = BTreeMap::new();
+    if !root.exists() {
+        return Ok(tree);
+    }
+    walk_tree_inner(root, root, &mut tree)?;
+    Ok(tree)
+}
+
+fn walk_tree_inner(
+    root: &Path,
+    current: &Path,
+    tree: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    for entry in
+        fs::read_dir(current).map_err(|error| format!("walk {}: {error}", current.display()))?
+    {
+        let entry = entry.map_err(|error| format!("read directory entry: {error}"))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("metadata {}: {error}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("symlink in output tree: {}", path.display()));
+        }
+        if metadata.is_dir() {
+            walk_tree_inner(root, &path, tree)?;
+        } else if metadata.is_file() {
+            let logical_path = path
+                .strip_prefix(root)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            let bytes =
+                fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+            tree.insert(logical_path, bytes);
+        }
+    }
+    Ok(())
+}
+
+pub fn mismatch_diagnostics(logical_path: &str, expected: &[u8], actual: &[u8]) -> Vec<Diagnostic> {
+    if compare_file(logical_path, expected, actual, None).is_empty() {
+        return Vec::new();
+    }
+    let mut diagnostics = if logical_path.ends_with(".html") {
+        match (std::str::from_utf8(expected), std::str::from_utf8(actual)) {
+            (Ok(expected), Ok(actual)) => vec![diagnose_html(expected, actual)],
+            _ => compare_file(logical_path, expected, actual, None),
+        }
+    } else if logical_path == "searchindex.js" {
+        match (
+            parse_json_value(expected, true),
+            parse_json_value(actual, true),
+        ) {
+            (Ok(expected), Ok(actual)) => diagnose_searchindex(&expected, &actual),
+            _ => compare_file(logical_path, expected, actual, None),
+        }
+    } else if logical_path.rsplit('/').next() == Some("needs.json") {
+        match (
+            parse_json_value(expected, false),
+            parse_json_value(actual, false),
+        ) {
+            (Ok(expected), Ok(actual)) => diagnose_needs_json(&expected, &actual),
+            _ => compare_file(logical_path, expected, actual, None),
+        }
+    } else if logical_path == "objects.inv" {
+        match (parse_inventory(expected), parse_inventory(actual)) {
+            (Ok((expected_header, expected)), Ok((actual_header, actual)))
+                if expected_header == actual_header =>
+            {
+                let diagnostics = diagnose_inventory(&expected, &actual);
+                if diagnostics.is_empty() {
+                    compare_file(
+                        logical_path,
+                        expected_header.as_slice(),
+                        actual_header.as_slice(),
+                        None,
+                    )
+                } else {
+                    diagnostics
+                }
+            }
+            _ => compare_file(logical_path, expected, actual, None),
+        }
+    } else {
+        compare_file(logical_path, expected, actual, None)
+    };
+    for diagnostic in &mut diagnostics {
+        diagnostic.logical_path = logical_path.to_string();
+    }
+    diagnostics
+}
+
+pub fn warning_diagnostics(
+    expected: &[u8],
+    actual: &[u8],
+    expected_source_root: Option<&Path>,
+    actual_source_root: Option<&Path>,
+) -> Vec<Diagnostic> {
+    if compare_warnings(expected, actual, expected_source_root, actual_source_root).is_empty() {
+        Vec::new()
+    } else {
+        diagnose_warnings(
+            &normalize_warning_bytes(expected, expected_source_root),
+            &normalize_warning_bytes(actual, actual_source_root),
+        )
+    }
+}
+
+fn materialize_record(
+    record: &FileRecord,
+    profile_root: &Path,
+    destination: &Path,
+) -> Result<(), String> {
+    let bytes = read_record(record, profile_root)?;
+    write_logical_file(destination, &record.logical_path, &bytes)
+}
+
+fn native_relative_path(value: &str) -> PathBuf {
+    value
+        .split('/')
+        .fold(PathBuf::new(), |mut path, component| {
+            path.push(component);
+            path
+        })
 }
