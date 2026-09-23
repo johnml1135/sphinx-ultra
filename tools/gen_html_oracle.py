@@ -34,9 +34,15 @@ from __future__ import annotations
 
 import hashlib
 import ast
+import concurrent.futures
 import importlib.util
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -591,6 +597,135 @@ def validate_needs_metadata(
         raise RuntimeError("needs provenance: packages/sphinx-needs subtree is dirty")
 
 
+class StorageError(ValueError):
+    """Raised when a captured tree cannot be stored safely."""
+
+
+def store_blob(blob_root: Path, data: bytes) -> str:
+    blob_root = Path(blob_root)
+    blob_root.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(data).hexdigest()
+    path = blob_root / digest
+    if path.exists() and path.is_symlink():
+        raise StorageError(f"blob path is a symlink: {path}")
+    if path.exists():
+        if not path.is_file() or path.read_bytes() != data:
+            raise StorageError(f"blob content mismatch: {path}")
+    else:
+        path.write_bytes(data)
+    return digest
+
+
+def _root_spellings(root: Path) -> tuple[bytes, ...]:
+    resolved = str(Path(root).resolve())
+    return tuple(value.encode("utf-8") for value in {resolved, resolved.replace("\\", "/")})
+
+
+def _check_root_leaks(data: bytes, roots: list[Path], logical_path: str) -> None:
+    for root in roots:
+        if any(spelling in data for spelling in _root_spellings(root)):
+            raise StorageError(f"root leak in {logical_path}: {root}")
+
+
+def capture_output_tree(
+    output_root: Path,
+    profile_root: Path,
+    source_set: str,
+    case_id: str,
+    *,
+    root_paths: list[Path] | None = None,
+) -> list[FileRecord]:
+    """Capture an output tree into refs/blobs and return logical file records."""
+    output_root = Path(output_root)
+    profile_root = Path(profile_root)
+    if not output_root.is_dir():
+        raise StorageError(f"output tree does not exist: {output_root}")
+    records: list[FileRecord] = []
+    roots = root_paths or []
+    output_files: dict[str, bytes] = {}
+    for path in sorted(output_root.rglob("*")):
+        if path.is_symlink():
+            raise StorageError(f"symlink in captured output: {path}")
+        if not path.is_file():
+            continue
+        logical_path = path.relative_to(output_root).as_posix()
+        _safe_relative_path(logical_path, f"captured logical path {logical_path}")
+        output_files[logical_path] = path.read_bytes()
+    return store_output_files(
+        output_files,
+        profile_root,
+        source_set,
+        case_id,
+        root_paths=roots,
+    )
+
+
+def store_output_files(
+    output_files: dict[str, bytes],
+    profile_root: Path,
+    source_set: str,
+    case_id: str,
+    *,
+    root_paths: list[Path] | None = None,
+) -> list[FileRecord]:
+    records: list[FileRecord] = []
+    roots = root_paths or []
+    for logical_path, data in sorted(output_files.items()):
+        _safe_relative_path(logical_path, f"captured logical path {logical_path}")
+        _check_root_leaks(data, roots, logical_path)
+        digest = hashlib.sha256(data).hexdigest()
+        if logical_path.startswith("_static/") or logical_path.startswith("_images/"):
+            storage = "blob"
+            store_blob(profile_root / "blobs", data)
+            storage_path = f"blobs/{digest}"
+        else:
+            storage = "ref"
+            storage_path = f"refs/{source_set}/{case_id}/{logical_path}"
+            destination = profile_root / Path(storage_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() and destination.is_symlink():
+                raise StorageError(f"reference path is a symlink: {destination}")
+            destination.write_bytes(data)
+        records.append(
+            {
+                "logical_path": logical_path,
+                "storage": storage,
+                "storage_path": storage_path,
+                "sha256": digest,
+                "size": len(data),
+            }
+        )
+    return records
+
+
+def atomic_swap_profile(staging: Path, final: Path, *, case_count: int) -> None:
+    """Replace one profile subtree only after staging validation succeeds."""
+    staging = Path(staging)
+    final = Path(final)
+    if not staging.is_dir():
+        raise StorageError(f"staging profile does not exist: {staging}")
+    injection = os.environ.get("HTML_ORACLE_INJECT_FAILURE_AFTER")
+    if injection is not None and case_count >= int(injection):
+        raise RuntimeError("injected generation failure before profile swap")
+    old = final.with_name(final.name + ".old")
+    if old.exists():
+        import shutil
+
+        shutil.rmtree(old)
+    if final.exists():
+        final.replace(old)
+    try:
+        staging.replace(final)
+    except Exception:
+        if not final.exists() and old.exists():
+            old.replace(final)
+        raise
+    if old.exists():
+        import shutil
+
+        shutil.rmtree(old)
+
+
 def canonical_hash(entries: list[tuple[str, str]]) -> str:
     payload = "".join(
         f"{path}\0{digest}\n" for path, digest in sorted(entries)
@@ -869,3 +1004,361 @@ def validate_index_document(document: object, profile_root: Path) -> IndexDocume
         "profiles": profiles,
         "cases": cases,
     }
+
+
+def normalize_warnings(raw: bytes, source_root: Path) -> str:
+    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    for spelling in (str(source_root.resolve()), str(source_root.resolve()).replace("\\", "/")):
+        text = text.replace(spelling, "<SRCDIR>")
+    return text
+
+
+def _write_input_tree(case: DiscoveredCase, profile_root: Path) -> list[FileRecord]:
+    if case.status.startswith("excluded-"):
+        return []
+    records: list[FileRecord] = []
+    for logical_path, data in sorted(case.files.items()):
+        logical_path = _safe_relative_path(logical_path, f"input logical path {logical_path}")
+        storage_path = f"inputs/{case.source_set}/{case.case_id}/{logical_path}"
+        destination = profile_root / Path(storage_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and destination.is_symlink():
+            raise StorageError(f"input path is a symlink: {destination}")
+        destination.write_bytes(data)
+        records.append(
+            {
+                "logical_path": logical_path,
+                "storage": "input",
+                "storage_path": storage_path,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+            }
+        )
+    return records
+
+
+def _write_warnings(profile_root: Path, case: DiscoveredCase, warnings: str) -> None:
+    if case.status.startswith("excluded-"):
+        return
+    path = profile_root / "refs" / case.source_set / case.case_id / "warnings.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(warnings, encoding="utf-8", newline="")
+
+
+PROFILE_VERSIONS = {
+    "core": ("9.1.0", "0.22.4"),
+    "local_needs": ("9.1.0", "0.21.2"),
+}
+
+
+def profile_record(repo_root: Path, profile: str) -> ProfileRecord:
+    if profile not in PROFILE_VERSIONS:
+        raise DiscoveryError(f"unknown profile: {profile}")
+    sphinx_version, docutils_version = PROFILE_VERSIONS[profile]
+    lock_path = repo_root / "tools" / "oracle_profiles" / profile / "uv.lock"
+    if not lock_path.is_file():
+        raise StorageError(f"profile lock does not exist: {lock_path}")
+    record: ProfileRecord = {
+        "sphinx": sphinx_version,
+        "docutils": docutils_version,
+        "needs_version": "8.5.0" if profile == "local_needs" else None,
+        "needs_commit": NEEDS_COMMIT if profile == "local_needs" else None,
+        "needs_tree": NEEDS_TREE if profile == "local_needs" else None,
+        "lock_path": lock_path.relative_to(repo_root).as_posix(),
+        "lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+        "determinism_shims": ["uuid.uuid4=counter"]
+        + (["needs_reproducible_json=1"] if profile == "local_needs" else []),
+    }
+    return record
+
+
+def _run_reference_case(
+    case: DiscoveredCase,
+    *,
+    repo_root: Path,
+    needs_root: Path | None,
+) -> dict[str, Any]:
+    work_root = repo_root / "target" / "html-oracle" / "generator-work"
+    work_root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix="case-", dir=work_root))
+    try:
+        source_root = temporary / "source"
+        output_root = temporary / "output"
+        doctree_root = temporary / "doctree"
+        warnings_path = temporary / "warnings.txt"
+        materialize_case(case, source_root)
+        command = [
+            sys.executable,
+            str(repo_root / "tools" / "html_oracle_runner.py"),
+            "--profile",
+            case.profile,
+            "--sourcedir",
+            str(source_root),
+            "--outputdir",
+            str(output_root),
+            "--doctree-dir",
+            str(doctree_root),
+            "--builder",
+            "html",
+            "--warnings-file",
+            str(warnings_path),
+        ]
+        if needs_root is not None:
+            command.extend(["--needs-root", str(needs_root)])
+        environment = os.environ.copy()
+        environment["PYTHONNOUSERSITE"] = "1"
+        result = subprocess.run(
+            command,
+            cwd=repo_root,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        combined = result.stdout + result.stderr
+        if result.returncode == 0:
+            status: CaseStatus = "built"
+        elif b"Traceback (most recent call last):" in combined:
+            status = "reference-crash"
+        else:
+            status = "build-error"
+        output_files: dict[str, bytes] = {}
+        if output_root.is_dir():
+            for path in sorted(output_root.rglob("*")):
+                if path.is_symlink():
+                    raise StorageError(f"symlink in captured output: {path}")
+                if not path.is_file():
+                    continue
+                logical_path = path.relative_to(output_root).as_posix()
+                data = path.read_bytes()
+                _check_root_leaks(
+                    data,
+                    [source_root, output_root, doctree_root],
+                    logical_path,
+                )
+                output_files[logical_path] = data
+        raw_warnings = warnings_path.read_bytes() if warnings_path.is_file() else b""
+        return {
+            "status": status,
+            "exit_code": result.returncode,
+            "warnings": normalize_warnings(raw_warnings, source_root),
+            "output_files": output_files,
+        }
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _build_case_worker(
+    case: DiscoveredCase,
+    repo_root: Path,
+    needs_root: Path | None,
+) -> dict[str, Any]:
+    if case.status.startswith("excluded-"):
+        return {
+            "status": case.status,
+            "exit_code": None,
+            "warnings": "",
+            "output_files": {},
+        }
+    return _run_reference_case(case, repo_root=repo_root, needs_root=needs_root)
+
+
+def _case_record_from_result(
+    case: DiscoveredCase,
+    result: dict[str, Any],
+    profile_root: Path,
+) -> CaseRecord:
+    status = result["status"]
+    excluded = status.startswith("excluded-")
+    input_files = _write_input_tree(case, profile_root)
+    output_files = result["output_files"]
+    files = store_output_files(
+        output_files,
+        profile_root,
+        case.source_set,
+        case.case_id,
+    )
+    warnings = result["warnings"]
+    _write_warnings(profile_root, case, warnings)
+    if excluded:
+        input_files = []
+        files = []
+    return {
+        "profile": case.profile,
+        "source_set": case.source_set,
+        "case_id": case.case_id,
+        "status": status,
+        "exit_code": None if excluded else result["exit_code"],
+        "warnings": "" if excluded else warnings,
+        "excluded_reason": case.excluded_reason if excluded else None,
+        "origin": {
+            "source_set": case.source_set,
+            "origin_path": case.origin_path,
+            "pytest_node_ids": sorted(case.pytest_node_ids),
+            "variants_not_captured": case.variants_not_captured,
+        },
+        "input_files": input_files,
+        "input_sha256": canonical_hash([(item["logical_path"], item["sha256"]) for item in input_files]),
+        "tree_sha256": canonical_hash([(item["logical_path"], item["sha256"]) for item in files]),
+        "files": files,
+        "needs_json": None,
+        "needs_status": None,
+        "needs_exit_code": None,
+        "needs_warnings": None,
+    }
+
+
+def _write_index(profile_root: Path, document: IndexDocument) -> None:
+    path = profile_root / "index.json"
+    path.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="",
+    )
+
+
+def _referenced_storage_paths(document: IndexDocument) -> set[str]:
+    paths: set[str] = set()
+    for case in document["cases"]:
+        for record in case["input_files"] + case["files"]:
+            paths.add(record["storage_path"])
+        if case["needs_json"] is not None:
+            paths.add(case["needs_json"]["storage_path"])
+    return paths
+
+
+def validate_profile_tree(document: IndexDocument, profile_root: Path) -> None:
+    """Validate ledger references in both directions, including stale artifacts."""
+    profile_root = Path(profile_root).resolve()
+    validate_index_document(document, profile_root)
+    referenced = _referenced_storage_paths(document)
+    for directory_name in ("inputs", "refs", "blobs"):
+        directory = profile_root / directory_name
+        if not directory.exists():
+            continue
+        for path in sorted(directory.rglob("*")):
+            if path.is_symlink():
+                raise StorageError(f"symlink in profile tree: {path}")
+            if not path.is_file():
+                continue
+            relative = path.relative_to(profile_root).as_posix()
+            if relative in referenced:
+                continue
+            if directory_name == "refs" and path.name == "warnings.txt":
+                continue
+            raise StorageError(f"unreferenced profile artifact: {relative}")
+
+
+def generate_profile(
+    repo_root: Path,
+    config_path: Path,
+    out_root: Path,
+    *,
+    profile: str,
+    needs_root: Path | None = None,
+    jobs: int | None = None,
+) -> IndexDocument:
+    repo_root = Path(repo_root).resolve()
+    out_root = Path(out_root).resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+    staging = out_root / f"{profile}.staging"
+    final = out_root / profile
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    for directory in ("inputs", "refs", "blobs"):
+        (staging / directory).mkdir()
+    cases = discover_cases(repo_root, config_path, profile=profile, needs_root=needs_root)
+    workers = max(1, jobs or (os.cpu_count() or 1))
+    results: list[dict[str, Any]] = []
+    try:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(_build_case_worker, case, repo_root, needs_root) for case in cases]
+            for case, future in zip(cases, futures):
+                result = future.result()
+                results.append(_case_record_from_result(case, result, staging))
+        document: IndexDocument = {
+            "schema_version": 1,
+            "generator": "html-oracle/1",
+            "profiles": {profile: profile_record(repo_root, profile)},
+            "cases": sorted(results, key=lambda item: (item["profile"], item["source_set"], item["case_id"])),
+        }
+        _write_index(staging, document)
+        validate_profile_tree(document, staging)
+        atomic_swap_profile(staging, final, case_count=len(cases))
+        return document
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+
+
+def verify_profile(
+    repo_root: Path,
+    config_path: Path,
+    out_root: Path,
+    *,
+    profile: str,
+    needs_root: Path | None = None,
+) -> IndexDocument:
+    profile_root = Path(out_root).resolve() / profile
+    index_path = profile_root / "index.json"
+    if not index_path.is_file():
+        raise StorageError(f"missing profile index: {index_path}")
+    document = json.loads(index_path.read_text(encoding="utf-8"))
+    validated = validate_index_document(document, profile_root)
+    validate_profile_tree(validated, profile_root)
+    discovered = discover_cases(repo_root, config_path, profile=profile, needs_root=needs_root)
+    assert_discovery_keys_equal(discovered, validated["cases"])
+    counts: dict[str, dict[str, int]] = {}
+    for case in validated["cases"]:
+        source_counts = counts.setdefault(case["source_set"], {})
+        source_counts[case["status"]] = source_counts.get(case["status"], 0) + 1
+    total_size = sum(path.stat().st_size for path in profile_root.rglob("*") if path.is_file())
+    print(f"{profile}: {len(validated['cases'])} cases, {total_size} bytes")
+    for source_set in sorted(counts):
+        print(f"  {source_set}: {json.dumps(counts[source_set], sort_keys=True)}")
+    return validated
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--profile", choices=("core", "local_needs"), required=True)
+    parser.add_argument("--needs-root", type=Path)
+    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("-j", type=int, default=None)
+    args = parser.parse_args(argv)
+    repo_root = Path(__file__).resolve().parents[1]
+    config_path = args.config if args.config.is_absolute() else repo_root / args.config
+    if args.verify:
+        verify_profile(
+            repo_root,
+            config_path,
+            args.out,
+            profile=args.profile,
+            needs_root=args.needs_root,
+        )
+    else:
+        document = generate_profile(
+            repo_root,
+            config_path,
+            args.out,
+            profile=args.profile,
+            needs_root=args.needs_root,
+            jobs=args.j,
+        )
+        total_size = sum(
+            path.stat().st_size
+            for path in (Path(args.out).resolve() / args.profile).rglob("*")
+            if path.is_file()
+        )
+        print(f"{args.profile}: generated {len(document['cases'])} cases, {total_size} bytes")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

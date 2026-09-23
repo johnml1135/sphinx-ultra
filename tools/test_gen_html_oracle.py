@@ -8,16 +8,23 @@ from pathlib import Path
 
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 from tools.gen_html_oracle import (
     DiscoveryError,
     DiscoveredCase,
     SchemaError,
     assert_discovery_keys_equal,
+    StorageError,
+    atomic_swap_profile,
+    capture_output_tree,
     classify_project,
     discover_cases,
     ensure_unique_case_keys,
+    generate_profile,
     validate_needs_metadata,
     validate_index_document,
+    store_blob,
 )
 
 
@@ -327,3 +334,99 @@ def test_needs_provenance_ignores_dirt_outside_package_subtree():
         tree="958172a89defcec69704f6b9d61e482e7c4e8409",
         status="",
     )
+
+
+def test_repeated_static_bytes_use_one_blob(tmp_path):
+    blob_root = tmp_path / "blobs"
+    first = store_blob(blob_root, b"same static bytes")
+    second = store_blob(blob_root, b"same static bytes")
+    assert first == second
+    assert list(blob_root.iterdir()) == [blob_root / first]
+
+
+def test_capture_preserves_all_logical_paths_and_changes_hashes(tmp_path):
+    output = tmp_path / "output"
+    output.joinpath("_static").mkdir(parents=True)
+    output.joinpath("_images").mkdir()
+    output.joinpath("_static/theme.css").write_bytes(b"same")
+    output.joinpath("_images/logo.png").write_bytes(b"same")
+    output.joinpath("index.html").write_bytes(b"one")
+    records = capture_output_tree(output, tmp_path, "set", "case")
+    assert [record["logical_path"] for record in records] == [
+        "_images/logo.png",
+        "_static/theme.css",
+        "index.html",
+    ]
+    assert {record["storage"] for record in records if record["logical_path"].startswith("_")} == {"blob"}
+    index_record = next(record for record in records if record["logical_path"] == "index.html")
+    output.joinpath("index.html").write_bytes(b"two")
+    changed = capture_output_tree(output, tmp_path, "set", "case")
+    changed_record = next(record for record in changed if record["logical_path"] == "index.html")
+    assert changed_record["sha256"] != index_record["sha256"]
+
+
+def test_capture_rejects_symlink_before_file_check(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    target = tmp_path / "target.txt"
+    target.write_bytes(b"target")
+    try:
+        (output / "link.txt").symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable")
+    with pytest.raises(StorageError, match="symlink"):
+        capture_output_tree(output, tmp_path, "set", "case")
+
+
+def test_capture_rejects_absolute_root_leaks(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "index.html").write_text(str(tmp_path / "source"), encoding="utf-8")
+    with pytest.raises(StorageError, match="root leak"):
+        capture_output_tree(
+            output,
+            tmp_path,
+            "set",
+            "case",
+            root_paths=[tmp_path / "source", tmp_path / "build", tmp_path / "cache"],
+        )
+
+
+def test_atomic_swap_failure_preserves_old_profile(tmp_path, monkeypatch):
+    final = tmp_path / "core"
+    staging = tmp_path / "core.staging"
+    final.mkdir()
+    (final / "sentinel").write_text("old", encoding="utf-8")
+    staging.mkdir()
+    (staging / "sentinel").write_text("new", encoding="utf-8")
+    monkeypatch.setenv("HTML_ORACLE_INJECT_FAILURE_AFTER", "0")
+    with pytest.raises(RuntimeError, match="injected"):
+        atomic_swap_profile(staging, final, case_count=0)
+    assert (final / "sentinel").read_text(encoding="utf-8") == "old"
+
+
+def test_generate_profile_writes_valid_atomic_case_tree(tmp_path):
+    config = tmp_path / "cases.toml"
+    config.write_text(
+        """[[source_sets]]
+name = \"html_projects\"
+profile = \"core\"
+kind = \"html_projects\"
+source = \"tests/fixtures\"
+projects = [\"basic\"]
+count = 1
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "oracle"
+    document = generate_profile(
+        REPO_ROOT,
+        config,
+        output,
+        profile="core",
+        jobs=1,
+    )
+    assert len(document["cases"]) == 1
+    assert document["cases"][0]["status"] == "built"
+    assert (output / "core" / "index.json").is_file()
+    assert not (output / "core.staging").exists()
