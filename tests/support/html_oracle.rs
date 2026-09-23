@@ -290,7 +290,7 @@ impl IndexDocument {
         let path = profile_root.join(
             record
                 .storage_path
-                .replace('/', &std::path::MAIN_SEPARATOR.to_string()),
+                .replace('/', std::path::MAIN_SEPARATOR_STR),
         );
         reject_symlink_components(profile_root, &path)?;
         let metadata = fs::metadata(&path)
@@ -336,16 +336,16 @@ fn validate_case(case: &CaseRecord, local_needs: bool) -> Result<(), String> {
     {
         return Err(format!("core case {} has local-needs fields", case.case_id));
     }
-    if local_needs && case.status.is_runnable() {
-        if case.needs_status.is_none()
+    if local_needs
+        && case.status.is_runnable()
+        && (case.needs_status.is_none()
             || case.needs_exit_code.is_none()
-            || case.needs_warnings.is_none()
-        {
-            return Err(format!(
-                "runnable local-needs case {} has incomplete second-build fields",
-                case.case_id
-            ));
-        }
+            || case.needs_warnings.is_none())
+    {
+        return Err(format!(
+            "runnable local-needs case {} has incomplete second-build fields",
+            case.case_id
+        ));
     }
     if let Some(needs_status) = case.needs_status {
         if !local_needs || !case.status.is_runnable() || needs_status.is_excluded() {
