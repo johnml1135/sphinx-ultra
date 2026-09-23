@@ -324,3 +324,34 @@ Decisions:
    `html_projects/literalinclude` (`ConfigError`: no conf.py) is a
    `build-error`, the "can't generate" path Ultra must reproduce;
    `numfig_on`, `toctree_circular` and `docutils-0500` are `reference-crash`.
+
+## Round 7: final pre-PR review (NO-GO) decisions
+
+Accepted, and fixed before the PR:
+
+1. **Nondeterministic absolute paths in committed warnings.** Warnings and
+   crash records carried `/home/runner/...` case roots and random
+   `/tmp/sphinx-err-*.log` paths. Normalize the output root to `<OUTDIR>`, the
+   doctree root to `<DOCTREEDIR>` and the case staging root to `<CASEDIR>`
+   (whole-root tokens, like `<SRCDIR>`), and replace Sphinx's crash-log paths
+   with `<SPHINX_ERR_LOG>`. The root-leak check extends to warnings after
+   normalization, so any remaining absolute path fails generation. The Rust
+   side applies the same tokens to Ultra's warnings. The corpus is regenerated
+   through the workflow.
+2. **`--verify` checks the lock digest.** Hash each profile's `uv.lock` and
+   compare it to the ledger's `lock_sha256`.
+3. **No developer-specific paths.** Tests that need a sphinx-needs checkout
+   read `SPHINX_NEEDS_ROOT` and skip with a clear reason when it's unset; the
+   docstring uses `<sphinx-needs checkout>` placeholders.
+4. **Escaped Windows roots.** `TextCrlf` normalization also replaces the
+   JSON-escaped form of the root (`C:\...`), as `SearchIndex` already does.
+5. **`Cargo.lock`.** Only `sha2` and its transitive entries change relative to
+   `origin/main`; revert the unrelated downgrades.
+
+Settled by later decisions, so not findings: the Round 3 text ("group by first
+differing expected line") and the `html-unstructured`-only fallback were
+superseded while building the diagnostics. The primary directed grouping by
+the first differing line's **content** (expected plus actual text, which is
+what makes the table actionable) and the `html-body-fallback` category (so body
+content is diffable while Ultra's templates differ). The report JSON also
+records `expected_line`.
