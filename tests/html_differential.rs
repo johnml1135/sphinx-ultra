@@ -8,7 +8,11 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
-use support::html_oracle::{compare_file, compare_trees, compare_warnings, IndexDocument, Policy};
+use support::html_oracle::{
+    compare_file, compare_trees, compare_warnings, diagnose_html, diagnose_inventory,
+    diagnose_needs_json, diagnose_searchindex, diagnose_warnings, group_first_divergences,
+    parse_keep, IndexDocument, InventoryRecord, Policy,
+};
 
 fn minimal_case() -> serde_json::Value {
     json!({
@@ -252,4 +256,151 @@ fn comparator_reports_missing_and_unexpected_files() {
     let actual = BTreeMap::new();
     let diagnostics = compare_trees(&expected, &actual, None, None, None, None);
     assert_eq!(diagnostics[0].category, "missing-file");
+}
+
+#[test]
+fn diagnostic_synthetic_html_localization_classifies_body_and_chrome() {
+    let expected = "<html><div class=\"body\" role=\"main\">\nA\n</div><footer>ok</footer></html>";
+    let body_changed =
+        "<html><div class=\"body\" role=\"main\">\nB\n</div><footer>ok</footer></html>";
+    let chrome_changed =
+        "<html><div class=\"body\" role=\"main\">\nA\n</div><footer>changed</footer></html>";
+    let both_changed =
+        "<html><div class=\"body\" role=\"main\">\nB\n</div><footer>changed</footer></html>";
+    let unstructured = "<html><main>A</main></html>";
+    assert_eq!(diagnose_html(expected, body_changed).category, "html-body");
+    assert_eq!(
+        diagnose_html(expected, chrome_changed).category,
+        "html-chrome"
+    );
+    assert_eq!(diagnose_html(expected, both_changed).category, "html-both");
+    assert_eq!(
+        diagnose_html(expected, unstructured).category,
+        "html-unstructured"
+    );
+}
+
+#[test]
+fn diagnostic_synthetic_needs_json_is_keyed_by_need_id() {
+    let expected = json!({
+        "versions": [{
+            "version": "1",
+            "needs": {
+                "N-1": {"title": "One", "status": "open"},
+                "N-2": {"title": "Two"}
+            }
+        }]
+    });
+    let actual = json!({
+        "versions": [{
+            "version": "1",
+            "needs": {
+                "N-1": {"title": "Changed", "status": "open"},
+                "N-3": {"title": "Three"}
+            }
+        }],
+        "extra": true
+    });
+    let diagnostics = diagnose_needs_json(&expected, &actual);
+    assert!(diagnostics.iter().any(|item| {
+        item.category == "missing-need" && item.logical_path.contains("needs[\"N-2\"]")
+    }));
+    assert!(diagnostics.iter().any(|item| {
+        item.category == "extra-need" && item.logical_path.contains("needs[\"N-3\"]")
+    }));
+    assert!(diagnostics.iter().any(|item| {
+        item.category == "need-field"
+            && item.logical_path == "versions[0].needs[\"N-1\"]"
+            && item.detail.contains("title")
+    }));
+    assert!(diagnostics
+        .iter()
+        .any(|item| item.category == "needs-top-level"));
+    assert_eq!(
+        diagnose_needs_json(&json!({"versions": "bad"}), &actual)[0].category,
+        "needs-json-path"
+    );
+}
+
+#[test]
+fn diagnostic_synthetic_structured_files_report_key_and_record_differences() {
+    let expected_search = json!({"docnames": ["a"], "missing": false, "titles": ["A"]});
+    let actual_search = json!({"docnames": ["a"], "extra": true, "titles": ["B"]});
+    let search = diagnose_searchindex(&expected_search, &actual_search);
+    assert!(search
+        .iter()
+        .any(|item| item.category == "searchindex-missing-key"));
+    assert!(search
+        .iter()
+        .any(|item| item.category == "searchindex-extra-key"));
+    assert!(search
+        .iter()
+        .any(|item| item.category == "searchindex-changed-key"));
+
+    let record = |name: &str, uri: &str, display_name: &str| InventoryRecord {
+        name: name.to_string(),
+        domain_role: "py:function".to_string(),
+        priority: 1,
+        uri: uri.to_string(),
+        display_name: display_name.to_string(),
+    };
+    let inventory = diagnose_inventory(
+        &[
+            record("missing", "missing.html", "-"),
+            record("changed", "old.html", "Old"),
+        ],
+        &[
+            record("extra", "extra.html", "-"),
+            record("changed", "new.html", "New"),
+        ],
+    );
+    assert!(inventory
+        .iter()
+        .any(|item| item.category == "inventory-missing-record"));
+    assert!(inventory
+        .iter()
+        .any(|item| item.category == "inventory-extra-record"));
+    assert!(inventory
+        .iter()
+        .any(|item| item.category == "inventory-changed-record"));
+}
+
+#[test]
+fn diagnostic_synthetic_warnings_and_first_divergence_are_grouped() {
+    let warnings = diagnose_warnings("one\r\ntwo\nthree\n", "one\ntwo-changed\n");
+    assert!(warnings
+        .iter()
+        .any(|item| item.category == "warning-changed-line"));
+    assert!(warnings
+        .iter()
+        .any(|item| item.category == "warning-missing-line"));
+    let diagnostics = (0..3)
+        .map(|index| support::html_oracle::Diagnostic {
+            category: "html-body".to_string(),
+            logical_path: format!("page-{index}.html"),
+            first_expected_line: Some(7),
+            expected: String::new(),
+            actual: String::new(),
+            detail: String::new(),
+        })
+        .collect::<Vec<_>>();
+    let groups = group_first_divergences(&diagnostics);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].expected_line, 7);
+    assert_eq!(groups[0].count, 3);
+}
+
+#[test]
+fn diagnostic_synthetic_keep_and_filter_policy_defaults_and_rejects_invalid_values() {
+    assert_eq!(parse_keep(None).unwrap().as_str(), "failed");
+    assert_eq!(parse_keep(Some("all")).unwrap().as_str(), "all");
+    assert!(parse_keep(Some("passing")).is_err());
+    assert_eq!(
+        support::html_oracle::rerun_filter("core/synthetic/case-1", Some("synthetic")),
+        Some("core/synthetic/case-1".to_string())
+    );
+    assert_eq!(
+        support::html_oracle::rerun_filter("core/synthetic/case-1", Some("other")),
+        None
+    );
 }

@@ -8,8 +8,6 @@ use std::path::{Component, Path, PathBuf};
 
 use flate2::read::ZlibDecoder;
 
-pub const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     Warnings,
@@ -607,6 +605,7 @@ pub fn compare_warnings(
     expected_source_root: Option<&Path>,
     actual_source_root: Option<&Path>,
 ) -> Vec<Diagnostic> {
+    let _policy = Policy::Warnings;
     let expected = normalize_warning_bytes(expected, expected_source_root);
     let actual = normalize_warning_bytes(actual, actual_source_root);
     if expected == actual {
@@ -927,4 +926,569 @@ fn diagnostic_order(left: &Diagnostic, right: &Diagnostic) -> std::cmp::Ordering
         .then_with(|| left.category.cmp(&right.category))
         .then_with(|| left.first_expected_line.cmp(&right.first_expected_line))
         .then_with(|| left.detail.cmp(&right.detail))
+}
+
+pub fn diagnose_html(expected: &str, actual: &str) -> Diagnostic {
+    let expected = String::from_utf8_lossy(&normalize_crlf(expected.as_bytes())).into_owned();
+    let actual = String::from_utf8_lossy(&normalize_crlf(actual.as_bytes())).into_owned();
+    let expected_regions = split_html_regions(&expected);
+    let actual_regions = split_html_regions(&actual);
+    let (expected_regions, actual_regions) = match (expected_regions, actual_regions) {
+        (Some(expected), Some(actual)) => (expected, actual),
+        _ => {
+            return Diagnostic {
+                category: "html-unstructured".to_string(),
+                logical_path: String::new(),
+                first_expected_line: first_difference_line(&expected, &actual),
+                expected: expected.clone(),
+                actual: actual.clone(),
+                detail: unified_diff(&expected, &actual),
+            }
+        }
+    };
+    let body_differs = expected_regions.body != actual_regions.body;
+    let chrome_differs = expected_regions.chrome != actual_regions.chrome;
+    let category = match (body_differs, chrome_differs) {
+        (true, false) => "html-body",
+        (false, true) => "html-chrome",
+        (true, true) => "html-both",
+        (false, false) => "html-body",
+    };
+    let mut detail = String::new();
+    if body_differs {
+        detail.push_str(&unified_diff(&expected_regions.body, &actual_regions.body));
+    }
+    if chrome_differs {
+        if !detail.is_empty() {
+            detail.push('\n');
+        }
+        detail.push_str(&unified_diff(
+            &expected_regions.chrome,
+            &actual_regions.chrome,
+        ));
+    }
+    Diagnostic {
+        category: category.to_string(),
+        logical_path: String::new(),
+        first_expected_line: first_difference_line(&expected, &actual),
+        expected,
+        actual,
+        detail: cap_text(&detail),
+    }
+}
+
+pub fn diagnose_needs_json(expected: &Value, actual: &Value) -> Vec<Diagnostic> {
+    let (expected_object, actual_object) = match (expected.as_object(), actual.as_object()) {
+        (Some(expected), Some(actual)) => (expected, actual),
+        _ => {
+            return vec![invalid_diagnostic(
+                "needs-json-path",
+                "",
+                "needs.json root must be an object".to_string(),
+            )]
+        }
+    };
+    let expected_versions = match expected_object.get("versions").and_then(Value::as_array) {
+        Some(versions) => versions,
+        None => {
+            return vec![invalid_diagnostic(
+                "needs-json-path",
+                "versions",
+                "versions must be an array".to_string(),
+            )]
+        }
+    };
+    let actual_versions = match actual_object.get("versions").and_then(Value::as_array) {
+        Some(versions) => versions,
+        None => {
+            return vec![invalid_diagnostic(
+                "needs-json-path",
+                "versions",
+                "versions must be an array".to_string(),
+            )]
+        }
+    };
+    let mut diagnostics = Vec::new();
+    diagnostics.extend(diagnose_object_keys(
+        expected_object,
+        actual_object,
+        "needs-top-level",
+        "",
+    ));
+    if expected_versions.len() != actual_versions.len() {
+        diagnostics.push(Diagnostic {
+            category: "needs-top-level".to_string(),
+            logical_path: "versions".to_string(),
+            first_expected_line: None,
+            expected: expected_versions.len().to_string(),
+            actual: actual_versions.len().to_string(),
+            detail: "version array lengths differ".to_string(),
+        });
+    }
+    for index in 0..expected_versions.len().min(actual_versions.len()) {
+        let expected_version = match expected_versions[index].as_object() {
+            Some(version) => version,
+            None => {
+                diagnostics.push(invalid_diagnostic(
+                    "needs-json-path",
+                    &format!("versions[{index}]"),
+                    "version must be an object".to_string(),
+                ));
+                continue;
+            }
+        };
+        let actual_version = match actual_versions[index].as_object() {
+            Some(version) => version,
+            None => {
+                diagnostics.push(invalid_diagnostic(
+                    "needs-json-path",
+                    &format!("versions[{index}]"),
+                    "version must be an object".to_string(),
+                ));
+                continue;
+            }
+        };
+        diagnostics.extend(diagnose_object_keys(
+            expected_version,
+            actual_version,
+            "needs-top-level",
+            &format!("versions[{index}]"),
+        ));
+        let expected_needs = match expected_version.get("needs").and_then(Value::as_object) {
+            Some(needs) => needs,
+            None => {
+                diagnostics.push(invalid_diagnostic(
+                    "needs-json-path",
+                    &format!("versions[{index}].needs"),
+                    "needs must be an object".to_string(),
+                ));
+                continue;
+            }
+        };
+        let actual_needs = match actual_version.get("needs").and_then(Value::as_object) {
+            Some(needs) => needs,
+            None => {
+                diagnostics.push(invalid_diagnostic(
+                    "needs-json-path",
+                    &format!("versions[{index}].needs"),
+                    "needs must be an object".to_string(),
+                ));
+                continue;
+            }
+        };
+        let mut need_ids = BTreeSet::new();
+        need_ids.extend(expected_needs.keys().cloned());
+        need_ids.extend(actual_needs.keys().cloned());
+        for need_id in need_ids {
+            let path = format!("versions[{index}].needs[{:?}]", need_id);
+            match (expected_needs.get(&need_id), actual_needs.get(&need_id)) {
+                (Some(expected_need), None) => diagnostics.push(Diagnostic {
+                    category: "missing-need".to_string(),
+                    logical_path: path,
+                    first_expected_line: None,
+                    expected: json_compact(expected_need),
+                    actual: String::new(),
+                    detail: "need is absent from actual output".to_string(),
+                }),
+                (None, Some(actual_need)) => diagnostics.push(Diagnostic {
+                    category: "extra-need".to_string(),
+                    logical_path: path,
+                    first_expected_line: None,
+                    expected: String::new(),
+                    actual: json_compact(actual_need),
+                    detail: "need exists only in actual output".to_string(),
+                }),
+                (Some(expected_need), Some(actual_need)) => {
+                    let (expected_need, actual_need) =
+                        match (expected_need.as_object(), actual_need.as_object()) {
+                            (Some(expected), Some(actual)) => (expected, actual),
+                            _ => {
+                                diagnostics.push(invalid_diagnostic(
+                                    "needs-json-path",
+                                    &path,
+                                    "need record must be an object".to_string(),
+                                ));
+                                continue;
+                            }
+                        };
+                    let mut field_names = BTreeSet::new();
+                    field_names.extend(expected_need.keys().cloned());
+                    field_names.extend(actual_need.keys().cloned());
+                    for field in field_names {
+                        let expected_field = expected_need.get(&field);
+                        let actual_field = actual_need.get(&field);
+                        if expected_field != actual_field {
+                            diagnostics.push(Diagnostic {
+                                category: "need-field".to_string(),
+                                logical_path: path.clone(),
+                                first_expected_line: None,
+                                expected: expected_field.map(json_compact).unwrap_or_default(),
+                                actual: actual_field.map(json_compact).unwrap_or_default(),
+                                detail: format!("field {field:?} differs"),
+                            });
+                        }
+                    }
+                }
+                (None, None) => unreachable!(),
+            }
+        }
+    }
+    diagnostics.sort_by(diagnostic_order);
+    diagnostics
+}
+
+pub fn diagnose_searchindex(expected: &Value, actual: &Value) -> Vec<Diagnostic> {
+    let (expected, actual) = match (expected.as_object(), actual.as_object()) {
+        (Some(expected), Some(actual)) => (expected, actual),
+        _ => {
+            return vec![invalid_diagnostic(
+                "searchindex-value",
+                "searchindex.js",
+                "searchindex value must be an object".to_string(),
+            )]
+        }
+    };
+    let mut keys = BTreeSet::new();
+    keys.extend(expected.keys().cloned());
+    keys.extend(actual.keys().cloned());
+    let mut diagnostics = Vec::new();
+    for key in keys {
+        match (expected.get(&key), actual.get(&key)) {
+            (Some(expected), None) => diagnostics.push(Diagnostic {
+                category: "searchindex-missing-key".to_string(),
+                logical_path: key.clone(),
+                first_expected_line: None,
+                expected: json_compact(expected),
+                actual: String::new(),
+                detail: format!("searchindex key {key:?} missing from actual"),
+            }),
+            (None, Some(actual)) => diagnostics.push(Diagnostic {
+                category: "searchindex-extra-key".to_string(),
+                logical_path: key.clone(),
+                first_expected_line: None,
+                expected: String::new(),
+                actual: json_compact(actual),
+                detail: format!("searchindex key {key:?} is extra in actual"),
+            }),
+            (Some(expected), Some(actual)) if expected != actual => diagnostics.push(Diagnostic {
+                category: "searchindex-changed-key".to_string(),
+                logical_path: key.clone(),
+                first_expected_line: None,
+                expected: json_compact(expected),
+                actual: json_compact(actual),
+                detail: format!("searchindex key {key:?} changed"),
+            }),
+            (Some(_), Some(_)) | (None, None) => {}
+        }
+    }
+    diagnostics.sort_by(diagnostic_order);
+    diagnostics
+}
+
+pub fn diagnose_inventory(
+    expected: &[InventoryRecord],
+    actual: &[InventoryRecord],
+) -> Vec<Diagnostic> {
+    let expected = expected
+        .iter()
+        .map(|record| (inventory_identity(record), record))
+        .collect::<BTreeMap<_, _>>();
+    let actual = actual
+        .iter()
+        .map(|record| (inventory_identity(record), record))
+        .collect::<BTreeMap<_, _>>();
+    let mut identities = BTreeSet::new();
+    identities.extend(expected.keys().cloned());
+    identities.extend(actual.keys().cloned());
+    let mut diagnostics = Vec::new();
+    for identity in identities {
+        match (expected.get(&identity), actual.get(&identity)) {
+            (Some(expected), None) => diagnostics.push(Diagnostic {
+                category: "inventory-missing-record".to_string(),
+                logical_path: identity.0.clone(),
+                first_expected_line: None,
+                expected: inventory_record_text(expected),
+                actual: String::new(),
+                detail: "inventory record is absent from actual output".to_string(),
+            }),
+            (None, Some(actual)) => diagnostics.push(Diagnostic {
+                category: "inventory-extra-record".to_string(),
+                logical_path: identity.0.clone(),
+                first_expected_line: None,
+                expected: String::new(),
+                actual: inventory_record_text(actual),
+                detail: "inventory record exists only in actual output".to_string(),
+            }),
+            (Some(expected), Some(actual)) if expected != actual => diagnostics.push(Diagnostic {
+                category: "inventory-changed-record".to_string(),
+                logical_path: identity.0.clone(),
+                first_expected_line: None,
+                expected: inventory_record_text(expected),
+                actual: inventory_record_text(actual),
+                detail: "inventory URI or display name changed".to_string(),
+            }),
+            (Some(_), Some(_)) | (None, None) => {}
+        }
+    }
+    diagnostics.sort_by(diagnostic_order);
+    diagnostics
+}
+
+pub fn diagnose_warnings(expected: &str, actual: &str) -> Vec<Diagnostic> {
+    let expected = String::from_utf8_lossy(&normalize_crlf(expected.as_bytes())).into_owned();
+    let actual = String::from_utf8_lossy(&normalize_crlf(actual.as_bytes())).into_owned();
+    let expected = expected.lines().collect::<Vec<_>>();
+    let actual = actual.lines().collect::<Vec<_>>();
+    let mut diagnostics = Vec::new();
+    for index in 0..expected.len().max(actual.len()) {
+        match (expected.get(index), actual.get(index)) {
+            (Some(expected), Some(actual)) if expected != actual => diagnostics.push(Diagnostic {
+                category: "warning-changed-line".to_string(),
+                logical_path: "warnings".to_string(),
+                first_expected_line: Some(index + 1),
+                expected: (*expected).to_string(),
+                actual: (*actual).to_string(),
+                detail: "warning line differs".to_string(),
+            }),
+            (Some(expected), None) => diagnostics.push(Diagnostic {
+                category: "warning-missing-line".to_string(),
+                logical_path: "warnings".to_string(),
+                first_expected_line: Some(index + 1),
+                expected: (*expected).to_string(),
+                actual: String::new(),
+                detail: "warning line is absent from actual output".to_string(),
+            }),
+            (None, Some(actual)) => diagnostics.push(Diagnostic {
+                category: "warning-extra-line".to_string(),
+                logical_path: "warnings".to_string(),
+                first_expected_line: Some(index + 1),
+                expected: String::new(),
+                actual: (*actual).to_string(),
+                detail: "warning line exists only in actual output".to_string(),
+            }),
+            (None, None) | (Some(_), Some(_)) => {}
+        }
+    }
+    diagnostics.sort_by(diagnostic_order);
+    diagnostics
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    Failed,
+    All,
+}
+
+impl Keep {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Failed => "failed",
+            Self::All => "all",
+        }
+    }
+}
+
+pub fn parse_keep(value: Option<&str>) -> Result<Keep, String> {
+    match value.unwrap_or("failed") {
+        "failed" => Ok(Keep::Failed),
+        "all" => Ok(Keep::All),
+        other => Err(format!(
+            "HTML_ORACLE_KEEP must be failed or all, got {other:?}"
+        )),
+    }
+}
+
+pub fn rerun_filter(case_key: &str, filter: Option<&str>) -> Option<String> {
+    match filter {
+        Some(filter) if !case_key.contains(filter) => None,
+        _ => Some(case_key.to_string()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstDivergenceGroup {
+    pub expected_line: usize,
+    pub count: usize,
+    pub sample_files: Vec<String>,
+}
+
+pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenceGroup> {
+    let mut grouped = BTreeMap::<usize, Vec<String>>::new();
+    for diagnostic in diagnostics {
+        if diagnostic.category.starts_with("html-") {
+            if let Some(line) = diagnostic.first_expected_line {
+                grouped
+                    .entry(line)
+                    .or_default()
+                    .push(diagnostic.logical_path.clone());
+            }
+        }
+    }
+    let mut groups = grouped
+        .into_iter()
+        .map(|(expected_line, mut sample_files)| {
+            sample_files.sort();
+            sample_files.dedup();
+            let count = sample_files.len();
+            sample_files.truncate(3);
+            FirstDivergenceGroup {
+                expected_line,
+                count,
+                sample_files,
+            }
+        })
+        .collect::<Vec<_>>();
+    groups.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.expected_line.cmp(&right.expected_line))
+    });
+    groups.truncate(25);
+    groups
+}
+
+struct HtmlRegions {
+    body: String,
+    chrome: String,
+}
+
+fn split_html_regions(value: &str) -> Option<HtmlRegions> {
+    const MARKER: &str = "<div class=\"body\" role=\"main\">";
+    let body_start = value.find(MARKER)?;
+    let mut depth = 0usize;
+    let mut cursor = body_start;
+    let mut body_end = None;
+    while let Some(relative_start) = value[cursor..].find('<') {
+        let tag_start = cursor + relative_start;
+        let relative_end = value[tag_start..].find('>')?;
+        let tag_end = tag_start + relative_end + 1;
+        let tag = &value[tag_start..tag_end];
+        if tag.starts_with("</div") {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                body_end = Some(tag_end);
+                break;
+            }
+        } else if tag.starts_with("<div")
+            && tag
+                .as_bytes()
+                .get(4)
+                .map(|byte| byte.is_ascii_whitespace() || *byte == b'>' || *byte == b'/')
+                .unwrap_or(false)
+            && !tag.trim_end().ends_with("/>")
+        {
+            depth += 1;
+        }
+        cursor = tag_end;
+    }
+    let body_end = body_end?;
+    Some(HtmlRegions {
+        body: value[body_start..body_end].to_string(),
+        chrome: format!("{}{}", &value[..body_start], &value[body_end..]),
+    })
+}
+
+fn diagnose_object_keys(
+    expected: &serde_json::Map<String, Value>,
+    actual: &serde_json::Map<String, Value>,
+    category: &str,
+    prefix: &str,
+) -> Vec<Diagnostic> {
+    let mut keys = BTreeSet::new();
+    keys.extend(expected.keys().cloned());
+    keys.extend(actual.keys().cloned());
+    let mut diagnostics = Vec::new();
+    for key in keys {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match (expected.get(&key), actual.get(&key)) {
+            (Some(expected), None) => diagnostics.push(Diagnostic {
+                category: category.to_string(),
+                logical_path: path,
+                first_expected_line: None,
+                expected: json_compact(expected),
+                actual: String::new(),
+                detail: "key missing from actual output".to_string(),
+            }),
+            (None, Some(actual)) => diagnostics.push(Diagnostic {
+                category: category.to_string(),
+                logical_path: path,
+                first_expected_line: None,
+                expected: String::new(),
+                actual: json_compact(actual),
+                detail: "extra key in actual output".to_string(),
+            }),
+            (Some(expected), Some(actual)) if expected != actual => diagnostics.push(Diagnostic {
+                category: category.to_string(),
+                logical_path: path,
+                first_expected_line: None,
+                expected: json_compact(expected),
+                actual: json_compact(actual),
+                detail: "key value differs".to_string(),
+            }),
+            (Some(_), Some(_)) | (None, None) => {}
+        }
+    }
+    diagnostics
+}
+
+fn json_compact(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string())
+}
+
+fn inventory_identity(record: &InventoryRecord) -> (String, String, i32) {
+    (
+        record.name.clone(),
+        record.domain_role.clone(),
+        record.priority,
+    )
+}
+
+fn inventory_record_text(record: &InventoryRecord) -> String {
+    format!(
+        "{} {} {} {} {}",
+        record.name, record.domain_role, record.priority, record.uri, record.display_name
+    )
+}
+
+fn unified_diff(expected: &str, actual: &str) -> String {
+    let expected_lines = expected.lines().collect::<Vec<_>>();
+    let actual_lines = actual.lines().collect::<Vec<_>>();
+    let first = (0..expected_lines.len().max(actual_lines.len()))
+        .find(|index| expected_lines.get(*index) != actual_lines.get(*index));
+    let Some(first) = first else {
+        return String::new();
+    };
+    let start = first.saturating_sub(3);
+    let end = (first + 4).min(expected_lines.len().max(actual_lines.len()));
+    let mut output = String::from("--- expected\n+++ actual\n");
+    for index in start..end {
+        match (expected_lines.get(index), actual_lines.get(index)) {
+            (Some(expected), Some(actual)) if expected == actual => {
+                output.push_str(&format!(" {expected}\n"));
+            }
+            (Some(expected), Some(actual)) => {
+                output.push_str(&format!("-{expected}\n+{actual}\n"));
+            }
+            (Some(expected), None) => output.push_str(&format!("-{expected}\n")),
+            (None, Some(actual)) => output.push_str(&format!("+{actual}\n")),
+            (None, None) => {}
+        }
+    }
+    cap_text(&output)
+}
+
+fn cap_text(value: &str) -> String {
+    const MAX_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+    if value.len() <= MAX_DIAGNOSTIC_BYTES {
+        value.to_string()
+    } else {
+        let mut capped = value.as_bytes()[..MAX_DIAGNOSTIC_BYTES].to_vec();
+        capped.extend_from_slice(b"\n[output truncated]\n");
+        String::from_utf8_lossy(&capped).into_owned()
+    }
 }
