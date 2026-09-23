@@ -5,7 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from tools.gen_html_oracle import SchemaError, validate_index_document
+from tools.gen_html_oracle import (
+    DiscoveryError,
+    DiscoveredCase,
+    SchemaError,
+    assert_discovery_keys_equal,
+    classify_project,
+    discover_cases,
+    ensure_unique_case_keys,
+    validate_index_document,
+)
 
 
 def _file_record(storage_path: str, content: bytes, *, logical_path: str = "index.rst"):
@@ -140,3 +149,84 @@ def test_rejects_files_on_excluded_case(tmp_path):
     ]
     with pytest.raises(SchemaError, match="excluded"):
         validate_index_document(document, tmp_path)
+
+
+def test_discovers_the_complete_core_corpus():
+    repo_root = Path(__file__).resolve().parents[1]
+    cases = discover_cases(
+        repo_root,
+        repo_root / "tools" / "html_oracle_cases.toml",
+        profile="core",
+    )
+    counts = {}
+    for case in cases:
+        counts[case.source_set] = counts.get(case.source_set, 0) + 1
+    assert counts == {
+        "docutils_snippets": 735,
+        "environment_projects": 29,
+        "html_projects": 7,
+        "inventory_projects": 4,
+        "sphinx_read_snippets": 489,
+    }
+    assert all(case.files for case in cases)
+
+
+def test_discovers_all_local_needs_projects():
+    repo_root = Path(__file__).resolve().parents[1]
+    cases = discover_cases(
+        repo_root,
+        repo_root / "tools" / "html_oracle_cases.toml",
+        profile="local_needs",
+        needs_root=Path(r"C:\Users\johnm\Documents\repos\sphinx-needs"),
+    )
+    assert len(cases) == 142
+    assert {case.source_set for case in cases} == {"sphinx_needs_doc_tests"}
+    assert all(case.files.get("conf.py") for case in cases)
+
+
+def test_rejects_duplicate_discovery_keys():
+    case = DiscoveredCase(
+        profile="core",
+        source_set="fixture",
+        case_id="same",
+        origin_path="fixture",
+        files={"index.rst": b""},
+    )
+    with pytest.raises(DiscoveryError, match="duplicate"):
+        ensure_unique_case_keys([case, case])
+
+
+def test_rejects_discovery_ledger_key_mismatch():
+    case = DiscoveredCase(
+        profile="core",
+        source_set="fixture",
+        case_id="same",
+        origin_path="fixture",
+        files={"index.rst": b""},
+    )
+    with pytest.raises(DiscoveryError, match="mismatch"):
+        assert_discovery_keys_equal([case], [])
+
+
+def test_rejects_needs_root_without_pinned_subtree(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    with pytest.raises(DiscoveryError, match="needs-root"):
+        discover_cases(
+            repo_root,
+            repo_root / "tools" / "html_oracle_cases.toml",
+            profile="local_needs",
+            needs_root=tmp_path,
+        )
+
+
+def test_plantuml_app_extension_is_excluded_and_network_wins():
+    files = {
+        "conf.py": b"extensions = []\napp.setup_extension('sphinxcontrib.plantuml')\n",
+        "index.rst": b"index\n=====\n",
+    }
+    assert classify_project(files) == ("excluded-plantuml", "conf.py loads sphinxcontrib.plantuml")
+    both = {
+        "conf.py": b"extensions = ['sphinxcontrib.plantuml']\nintersphinx_mapping = {'x': ('https://example.invalid', None)}\n",
+        "index.rst": b"index\n=====\n",
+    }
+    assert classify_project(both)[0] == "excluded-network"

@@ -33,9 +33,14 @@ replaced atomically and can be regenerated independently.
 from __future__ import annotations
 
 import hashlib
+import ast
+import importlib.util
+import json
 import re
+import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 CaseStatus = Literal[
@@ -151,6 +156,405 @@ class IndexDocument(TypedDict):
 
 class SchemaError(ValueError):
     """Raised when an index or one of its referenced artifacts is invalid."""
+
+
+class DiscoveryError(ValueError):
+    """Raised when the configured source corpus cannot be materialized."""
+
+
+@dataclass
+class DiscoveredCase:
+    profile: str
+    source_set: str
+    case_id: str
+    origin_path: str
+    files: dict[str, bytes]
+    pytest_node_ids: list[str] = field(default_factory=list)
+    variants_not_captured: bool = False
+    status: CaseStatus = "built"
+    excluded_reason: str | None = None
+    confoverrides: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return self.profile, self.source_set, self.case_id
+
+
+BASE_CONF_PY = (
+    "project = 'html-oracle'\n"
+    "extensions = []\n"
+    "master_doc = 'index'\n"
+    "exclude_patterns = ['_build']\n"
+    "smartquotes = False\n"
+    "keep_warnings = True\n"
+)
+
+
+def _python_conf(overrides: dict[str, Any], *, project: str = "html-oracle") -> bytes:
+    lines = [
+        f"project = {project!r}",
+        "extensions = []",
+        "master_doc = 'index'",
+        "exclude_patterns = ['_build']",
+    ]
+    for key in sorted(overrides):
+        lines.append(f"{key} = {overrides[key]!r}")
+    lines.append("")
+    return ("\n".join(lines)).encode("utf-8")
+
+
+def _safe_case_base(identifier: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", identifier).strip("-.")
+    return safe or "case"
+
+
+def assign_case_ids(identifiers: list[str]) -> dict[str, str]:
+    """Return deterministic short IDs, suffixing truncations and collisions."""
+    if len(set(identifiers)) != len(identifiers):
+        raise DiscoveryError("duplicate source identifiers")
+    bases = {identifier: _safe_case_base(identifier) for identifier in identifiers}
+    groups: dict[str, list[str]] = {}
+    for identifier, base in bases.items():
+        groups.setdefault(base[:48], []).append(identifier)
+    result: dict[str, str] = {}
+    for identifier in sorted(identifiers):
+        base = bases[identifier]
+        needs_suffix = len(base) > 48 or len(groups[base[:48]]) > 1
+        if needs_suffix:
+            result[identifier] = f"{base[:48]}-{hashlib.sha256(identifier.encode('utf-8')).hexdigest()[:8]}"
+        else:
+            result[identifier] = base
+    if len(set(result.values())) != len(result):
+        raise DiscoveryError("case ID collision after sanitization")
+    return result
+
+
+def _read_tree_bytes(source: Path) -> dict[str, bytes]:
+    source = source.resolve()
+    if not source.is_dir():
+        raise DiscoveryError(f"source directory does not exist: {source}")
+    files: dict[str, bytes] = {}
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise DiscoveryError(f"symlink is not allowed in source tree: {path}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source).as_posix()
+        _safe_relative_path(relative, f"source path {relative}")
+        files[relative] = path.read_bytes()
+    return files
+
+
+def materialize_case(case: DiscoveredCase, destination: Path) -> None:
+    """Materialize one discovered case, rejecting symlinked destinations."""
+    destination = Path(destination)
+    if destination.exists() and destination.is_symlink():
+        raise DiscoveryError(f"materialization destination is a symlink: {destination}")
+    destination.mkdir(parents=True, exist_ok=True)
+    for relative, data in sorted(case.files.items()):
+        safe = _safe_relative_path(relative, f"case file {relative}")
+        path = destination / Path(safe)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.is_symlink():
+            raise DiscoveryError(f"materialization destination is a symlink: {path}")
+        path.write_bytes(data)
+
+
+def _literal_strings(tree: ast.AST) -> list[str]:
+    return [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+
+def classify_project(files: dict[str, bytes]) -> tuple[CaseStatus | None, str | None]:
+    """Classify statically excluded projects before importing their conf.py."""
+    conf_bytes = files.get("conf.py", b"")
+    try:
+        tree = ast.parse(conf_bytes.decode("utf-8"), filename="conf.py")
+    except (SyntaxError, UnicodeDecodeError):
+        tree = ast.Module(body=[], type_ignores=[])
+    strings = _literal_strings(tree)
+    remote = any(re.search(r"https?://", value) for value in strings)
+    plantuml = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            plantuml |= any(alias.name.startswith("sphinxcontrib.plantuml") for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            plantuml |= (node.module or "").startswith("sphinxcontrib.plantuml")
+            plantuml |= (node.module == "sphinxcontrib" and any(alias.name == "plantuml" for alias in node.names))
+        elif isinstance(node, ast.Call):
+            function_name = node.func.attr if isinstance(node.func, ast.Attribute) else None
+            if function_name == "setup_extension":
+                plantuml |= any(
+                    isinstance(argument, ast.Constant)
+                    and argument.value == "sphinxcontrib.plantuml"
+                    for argument in node.args
+                )
+        plantuml |= "sphinxcontrib.plantuml" in strings
+    if remote:
+        return "excluded-network", "conf.py references a remote URL"
+    if plantuml:
+        return "excluded-plantuml", "conf.py loads sphinxcontrib.plantuml"
+    return None, None
+
+
+def _load_inventory_projects(path: Path) -> list[dict[str, Any]]:
+    spec = importlib.util.spec_from_file_location("html_oracle_inventory_fixture", path)
+    if spec is None or spec.loader is None:
+        raise DiscoveryError(f"cannot import inventory fixture: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    projects = getattr(module, "SPHINX_PROJECTS", None)
+    if not isinstance(projects, list):
+        raise DiscoveryError("gen_inventory_fixture.py has no SPHINX_PROJECTS list")
+    return projects
+
+
+def _scan_needs_provenance(
+    needs_root: Path, project_names: set[str]
+) -> dict[str, tuple[list[str], bool]]:
+    tests_root = needs_root / "packages" / "sphinx-needs" / "tests"
+    matches: dict[str, set[str]] = {name: set() for name in project_names}
+    variants_by_project = {name: False for name in project_names}
+    for path in sorted(tests_root.rglob("*.py")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        relative = path.relative_to(needs_root).as_posix()
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.scopes: list[str] = []
+
+            def _visit_scope(self, node: ast.AST, name: str) -> None:
+                self.scopes.append(name)
+                segment = ast.get_source_segment(source, node) or ""
+                strings = _literal_strings(node)
+                for project_name in project_names:
+                    needle = f"doc_test/{project_name}".replace("\\", "/")
+                    alternate = f"doc_test\\{project_name}"
+                    matched = any(
+                        project_name in value
+                        and ("doc_test" in value or needle in value or alternate in value)
+                        for value in strings
+                    )
+                    if matched:
+                        suffix = "::" + "::".join(self.scopes) if self.scopes else ""
+                        matches[project_name].add(relative + suffix)
+                        if "confoverrides" in segment or re.search(
+                            r"\b(?:builder|buildername)\s*=\s*['\"](?!html['\"])", segment
+                        ):
+                            variants_by_project[project_name] = True
+                self.generic_visit(node)
+                self.scopes.pop()
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                self._visit_scope(node, node.name)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self._visit_scope(node, node.name)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self._visit_scope(node, node.name)
+
+        Visitor().visit(tree)
+    return {
+        name: (sorted(matches[name]), variants_by_project[name])
+        for name in sorted(project_names)
+    }
+
+
+def _scan_needs_nodes(needs_root: Path, project_name: str) -> tuple[list[str], bool]:
+    """Scan one project name; retained as a small public test helper."""
+    return _scan_needs_provenance(needs_root, {project_name})[project_name]
+
+
+def _needs_root_paths(needs_root: Path) -> tuple[Path, Path]:
+    root = Path(needs_root).resolve()
+    package_root = root / "packages" / "sphinx-needs"
+    source_root = package_root / "src" / "sphinx_needs"
+    doc_test_root = package_root / "tests" / "doc_test"
+    if not package_root.is_dir() or not source_root.is_dir() or not doc_test_root.is_dir():
+        raise DiscoveryError("needs-root must contain packages/sphinx-needs/src and tests/doc_test")
+    return root, doc_test_root
+
+
+def _discover_needs_cases(needs_root: Path, profile: str, expected_count: int) -> list[DiscoveredCase]:
+    root, doc_test_root = _needs_root_paths(needs_root)
+    directories = [
+        path
+        for path in sorted(doc_test_root.iterdir())
+        if path.is_dir() and (path / "conf.py").is_file()
+    ]
+    if len(directories) != expected_count:
+        raise DiscoveryError(f"expected {expected_count} needs projects, found {len(directories)}")
+    ids = assign_case_ids([path.name for path in directories])
+    provenance = _scan_needs_provenance(root, {path.name for path in directories})
+    cases = []
+    for path in directories:
+        files = _read_tree_bytes(path)
+        status, reason = classify_project(files)
+        node_ids, variants = provenance[path.name]
+        cases.append(
+            DiscoveredCase(
+                profile=profile,
+                source_set="sphinx_needs_doc_tests",
+                case_id=ids[path.name],
+                origin_path=path.relative_to(root).as_posix(),
+                files=files,
+                pytest_node_ids=node_ids,
+                variants_not_captured=variants,
+                status=status or "built",
+                excluded_reason=reason,
+            )
+        )
+    return cases
+
+
+def _source_file_name(name: str) -> str:
+    return name if Path(name).suffix else f"{name}.rst"
+
+
+def discover_cases(
+    repo_root: Path,
+    config_path: Path,
+    *,
+    profile: str,
+    needs_root: Path | None = None,
+) -> list[DiscoveredCase]:
+    """Discover and materialize-in-memory all cases for one profile."""
+    repo_root = Path(repo_root).resolve()
+    with Path(config_path).open("rb") as stream:
+        config = tomllib.load(stream)
+    source_sets = config.get("source_sets")
+    if not isinstance(source_sets, list):
+        raise DiscoveryError("config must contain [[source_sets]]")
+    selected = [entry for entry in source_sets if entry.get("profile") == profile]
+    if not selected:
+        raise DiscoveryError(f"no source sets configured for profile {profile}")
+    cases: list[DiscoveredCase] = []
+    for entry in selected:
+        kind = entry.get("kind")
+        source_set = entry["name"]
+        source = repo_root / entry["source"]
+        if kind == "docutils_snippets" or kind == "sphinx_read_snippets":
+            fixture = json.loads(source.read_text(encoding="utf-8"))
+            fixture_cases = fixture["cases"]
+            if len(fixture_cases) != entry["count"]:
+                raise DiscoveryError(f"{source_set}: expected {entry['count']} cases, found {len(fixture_cases)}")
+            identifiers = [str(item["name"]) for item in fixture_cases]
+            ids = assign_case_ids(identifiers)
+            for index, item in enumerate(fixture_cases):
+                files = {
+                    "conf.py": BASE_CONF_PY.encode("utf-8"),
+                    "index.rst": str(item["rst"]).encode("utf-8"),
+                }
+                cases.append(
+                    DiscoveredCase(
+                        profile=profile,
+                        source_set=source_set,
+                        case_id=f"{source_set.removesuffix('_snippets')}-{index + 1:04d}",
+                        origin_path=f"{entry['source']}[{index}]",
+                        files=files,
+                    )
+                )
+        elif kind == "environment_projects":
+            fixture = json.loads(source.read_text(encoding="utf-8"))
+            projects = fixture["projects"]
+            if len(projects) != entry["project_count"]:
+                raise DiscoveryError(f"{source_set}: expected {entry['project_count']} projects, found {len(projects)}")
+            document_count = sum(len(project["files"]) for project in projects)
+            if document_count < entry["document_floor"]:
+                raise DiscoveryError(f"{source_set}: expected at least {entry['document_floor']} documents, found {document_count}")
+            ids = assign_case_ids([str(project["name"]) for project in projects])
+            for index, project in enumerate(projects):
+                files = {"conf.py": _python_conf(project.get("conf", {}))}
+                for name, contents in project["files"].items():
+                    files[_source_file_name(name)] = str(contents).encode("utf-8")
+                for name, contents in project.get("data_files", {}).items():
+                    files[name] = str(contents).encode("utf-8")
+                status, reason = classify_project(files)
+                cases.append(
+                    DiscoveredCase(
+                        profile=profile,
+                        source_set=source_set,
+                        case_id=ids[str(project["name"])],
+                        origin_path=f"{entry['source']}[{index}]",
+                        files=files,
+                        status=status or "built",
+                        excluded_reason=reason,
+                        confoverrides=dict(project.get("conf", {})),
+                    )
+                )
+        elif kind == "html_projects":
+            project_names = entry["projects"]
+            if len(project_names) != entry["count"]:
+                raise DiscoveryError(f"{source_set}: configured project count mismatch")
+            for project_name in project_names:
+                project_root = source / project_name
+                files = _read_tree_bytes(project_root)
+                status, reason = classify_project(files)
+                cases.append(
+                    DiscoveredCase(
+                        profile=profile,
+                        source_set=source_set,
+                        case_id=assign_case_ids([project_name])[project_name],
+                        origin_path=f"{entry['source']}/{project_name}",
+                        files=files,
+                        status=status or "built",
+                        excluded_reason=reason,
+                    )
+                )
+        elif kind == "inventory_projects":
+            projects = _load_inventory_projects(source)
+            if len(projects) != entry["count"]:
+                raise DiscoveryError(f"{source_set}: expected {entry['count']} projects, found {len(projects)}")
+            ids = assign_case_ids([str(project["name"]) for project in projects])
+            for index, project in enumerate(projects):
+                files = {"conf.py": _python_conf(project.get("conf", {}), project=project["project"])}
+                for name, contents in project["files"].items():
+                    files[_source_file_name(name)] = str(contents).encode("utf-8")
+                status, reason = classify_project(files)
+                cases.append(
+                    DiscoveredCase(
+                        profile=profile,
+                        source_set=source_set,
+                        case_id=ids[str(project["name"])],
+                        origin_path=f"{entry['source']}:SPHINX_PROJECTS[{index}]",
+                        files=files,
+                        status=status or "built",
+                        excluded_reason=reason,
+                        confoverrides={"smartquotes": False, **project.get("conf", {})},
+                    )
+                )
+        elif kind == "sphinx_needs_doc_tests":
+            if needs_root is None:
+                raise DiscoveryError("--needs-root is required for local_needs discovery")
+            cases.extend(_discover_needs_cases(needs_root, profile, entry["count"]))
+        else:
+            raise DiscoveryError(f"unknown source-set kind: {kind!r}")
+    ensure_unique_case_keys(cases)
+    return sorted(cases, key=lambda case: case.key)
+
+
+def ensure_unique_case_keys(cases: list[DiscoveredCase]) -> None:
+    keys = [case.key for case in cases]
+    if len(keys) != len(set(keys)):
+        raise DiscoveryError("duplicate discovery case key")
+
+
+def assert_discovery_keys_equal(
+    cases: list[DiscoveredCase], ledger_cases: list[dict[str, Any]]
+) -> None:
+    discovered = sorted(case.key for case in cases)
+    ledger = sorted(
+        (case.get("profile"), case.get("source_set"), case.get("case_id"))
+        for case in ledger_cases
+    )
+    if discovered != ledger:
+        raise DiscoveryError("discovery and ledger key sets mismatch")
 
 
 def canonical_hash(entries: list[tuple[str, str]]) -> str:
