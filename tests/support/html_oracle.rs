@@ -3,9 +3,41 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 
+use flate2::read::ZlibDecoder;
+
 pub const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    Warnings,
+    SearchIndex,
+    NeedsJson,
+    ObjectsInventory,
+    TextCrlf,
+    ExactBytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub category: String,
+    pub logical_path: String,
+    pub first_expected_line: Option<usize>,
+    pub expected: String,
+    pub actual: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InventoryRecord {
+    pub name: String,
+    pub domain_role: String,
+    pub priority: i32,
+    pub uri: String,
+    pub display_name: String,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -494,4 +526,405 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 pub fn profile_root(fixtures_root: &Path, profile: &str) -> PathBuf {
     fixtures_root.join(profile)
+}
+
+pub fn policy_for_path(logical_path: &str) -> Policy {
+    if logical_path == "searchindex.js" {
+        Policy::SearchIndex
+    } else if logical_path.rsplit('/').next() == Some("needs.json") {
+        Policy::NeedsJson
+    } else if logical_path == "objects.inv" {
+        Policy::ObjectsInventory
+    } else if logical_path.ends_with(".buildinfo") {
+        Policy::ExactBytes
+    } else if logical_path.starts_with("_sources/")
+        || [".html", ".css", ".js", ".json", ".xml", ".txt"]
+            .iter()
+            .any(|suffix| logical_path.ends_with(suffix))
+    {
+        Policy::TextCrlf
+    } else {
+        Policy::ExactBytes
+    }
+}
+
+pub fn compare_file(
+    logical_path: &str,
+    expected: &[u8],
+    actual: &[u8],
+    _source_root: Option<&Path>,
+) -> Vec<Diagnostic> {
+    match policy_for_path(logical_path) {
+        Policy::SearchIndex => compare_json_file(
+            logical_path,
+            expected,
+            actual,
+            "searchindex-value",
+            "invalid-searchindex",
+            true,
+        ),
+        Policy::NeedsJson => compare_json_file(
+            logical_path,
+            expected,
+            actual,
+            "needs-json-value",
+            "invalid-needs-json",
+            false,
+        ),
+        Policy::ObjectsInventory => compare_inventory_file(logical_path, expected, actual),
+        Policy::TextCrlf => {
+            let expected = normalize_crlf(expected);
+            let actual = normalize_crlf(actual);
+            if expected == actual {
+                Vec::new()
+            } else {
+                vec![value_diagnostic(
+                    "text-value",
+                    logical_path,
+                    &expected,
+                    &actual,
+                )]
+            }
+        }
+        Policy::Warnings | Policy::ExactBytes => {
+            if expected == actual {
+                Vec::new()
+            } else {
+                vec![value_diagnostic(
+                    "bytes-value",
+                    logical_path,
+                    expected,
+                    actual,
+                )]
+            }
+        }
+    }
+}
+
+pub fn compare_warnings(
+    expected: &[u8],
+    actual: &[u8],
+    expected_source_root: Option<&Path>,
+    actual_source_root: Option<&Path>,
+) -> Vec<Diagnostic> {
+    let expected = normalize_warning_bytes(expected, expected_source_root);
+    let actual = normalize_warning_bytes(actual, actual_source_root);
+    if expected == actual {
+        Vec::new()
+    } else {
+        vec![value_diagnostic(
+            "warning",
+            "warnings",
+            expected.as_bytes(),
+            actual.as_bytes(),
+        )]
+    }
+}
+
+pub fn compare_trees(
+    expected: &BTreeMap<String, Vec<u8>>,
+    actual: &BTreeMap<String, Vec<u8>>,
+    expected_warnings: Option<&[u8]>,
+    actual_warnings: Option<&[u8]>,
+    expected_status: Option<CaseStatus>,
+    actual_status: Option<CaseStatus>,
+) -> Vec<Diagnostic> {
+    let mut paths = BTreeSet::new();
+    paths.extend(expected.keys().cloned());
+    paths.extend(actual.keys().cloned());
+    let mut diagnostics = Vec::new();
+    for path in paths {
+        match (expected.get(&path), actual.get(&path)) {
+            (None, Some(actual)) => diagnostics.push(Diagnostic {
+                category: "unexpected-file".to_string(),
+                logical_path: path,
+                first_expected_line: None,
+                expected: String::new(),
+                actual: display_bytes(actual),
+                detail: "file exists only in actual output".to_string(),
+            }),
+            (Some(expected), None) => diagnostics.push(Diagnostic {
+                category: "missing-file".to_string(),
+                logical_path: path,
+                first_expected_line: Some(1),
+                expected: display_bytes(expected),
+                actual: String::new(),
+                detail: "file exists only in expected output".to_string(),
+            }),
+            (Some(expected), Some(actual)) => {
+                diagnostics.extend(compare_file(&path, expected, actual, None));
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+    if let (Some(expected), Some(actual)) = (expected_warnings, actual_warnings) {
+        diagnostics.extend(compare_warnings(expected, actual, None, None));
+    }
+    if let (Some(expected), Some(actual)) = (expected_status, actual_status) {
+        let expected_is_error = expected == CaseStatus::BuildError;
+        let actual_is_error = actual == CaseStatus::BuildError;
+        if expected_is_error != actual_is_error {
+            diagnostics.push(Diagnostic {
+                category: "status".to_string(),
+                logical_path: String::new(),
+                first_expected_line: None,
+                expected: format_status(expected),
+                actual: format_status(actual),
+                detail: "build status class differs".to_string(),
+            });
+        }
+    }
+    diagnostics.sort_by(diagnostic_order);
+    diagnostics
+}
+
+fn compare_json_file(
+    logical_path: &str,
+    expected: &[u8],
+    actual: &[u8],
+    value_category: &str,
+    invalid_category: &str,
+    searchindex_wrapper: bool,
+) -> Vec<Diagnostic> {
+    let expected_value = match parse_json_value(expected, searchindex_wrapper) {
+        Ok(value) => value,
+        Err(error) => {
+            return vec![invalid_diagnostic(
+                invalid_category,
+                logical_path,
+                format!("expected JSON is invalid: {error}"),
+            )]
+        }
+    };
+    let actual_value = match parse_json_value(actual, searchindex_wrapper) {
+        Ok(value) => value,
+        Err(error) => {
+            return vec![invalid_diagnostic(
+                invalid_category,
+                logical_path,
+                format!("actual JSON is invalid: {error}"),
+            )]
+        }
+    };
+    if expected_value == actual_value {
+        Vec::new()
+    } else {
+        vec![value_diagnostic(
+            value_category,
+            logical_path,
+            serde_json::to_string_pretty(&expected_value)
+                .unwrap_or_default()
+                .as_bytes(),
+            serde_json::to_string_pretty(&actual_value)
+                .unwrap_or_default()
+                .as_bytes(),
+        )]
+    }
+}
+
+fn parse_json_value(bytes: &[u8], searchindex_wrapper: bool) -> Result<Value, String> {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => normalize_crlf(text.as_bytes()),
+        Err(error) => {
+            return Err(format!("not UTF-8: {error}"));
+        }
+    };
+    let text = String::from_utf8(text).map_err(|error| error.to_string())?;
+    let payload = if searchindex_wrapper {
+        let trimmed = text.trim_end();
+        let prefix = "Search.setIndex(";
+        if !trimmed.starts_with(prefix) || !trimmed.ends_with(");") {
+            return Err("missing Search.setIndex(...) wrapper".to_string());
+        }
+        &trimmed[prefix.len()..trimmed.len() - 2]
+    } else {
+        text.as_str()
+    };
+    serde_json::from_str(payload).map_err(|error| error.to_string())
+}
+
+fn compare_inventory_file(logical_path: &str, expected: &[u8], actual: &[u8]) -> Vec<Diagnostic> {
+    let expected_inventory = match parse_inventory(expected) {
+        Ok(value) => value,
+        Err(error) => {
+            return vec![invalid_diagnostic(
+                "invalid-objects-inventory",
+                logical_path,
+                format!("expected inventory is invalid: {error}"),
+            )]
+        }
+    };
+    let actual_inventory = match parse_inventory(actual) {
+        Ok(value) => value,
+        Err(error) => {
+            return vec![invalid_diagnostic(
+                "invalid-objects-inventory",
+                logical_path,
+                format!("actual inventory is invalid: {error}"),
+            )]
+        }
+    };
+    if expected_inventory == actual_inventory {
+        Vec::new()
+    } else {
+        vec![value_diagnostic(
+            "objects-inventory-value",
+            logical_path,
+            format_inventory(&expected_inventory).as_bytes(),
+            format_inventory(&actual_inventory).as_bytes(),
+        )]
+    }
+}
+
+fn parse_inventory(bytes: &[u8]) -> Result<(Vec<u8>, Vec<InventoryRecord>), String> {
+    const HEADER: &[u8] = b"# Sphinx inventory version 2\n# Project: ";
+    if !bytes.starts_with(HEADER) {
+        return Err("missing Sphinx inventory header".to_string());
+    }
+    let mut newline_positions = Vec::new();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            newline_positions.push(index + 1);
+            if newline_positions.len() == 4 {
+                break;
+            }
+        }
+    }
+    if newline_positions.len() != 4 {
+        return Err("inventory has fewer than four header lines".to_string());
+    }
+    let header_end = newline_positions[3];
+    let header = bytes[..header_end].to_vec();
+    let mut decoder = ZlibDecoder::new(Cursor::new(&bytes[header_end..]));
+    let mut records_text = String::new();
+    decoder
+        .read_to_string(&mut records_text)
+        .map_err(|error| format!("zlib decode failed: {error}"))?;
+    let mut records = Vec::new();
+    for (line_number, line) in records_text.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let fields = line.splitn(5, ' ').collect::<Vec<_>>();
+        if fields.len() != 5 || fields.iter().any(|field| field.is_empty()) {
+            return Err(format!("invalid record on line {}", line_number + 1));
+        }
+        let priority = fields[2]
+            .parse::<i32>()
+            .map_err(|error| format!("invalid priority on line {}: {error}", line_number + 1))?;
+        records.push(InventoryRecord {
+            name: fields[0].to_string(),
+            domain_role: fields[1].to_string(),
+            priority,
+            uri: fields[3].to_string(),
+            display_name: fields[4].to_string(),
+        });
+    }
+    records.sort();
+    Ok((header, records))
+}
+
+fn format_inventory(inventory: &(Vec<u8>, Vec<InventoryRecord>)) -> String {
+    let header = String::from_utf8_lossy(&inventory.0);
+    let records = inventory
+        .1
+        .iter()
+        .map(|record| {
+            format!(
+                "{} {} {} {} {}",
+                record.name, record.domain_role, record.priority, record.uri, record.display_name
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{header}{records}")
+}
+
+fn normalize_warning_bytes(bytes: &[u8], source_root: Option<&Path>) -> String {
+    let mut value = String::from_utf8_lossy(&normalize_crlf(bytes)).into_owned();
+    if let Some(source_root) = source_root {
+        let root = source_root.to_string_lossy();
+        value = value.replace(root.as_ref(), "<SRCDIR>");
+    }
+    value
+}
+
+fn normalize_crlf(bytes: &[u8]) -> Vec<u8> {
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+            normalized.push(b'\n');
+            index += 2;
+        } else {
+            normalized.push(bytes[index]);
+            index += 1;
+        }
+    }
+    normalized
+}
+
+fn value_diagnostic(
+    category: &str,
+    logical_path: &str,
+    expected: &[u8],
+    actual: &[u8],
+) -> Diagnostic {
+    let expected = display_bytes(expected);
+    let actual = display_bytes(actual);
+    Diagnostic {
+        category: category.to_string(),
+        logical_path: logical_path.to_string(),
+        first_expected_line: first_difference_line(&expected, &actual),
+        expected,
+        actual,
+        detail: "normalized values differ".to_string(),
+    }
+}
+
+fn invalid_diagnostic(category: &str, logical_path: &str, detail: String) -> Diagnostic {
+    Diagnostic {
+        category: category.to_string(),
+        logical_path: logical_path.to_string(),
+        first_expected_line: None,
+        expected: String::new(),
+        actual: String::new(),
+        detail,
+    }
+}
+
+fn display_bytes(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn first_difference_line(expected: &str, actual: &str) -> Option<usize> {
+    let mut expected_lines = expected.lines();
+    let mut actual_lines = actual.lines();
+    let mut line_number = 1;
+    loop {
+        match (expected_lines.next(), actual_lines.next()) {
+            (None, None) => return None,
+            (left, right) if left == right => line_number += 1,
+            _ => return Some(line_number),
+        }
+    }
+}
+
+fn format_status(status: CaseStatus) -> String {
+    match status {
+        CaseStatus::Built => "built",
+        CaseStatus::BuildError => "build-error",
+        CaseStatus::ReferenceCrash => "reference-crash",
+        CaseStatus::ExcludedNetwork => "excluded-network",
+        CaseStatus::ExcludedPlantuml => "excluded-plantuml",
+    }
+    .to_string()
+}
+
+fn diagnostic_order(left: &Diagnostic, right: &Diagnostic) -> std::cmp::Ordering {
+    left.logical_path
+        .cmp(&right.logical_path)
+        .then_with(|| left.category.cmp(&right.category))
+        .then_with(|| left.first_expected_line.cmp(&right.first_expected_line))
+        .then_with(|| left.detail.cmp(&right.detail))
 }
