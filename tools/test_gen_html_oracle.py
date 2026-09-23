@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import docutils
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +17,10 @@ from tools.gen_html_oracle import (
     SchemaError,
     assert_discovery_keys_equal,
     StorageError,
+    _case_record_from_result,
+    _run_reference_case,
     atomic_swap_profile,
+    canonical_hash,
     capture_output_tree,
     classify_project,
     discover_cases,
@@ -461,3 +465,65 @@ count = 1
         if path.is_file()
     }
     assert first_files == second_files
+
+
+def test_local_needs_record_stores_second_build_json(tmp_path):
+    case = DiscoveredCase(
+        profile="local_needs",
+        source_set="sphinx_needs_doc_tests",
+        case_id="doc_basic",
+        origin_path="packages/sphinx-needs/tests/doc_test/doc_basic",
+        files={"conf.py": b"project = 'needs'\n", "index.rst": b"Needs\n=====\n"},
+    )
+    record = _case_record_from_result(
+        case,
+        {
+            "status": "built",
+            "exit_code": 0,
+            "warnings": "",
+            "output_files": {"index.html": b"<html />"},
+            "needs_status": "built",
+            "needs_exit_code": 0,
+            "needs_warnings": "",
+            "needs_json_bytes": b'{"needs": []}\n',
+        },
+        tmp_path,
+    )
+    assert record["needs_status"] == "built"
+    assert record["needs_exit_code"] == 0
+    assert record["needs_json"] is not None
+    assert record["needs_json"]["storage_path"] == (
+        "refs/sphinx_needs_doc_tests/doc_basic/needs/needs.json"
+    )
+    assert (tmp_path / record["needs_json"]["storage_path"]).read_bytes() == b'{"needs": []}\n'
+
+
+def test_local_needs_built_case_requires_second_build_fields(tmp_path):
+    document = _document(tmp_path)
+    document["profiles"]["local_needs"] = copy.deepcopy(document["profiles"]["core"])
+    document["cases"][0]["profile"] = "local_needs"
+    document["cases"][0]["input_sha256"] = canonical_hash(
+        [(item["logical_path"], item["sha256"]) for item in document["cases"][0]["input_files"]]
+    )
+    document["cases"][0]["tree_sha256"] = canonical_hash([])
+    with pytest.raises(SchemaError, match="needs_status"):
+        validate_index_document(document, tmp_path)
+
+
+@pytest.mark.skipif(docutils.__version__ != "0.21.2", reason="requires the local-needs profile environment")
+def test_local_needs_reference_case_captures_stable_needs_json():
+    needs_root = Path(r"C:\Users\johnm\Documents\repos\sphinx-needs")
+    cases = discover_cases(
+        REPO_ROOT,
+        REPO_ROOT / "tools" / "html_oracle_cases.toml",
+        profile="local_needs",
+        needs_root=needs_root,
+    )
+    case = next(item for item in cases if item.case_id == "doc_basic")
+    result = _run_reference_case(case, repo_root=REPO_ROOT, needs_root=needs_root)
+    assert result["status"] == "built", result
+    assert result["needs_status"] == "built", result
+    assert result["needs_exit_code"] == 0
+    assert result["needs_json_bytes"]
+    repeat = _run_reference_case(case, repo_root=REPO_ROOT, needs_root=needs_root)
+    assert result["needs_json_bytes"] == repeat["needs_json_bytes"]

@@ -934,6 +934,19 @@ def _validate_case(
             _require(exit_code != 0, f"{status} case {label} must have nonzero exit_code")
     if profile == "core":
         _require(needs_json is None and needs_status is None and needs_exit_code is None and needs_warnings is None, f"core case {label} must have null needs fields")
+    elif status in {"built", "build-error"}:
+        _require(needs_status is not None, f"local-needs case {label} must have needs_status")
+        _require(needs_exit_code is not None, f"local-needs case {label} must have needs_exit_code")
+        _require(needs_warnings is not None, f"local-needs case {label} must have needs_warnings")
+        if needs_status == "built":
+            _require(needs_exit_code == 0, f"built needs case {label} must have needs_exit_code 0")
+        else:
+            _require(needs_exit_code != 0, f"{needs_status} needs case {label} must have nonzero needs_exit_code")
+    elif not excluded:
+        _require(
+            needs_json is None and needs_status is None and needs_exit_code is None and needs_warnings is None,
+            f"reference-crash case {label} must have null needs fields",
+        )
 
     input_seen: set[str] = set()
     for record in input_files:
@@ -1083,67 +1096,91 @@ def _run_reference_case(
     temporary = Path(tempfile.mkdtemp(prefix="case-", dir=work_root))
     try:
         source_root = temporary / "source"
-        output_root = temporary / "output"
-        doctree_root = temporary / "doctree"
-        warnings_path = temporary / "warnings.txt"
         materialize_case(case, source_root)
-        command = [
-            sys.executable,
-            str(repo_root / "tools" / "html_oracle_runner.py"),
-            "--profile",
-            case.profile,
-            "--sourcedir",
-            str(source_root),
-            "--outputdir",
-            str(output_root),
-            "--doctree-dir",
-            str(doctree_root),
-            "--builder",
-            "html",
-            "--warnings-file",
-            str(warnings_path),
-        ]
-        if needs_root is not None:
-            command.extend(["--needs-root", str(needs_root)])
         environment = os.environ.copy()
         environment["PYTHONNOUSERSITE"] = "1"
-        result = subprocess.run(
-            command,
-            cwd=repo_root,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+
+        def run_builder(builder: str, name: str) -> dict[str, Any]:
+            output_root = temporary / name / "output"
+            doctree_root = temporary / name / "doctree"
+            warnings_path = temporary / name / "warnings.txt"
+            command = [
+                sys.executable,
+                str(repo_root / "tools" / "html_oracle_runner.py"),
+                "--profile",
+                case.profile,
+                "--sourcedir",
+                str(source_root),
+                "--outputdir",
+                str(output_root),
+                "--doctree-dir",
+                str(doctree_root),
+                "--builder",
+                builder,
+                "--warnings-file",
+                str(warnings_path),
+            ]
+            if needs_root is not None:
+                command.extend(["--needs-root", str(needs_root)])
+            result = subprocess.run(
+                command,
+                cwd=repo_root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            combined = result.stdout + result.stderr
+            if result.returncode == 0:
+                status: CaseStatus = "built"
+            elif b"Traceback (most recent call last):" in combined:
+                status = "reference-crash"
+            else:
+                status = "build-error"
+            output_files: dict[str, bytes] = {}
+            if output_root.is_dir():
+                for path in sorted(output_root.rglob("*")):
+                    if path.is_symlink():
+                        raise StorageError(f"symlink in captured output: {path}")
+                    if not path.is_file():
+                        continue
+                    logical_path = path.relative_to(output_root).as_posix()
+                    data = path.read_bytes()
+                    _check_root_leaks(
+                        data,
+                        [source_root, output_root, doctree_root],
+                        logical_path,
+                    )
+                    output_files[logical_path] = data
+            raw_warnings = warnings_path.read_bytes() if warnings_path.is_file() else b""
+            return {
+                "status": status,
+                "exit_code": result.returncode,
+                "warnings": normalize_warnings(raw_warnings, source_root),
+                "output_files": output_files,
+            }
+
+        html_result = run_builder("html", "html")
+        result: dict[str, Any] = dict(html_result)
+        result.update(
+            {
+                "needs_status": None,
+                "needs_exit_code": None,
+                "needs_warnings": None,
+                "needs_json_bytes": None,
+            }
         )
-        combined = result.stdout + result.stderr
-        if result.returncode == 0:
-            status: CaseStatus = "built"
-        elif b"Traceback (most recent call last):" in combined:
-            status = "reference-crash"
-        else:
-            status = "build-error"
-        output_files: dict[str, bytes] = {}
-        if output_root.is_dir():
-            for path in sorted(output_root.rglob("*")):
-                if path.is_symlink():
-                    raise StorageError(f"symlink in captured output: {path}")
-                if not path.is_file():
-                    continue
-                logical_path = path.relative_to(output_root).as_posix()
-                data = path.read_bytes()
-                _check_root_leaks(
-                    data,
-                    [source_root, output_root, doctree_root],
-                    logical_path,
-                )
-                output_files[logical_path] = data
-        raw_warnings = warnings_path.read_bytes() if warnings_path.is_file() else b""
-        return {
-            "status": status,
-            "exit_code": result.returncode,
-            "warnings": normalize_warnings(raw_warnings, source_root),
-            "output_files": output_files,
-        }
+        if case.profile == "local_needs" and html_result["status"] in {"built", "build-error"}:
+            needs_result = run_builder("needs", "needs")
+            result.update(
+                {
+                    "needs_status": needs_result["status"],
+                    "needs_exit_code": needs_result["exit_code"],
+                    "needs_warnings": needs_result["warnings"],
+                    "needs_json_bytes": needs_result["output_files"].get("needs.json"),
+                }
+            )
+        return result
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
 
@@ -1183,6 +1220,15 @@ def _case_record_from_result(
     if excluded:
         input_files = []
         files = []
+    needs_json = None
+    if not excluded and result.get("needs_json_bytes") is not None:
+        needs_records = store_output_files(
+            {"needs/needs.json": result["needs_json_bytes"]},
+            profile_root,
+            case.source_set,
+            case.case_id,
+        )
+        needs_json = needs_records[0]
     return {
         "profile": case.profile,
         "source_set": case.source_set,
@@ -1201,10 +1247,10 @@ def _case_record_from_result(
         "input_sha256": canonical_hash([(item["logical_path"], item["sha256"]) for item in input_files]),
         "tree_sha256": canonical_hash([(item["logical_path"], item["sha256"]) for item in files]),
         "files": files,
-        "needs_json": None,
-        "needs_status": None,
-        "needs_exit_code": None,
-        "needs_warnings": None,
+        "needs_json": needs_json,
+        "needs_status": None if excluded else result.get("needs_status"),
+        "needs_exit_code": None if excluded else result.get("needs_exit_code"),
+        "needs_warnings": None if excluded else result.get("needs_warnings"),
     }
 
 
