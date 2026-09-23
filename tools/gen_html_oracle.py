@@ -27,7 +27,11 @@ same variables for every command and keep the invocations locked and offline:
         --needs-root C:\\Users\\johnm\\Documents\\repos\\sphinx-needs
 
 The source fixtures are read-only inputs.  The generated profile subtrees are
-replaced atomically and can be regenerated independently.
+replaced atomically and can be regenerated independently.  Snippet projects
+use Sphinx's default ``keep_warnings = False`` so rendered docutils system
+messages cannot embed temporary source paths; warnings remain captured from
+the dedicated ``-w`` warning file.  Root-leak validation scans every case and
+reports the complete sorted profile/source-set/case/file list in one failure.
 """
 
 from __future__ import annotations
@@ -192,7 +196,7 @@ BASE_CONF_PY = (
     "master_doc = 'index'\n"
     "exclude_patterns = ['_build']\n"
     "smartquotes = False\n"
-    "keep_warnings = True\n"
+    "keep_warnings = False\n"
 )
 
 
@@ -601,6 +605,17 @@ class StorageError(ValueError):
     """Raised when a captured tree cannot be stored safely."""
 
 
+RootLeak = tuple[str, str, str, str]
+
+
+def _format_root_leaks(leaks: list[RootLeak]) -> str:
+    lines = [
+        f"{profile}/{source_set}/{case_id}: {logical_path}"
+        for profile, source_set, case_id, logical_path in sorted(set(leaks))
+    ]
+    return "root leaks:\n" + "\n".join(lines)
+
+
 def store_blob(blob_root: Path, data: bytes) -> str:
     blob_root = Path(blob_root)
     blob_root.mkdir(parents=True, exist_ok=True)
@@ -621,10 +636,18 @@ def _root_spellings(root: Path) -> tuple[bytes, ...]:
     return tuple(value.encode("utf-8") for value in {resolved, resolved.replace("\\", "/")})
 
 
+def _find_root_leaks(data: bytes, roots: list[Path]) -> list[Path]:
+    return [
+        root
+        for root in roots
+        if any(spelling in data for spelling in _root_spellings(root))
+    ]
+
+
 def _check_root_leaks(data: bytes, roots: list[Path], logical_path: str) -> None:
-    for root in roots:
-        if any(spelling in data for spelling in _root_spellings(root)):
-            raise StorageError(f"root leak in {logical_path}: {root}")
+    leaks = _find_root_leaks(data, roots)
+    if leaks:
+        raise StorageError(f"root leak in {logical_path}: {leaks[0]}")
 
 
 def capture_output_tree(
@@ -1138,6 +1161,7 @@ def _run_reference_case(
             else:
                 status = "build-error"
             output_files: dict[str, bytes] = {}
+            root_leaks: list[RootLeak] = []
             if output_root.is_dir():
                 for path in sorted(output_root.rglob("*")):
                     if path.is_symlink():
@@ -1146,11 +1170,8 @@ def _run_reference_case(
                         continue
                     logical_path = path.relative_to(output_root).as_posix()
                     data = path.read_bytes()
-                    _check_root_leaks(
-                        data,
-                        [source_root, output_root, doctree_root],
-                        logical_path,
-                    )
+                    if _find_root_leaks(data, [source_root, output_root, doctree_root]):
+                        root_leaks.append((case.profile, case.source_set, case.case_id, logical_path))
                     output_files[logical_path] = data
             raw_warnings = warnings_path.read_bytes() if warnings_path.is_file() else b""
             return {
@@ -1158,6 +1179,7 @@ def _run_reference_case(
                 "exit_code": result.returncode,
                 "warnings": normalize_warnings(raw_warnings, source_root),
                 "output_files": output_files,
+                "root_leaks": root_leaks,
             }
 
         html_result = run_builder("html", "html")
@@ -1172,6 +1194,7 @@ def _run_reference_case(
         )
         if case.profile == "local_needs" and html_result["status"] in {"built", "build-error"}:
             needs_result = run_builder("needs", "needs")
+            result["root_leaks"].extend(needs_result["root_leaks"])
             result.update(
                 {
                     "needs_status": needs_result["status"],
@@ -1196,6 +1219,7 @@ def _build_case_worker(
             "exit_code": None,
             "warnings": "",
             "output_files": {},
+            "root_leaks": [],
         }
     return _run_reference_case(case, repo_root=repo_root, needs_root=needs_root)
 
@@ -1316,13 +1340,20 @@ def generate_profile(
         (staging / directory).mkdir()
     cases = discover_cases(repo_root, config_path, profile=profile, needs_root=needs_root)
     workers = max(1, jobs or (os.cpu_count() or 1))
-    results: list[dict[str, Any]] = []
+    raw_results: list[dict[str, Any]] = []
+    root_leaks: list[RootLeak] = []
     try:
         with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(_build_case_worker, case, repo_root, needs_root) for case in cases]
             for case, future in zip(cases, futures):
                 result = future.result()
-                results.append(_case_record_from_result(case, result, staging))
+                raw_results.append(result)
+                root_leaks.extend(result.get("root_leaks", []))
+        if root_leaks:
+            raise StorageError(_format_root_leaks(root_leaks))
+        results: list[CaseRecord] = []
+        for case, result in zip(cases, raw_results):
+            results.append(_case_record_from_result(case, result, staging))
         document: IndexDocument = {
             "schema_version": 1,
             "generator": "html-oracle/1",

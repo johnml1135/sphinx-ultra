@@ -18,6 +18,7 @@ from tools.gen_html_oracle import (
     assert_discovery_keys_equal,
     StorageError,
     _case_record_from_result,
+    _format_root_leaks,
     _run_reference_case,
     atomic_swap_profile,
     canonical_hash,
@@ -184,6 +185,19 @@ def test_discovers_the_complete_core_corpus():
         "sphinx_read_snippets": 489,
     }
     assert all(case.files for case in cases)
+
+
+def test_snippet_projects_disable_rendered_system_messages():
+    repo_root = Path(__file__).resolve().parents[1]
+    cases = discover_cases(
+        repo_root,
+        repo_root / "tools" / "html_oracle_cases.toml",
+        profile="core",
+    )
+    snippet_cases = [case for case in cases if case.source_set == "docutils_snippets"]
+    assert snippet_cases
+    assert all(b"keep_warnings = False" in case.files["conf.py"] for case in snippet_cases)
+    assert all(b"keep_warnings = True" not in case.files["conf.py"] for case in snippet_cases)
 
 
 def test_discovers_all_local_needs_projects():
@@ -394,6 +408,22 @@ def test_capture_rejects_absolute_root_leaks(tmp_path):
             "case",
             root_paths=[tmp_path / "source", tmp_path / "build", tmp_path / "cache"],
         )
+
+
+def test_root_leak_report_lists_all_case_files_in_sorted_order():
+    message = _format_root_leaks(
+        [
+            ("core", "sphinx_read_snippets", "sphinx-read-0002", "index.html"),
+            ("core", "docutils_snippets", "docutils-0001", "index.html"),
+            ("core", "docutils_snippets", "docutils-0001", "searchindex.js"),
+        ]
+    )
+    assert message == (
+        "root leaks:\n"
+        "core/docutils_snippets/docutils-0001: index.html\n"
+        "core/docutils_snippets/docutils-0001: searchindex.js\n"
+        "core/sphinx_read_snippets/sphinx-read-0002: index.html"
+    )
 
 
 def test_atomic_swap_failure_preserves_old_profile(tmp_path, monkeypatch):
