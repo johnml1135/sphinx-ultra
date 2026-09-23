@@ -454,6 +454,51 @@ def test_real_sphinx_error_report_reduction_keeps_prefix_header_and_exception(tm
     ) == []
 
 
+@pytest.mark.parametrize(
+    ("fixture_name", "prefix", "exception_line"),
+    [
+        (
+            "docutils-0500.txt",
+            "",
+            "ValueError: list.remove(x): x not in list",
+        ),
+        (
+            "numfig_on.txt",
+            "<SRCDIR>/a.rst:4: WARNING: image file not readable",
+            "TypeError: not all arguments converted during string formatting",
+        ),
+        (
+            "doc_service_github.txt",
+            '<SRCDIR>/index.rst:4: WARNING: "query" or "specific" missing',
+            "RuntimeError: network disabled by html oracle",
+        ),
+    ],
+)
+def test_real_crash_reports_are_reduced_and_leak_free(
+    fixture_name, prefix, exception_line
+):
+    fixture = REPO_ROOT / "tests" / "fixtures" / "html_oracle" / "error_reports" / fixture_name
+    raw = fixture.read_bytes()
+    assert _find_root_leaks(raw, [REPO_ROOT])
+
+    reduced = reduce_sphinx_error_report(raw.decode("utf-8"))
+    assert reduced.startswith(prefix)
+    assert exception_line in reduced
+    assert "Versions" not in reduced
+    assert "Last Messages" not in reduced
+    assert "Loaded Extensions" not in reduced
+    assert "Traceback" not in reduced
+    assert _find_root_leaks(reduced.encode("utf-8"), [REPO_ROOT]) == []
+
+
+def test_root_leak_scan_rejects_runtime_host_details(tmp_path):
+    data = (
+        f"{tmp_path} /home/runner /tmp/sphinx-err-abc.log "
+        r"C:\work\.venv\Lib\site-packages\pkg Linux-6.17.0-1022-azure"
+    ).encode("utf-8")
+    assert _find_root_leaks(data, [tmp_path])
+
+
 def test_case_record_stores_exception_type(tmp_path):
     case = DiscoveredCase(
         profile="core",
