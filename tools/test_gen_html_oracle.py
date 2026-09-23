@@ -264,6 +264,17 @@ def test_plantuml_app_extension_is_excluded_and_network_wins():
     assert classify_project(both)[0] == "excluded-network"
 
 
+def test_intersphinx_remote_target_with_local_inventory_is_allowed():
+    files = {
+        "conf.py": (
+            b"intersphinx_mapping = {'other': ('https://example.invalid/', 'local.inv')}\n"
+        ),
+        "index.rst": b"index\n=====\n",
+        "local.inv": b"inventory",
+    }
+    assert classify_project(files) == (None, None)
+
+
 def _run_runner(tmp_path: Path, *, conf: str, index: str = "Title\n=====\n"):
     source = tmp_path / "src"
     output = tmp_path / "out"

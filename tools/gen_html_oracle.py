@@ -285,7 +285,34 @@ def classify_project(files: dict[str, bytes]) -> tuple[CaseStatus | None, str | 
     except (SyntaxError, UnicodeDecodeError):
         tree = ast.Module(body=[], type_ignores=[])
     strings = _literal_strings(tree)
-    remote = any(re.search(r"https?://", value) for value in strings)
+    allowed_intersphinx_urls: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "intersphinx_mapping"
+            for target in node.targets
+        ) or not isinstance(node.value, ast.Dict):
+            continue
+        for mapping in node.value.values:
+            if not isinstance(mapping, (ast.List, ast.Tuple)) or len(mapping.elts) < 2:
+                continue
+            url, inventory = mapping.elts[:2]
+            if not (
+                isinstance(url, ast.Constant)
+                and isinstance(url.value, str)
+                and re.search(r"https?://", url.value)
+                and isinstance(inventory, ast.Constant)
+                and isinstance(inventory.value, str)
+                and inventory.value in files
+            ):
+                continue
+            allowed_intersphinx_urls.add(id(url))
+    remote = any(
+        re.search(r"https?://", node.value) and id(node) not in allowed_intersphinx_urls
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
     plantuml = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
