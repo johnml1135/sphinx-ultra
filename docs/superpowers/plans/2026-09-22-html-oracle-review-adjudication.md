@@ -270,3 +270,37 @@ fixture, which the HTML oracle doesn't need. Path normalization stays
 warnings-only. The root-leak check now collects **every** leaking case and
 fails once with the full list (profile/source_set/case_id plus the offending
 file), instead of aborting on the first.
+
+## Round 5: inherent Sphinx paths, and the canonical platform
+
+Findings. (a) docutils writes `node['source']`, the absolute source path,
+into rendered system-message HTML (`docutils/writers/_html_base.py`
+`visit_system_message`). HTML-write-time warnings such as image scaling slip
+past `keep_warnings = False`, so any Sphinx build does this: 5 files in core.
+(b) Sphinx 9.1 on Windows writes native separators into `searchindex.js`
+`filenames`, and warnings and system messages carry `C:\` roots. So references
+generated on Windows encode Windows-only output.
+
+Decisions:
+
+1. **`<SRCDIR>` token in all text-policy files.** The replacement already used
+   for warnings (the whole absolute source-root token, followed by a separator
+   or the end of the string) is applied to every file under the `TextCrlf` and
+   `SearchIndex` policies, on **both** sides: reference at generation time,
+   Ultra output at comparison time. Nothing else is rewritten. The
+   generator's root-leak check keeps failing on the output, doctree/cache and
+   staging roots, and on the source root in any non-text file.
+2. **Canonical references are generated on Linux.** Add
+   `.github/workflows/html-oracle.yml`, triggered only by `workflow_dispatch`:
+   on `ubuntu-latest` it checks out this repo and `useblocks/sphinx-needs` at
+   the pinned commit, installs uv, runs both profile generations and both
+   `--verify` commands, and uploads `tests/fixtures/html_oracle` as an
+   artifact. The primary runs it on the fork and commits the artifact.
+   `ProfileRecord` gains `platform: str` (`sys.platform` of the generator,
+   `linux` for canonical). Local generation on other platforms is allowed for
+   development, and `--verify` prints a clear warning when `platform !=
+   "linux"`. The exhaustive report prints the reference platform and, when the
+   host differs, a note that separator and path differences are expected.
+3. **Line endings.** Add `tests/fixtures/html_oracle/** -text` to
+   `.gitattributes` with a one-line rationale, matching the existing `*.inv`
+   note, so Windows checkouts keep the hashed bytes exact.
