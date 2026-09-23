@@ -443,15 +443,15 @@ To report this error to the developers, please open an issue.
 fn comparator_reduces_real_crash_reports_on_ultra_side() {
     let fixtures: &[(&[u8], &str)] = &[
         (
-            include_bytes!("fixtures/html_oracle/error_reports/docutils-0500.txt").as_slice(),
+            include_bytes!("fixtures/sphinx_error_reports/docutils-0500.txt").as_slice(),
             "ValueError: list.remove(x): x not in list",
         ),
         (
-            include_bytes!("fixtures/html_oracle/error_reports/numfig_on.txt").as_slice(),
+            include_bytes!("fixtures/sphinx_error_reports/numfig_on.txt").as_slice(),
             "TypeError: not all arguments converted during string formatting",
         ),
         (
-            include_bytes!("fixtures/html_oracle/error_reports/doc_service_github.txt").as_slice(),
+            include_bytes!("fixtures/sphinx_error_reports/doc_service_github.txt").as_slice(),
             "RuntimeError: network disabled by html oracle",
         ),
     ];

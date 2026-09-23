@@ -477,7 +477,7 @@ def test_real_sphinx_error_report_reduction_keeps_prefix_header_and_exception(tm
 def test_real_crash_reports_are_reduced_and_leak_free(
     fixture_name, prefix, exception_line
 ):
-    fixture = REPO_ROOT / "tests" / "fixtures" / "html_oracle" / "error_reports" / fixture_name
+    fixture = REPO_ROOT / "tests" / "fixtures" / "sphinx_error_reports" / fixture_name
     raw = fixture.read_bytes()
     assert _find_root_leaks(raw, [REPO_ROOT])
 
