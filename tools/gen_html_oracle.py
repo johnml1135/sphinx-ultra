@@ -4,10 +4,11 @@
 The profile environments are deliberately separate.  From PowerShell, set the
 same variables for every command and keep the invocations locked and offline:
 
-    $env:UV_CACHE_DIR = 'C:\\Users\\johnm\\.herdr\\worktrees\\sphinx-ultra\\html-oracle-gen\\.uv-cache'
-    $env:UV_PYTHON_INSTALL_DIR = 'C:\\Users\\johnm\\.herdr\\worktrees\\sphinx-ultra\\html-oracle-gen\\.uv-python'
+    $env:UV_CACHE_DIR = '<uv cache directory>\\.uv-cache'
+    $env:UV_PYTHON_INSTALL_DIR = '<uv python directory>\\.uv-python'
     $env:UV_PYTHON_PREFERENCE = 'only-managed'
     $env:PYTHONNOUSERSITE = '1'
+    $env:SPHINX_NEEDS_ROOT = '<sphinx-needs checkout>'
 
     uv run --locked --offline --python 3.12 --project tools/oracle_profiles/core \
         python -m pytest tools/test_gen_html_oracle.py -q
@@ -17,14 +18,14 @@ same variables for every command and keep the invocations locked and offline:
     uv run --locked --offline --python 3.12 --project tools/oracle_profiles/local_needs \
         python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml \
         --out tests/fixtures/html_oracle --profile local_needs \
-        --needs-root C:\\Users\\johnm\\Documents\\repos\\sphinx-needs -j 4
+        --needs-root $env:SPHINX_NEEDS_ROOT -j 4
     uv run --locked --offline --python 3.12 --project tools/oracle_profiles/core \
         python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml \
         --out tests/fixtures/html_oracle --verify --profile core
     uv run --locked --offline --python 3.12 --project tools/oracle_profiles/local_needs \
         python tools/gen_html_oracle.py --config tools/html_oracle_cases.toml \
         --out tests/fixtures/html_oracle --verify --profile local_needs \
-        --needs-root C:\\Users\\johnm\\Documents\\repos\\sphinx-needs
+        --needs-root $env:SPHINX_NEEDS_ROOT
 
 The source fixtures are read-only inputs.  The generated profile subtrees are
 replaced atomically and can be regenerated independently.  Snippet projects
@@ -665,7 +666,10 @@ def store_blob(blob_root: Path, data: bytes) -> str:
 
 def _root_spellings(root: Path) -> tuple[bytes, ...]:
     resolved = str(Path(root).resolve())
-    return tuple(value.encode("utf-8") for value in {resolved, resolved.replace("\\", "/")})
+    values = {resolved, resolved.replace("\\", "/")}
+    if "\\" in resolved:
+        values.add(resolved.replace("\\", "\\\\"))
+    return tuple(value.encode("utf-8") for value in values)
 
 
 def _is_text_policy(logical_path: str) -> bool:
@@ -682,10 +686,7 @@ def _is_text_policy(logical_path: str) -> bool:
 
 
 def _replace_source_root_tokens(data: bytes, source_root: Path) -> bytes:
-    spellings = set(_root_spellings(source_root))
-    native = str(Path(source_root).resolve()).encode("utf-8")
-    spellings.add(native.replace(b"\\", b"\\\\"))
-    for spelling in sorted(spellings, key=len, reverse=True):
+    for spelling in sorted(_root_spellings(source_root), key=len, reverse=True):
         data = re.sub(re.escape(spelling) + rb"(?=[\\/]|$)", b"<SRCDIR>", data)
     return data
 
@@ -1127,15 +1128,56 @@ def validate_index_document(document: object, profile_root: Path) -> IndexDocume
     }
 
 
-def normalize_warnings(raw: bytes, source_root: Path) -> str:
-    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    for spelling in sorted(
-        (value.decode("utf-8") for value in _root_spellings(source_root)),
-        key=len,
+def _replace_runtime_root(data: bytes, root: Path, token: bytes) -> bytes:
+    for spelling in sorted(_root_spellings(root), key=len, reverse=True):
+        data = re.sub(re.escape(spelling) + rb"(?=[\\/]|$)", token, data)
+    return data
+
+
+def normalize_runtime_bytes(
+    raw: bytes,
+    source_root: Path,
+    *,
+    output_root: Path | None = None,
+    doctree_root: Path | None = None,
+    case_root: Path | None = None,
+) -> bytes:
+    normalized = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    roots = [
+        (source_root, b"<SRCDIR>"),
+        (output_root, b"<OUTDIR>"),
+        (doctree_root, b"<DOCTREEDIR>"),
+        (case_root, b"<CASEDIR>"),
+    ]
+    for root, token in sorted(
+        ((root, token) for root, token in roots if root is not None),
+        key=lambda item: len(str(Path(item[0]).resolve())),
         reverse=True,
     ):
-        text = re.sub(re.escape(spelling) + r"(?=[\\/]|$)", "<SRCDIR>", text)
-    return text
+        normalized = _replace_runtime_root(normalized, root, token)
+    normalized = re.sub(
+        rb"(?:[A-Za-z]:[\\/]|/)[^\r\n \t]*sphinx-err-[^\r\n \t]*\.log",
+        b"<SPHINX_ERR_LOG>",
+        normalized,
+    )
+    return normalized
+
+
+def normalize_warnings(
+    raw: bytes,
+    source_root: Path,
+    *,
+    output_root: Path | None = None,
+    doctree_root: Path | None = None,
+    case_root: Path | None = None,
+) -> str:
+    return normalize_runtime_bytes(
+        raw,
+        source_root,
+        output_root=output_root,
+        doctree_root=doctree_root,
+        case_root=case_root,
+    ).decode("utf-8", errors="replace")
 
 
 def _write_input_tree(case: DiscoveredCase, profile_root: Path) -> list[FileRecord]:
@@ -1198,6 +1240,21 @@ def profile_record(repo_root: Path, profile: str) -> ProfileRecord:
     return record
 
 
+def verify_profile_lock(repo_root: Path, profile: ProfileRecord) -> None:
+    lock_path = (Path(repo_root) / profile["lock_path"]).resolve()
+    repo_root = Path(repo_root).resolve()
+    if not lock_path.is_relative_to(repo_root):
+        raise StorageError(f"profile lock escapes repository: {profile['lock_path']}")
+    if not lock_path.is_file():
+        raise StorageError(f"profile lock does not exist: {lock_path}")
+    actual_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    if actual_digest != profile["lock_sha256"]:
+        raise StorageError(
+            f"profile lock_sha256 mismatch for {profile['lock_path']}: "
+            f"expected {profile['lock_sha256']}, got {actual_digest}"
+        )
+
+
 def _run_reference_case(
     case: DiscoveredCase,
     *,
@@ -1246,7 +1303,14 @@ def _run_reference_case(
                 stderr=subprocess.PIPE,
                 check=False,
             )
-            exception_text = exception_path.read_text(encoding="utf-8").strip() if exception_path.is_file() else ""
+            exception_bytes = exception_path.read_bytes() if exception_path.is_file() else b""
+            exception_text = normalize_runtime_bytes(
+                exception_bytes,
+                source_root,
+                output_root=output_root,
+                doctree_root=doctree_root,
+                case_root=temporary,
+            ).decode("utf-8", errors="replace").strip()
             exception_type = exception_text or None
             if result.returncode == 0:
                 status: CaseStatus = "built"
@@ -1277,11 +1341,24 @@ def _run_reference_case(
                         root_leaks.append((case.profile, case.source_set, case.case_id, logical_path))
                     output_files[logical_path] = data
             raw_warnings = warnings_path.read_bytes() if warnings_path.is_file() else b""
+            warnings = normalize_warnings(
+                raw_warnings,
+                source_root,
+                output_root=output_root,
+                doctree_root=doctree_root,
+                case_root=temporary,
+            )
+            warning_leaks = _find_root_leaks(
+                warnings.encode("utf-8"),
+                [source_root, output_root, doctree_root, temporary],
+            )
+            if warning_leaks:
+                root_leaks.append((case.profile, case.source_set, case.case_id, "warnings"))
             return {
                 "status": status,
                 "exit_code": result.returncode,
                 "exception_type": exception_type,
-                "warnings": normalize_warnings(raw_warnings, source_root),
+                "warnings": warnings,
                 "output_files": output_files,
                 "root_leaks": root_leaks,
             }
@@ -1493,6 +1570,7 @@ def verify_profile(
     document = json.loads(index_path.read_text(encoding="utf-8"))
     validated = validate_index_document(document, profile_root)
     validate_profile_tree(validated, profile_root)
+    verify_profile_lock(repo_root, validated["profiles"][profile])
     reference_platform = validated["profiles"][profile]["platform"]
     if reference_platform != "linux":
         print(

@@ -20,6 +20,14 @@ pub enum Policy {
     ExactBytes,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct WarningRoots<'a> {
+    pub source_root: Option<&'a Path>,
+    pub output_root: Option<&'a Path>,
+    pub doctree_root: Option<&'a Path>,
+    pub case_root: Option<&'a Path>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
     pub category: String,
@@ -705,7 +713,7 @@ pub fn compare_file(
         Policy::ObjectsInventory => compare_inventory_file(logical_path, expected, actual),
         Policy::TextCrlf => {
             let expected = normalize_crlf(expected);
-            let actual = replace_source_root_token(&normalize_crlf(actual), source_root, false);
+            let actual = replace_source_root_token(&normalize_crlf(actual), source_root, true);
             if expected == actual {
                 Vec::new()
             } else {
@@ -738,9 +746,33 @@ pub fn compare_warnings(
     expected_source_root: Option<&Path>,
     actual_source_root: Option<&Path>,
 ) -> Vec<Diagnostic> {
+    compare_warnings_with_roots(
+        expected,
+        actual,
+        expected_source_root.map(|source_root| WarningRoots {
+            source_root: Some(source_root),
+            output_root: None,
+            doctree_root: None,
+            case_root: None,
+        }),
+        actual_source_root.map(|source_root| WarningRoots {
+            source_root: Some(source_root),
+            output_root: None,
+            doctree_root: None,
+            case_root: None,
+        }),
+    )
+}
+
+pub fn compare_warnings_with_roots(
+    expected: &[u8],
+    actual: &[u8],
+    expected_roots: Option<WarningRoots<'_>>,
+    actual_roots: Option<WarningRoots<'_>>,
+) -> Vec<Diagnostic> {
     let _policy = Policy::Warnings;
-    let expected = normalize_warning_bytes(expected, expected_source_root);
-    let actual = normalize_warning_bytes(actual, actual_source_root);
+    let expected = normalize_warning_bytes_with_roots(expected, expected_roots);
+    let actual = normalize_warning_bytes_with_roots(actual, actual_roots);
     if expected == actual {
         Vec::new()
     } else {
@@ -979,7 +1011,35 @@ fn format_inventory(inventory: &(Vec<u8>, Vec<InventoryRecord>)) -> String {
 }
 
 fn normalize_warning_bytes(bytes: &[u8], source_root: Option<&Path>) -> String {
-    let normalized = replace_source_root_token(&normalize_crlf(bytes), source_root, false);
+    normalize_warning_bytes_with_roots(
+        bytes,
+        source_root.map(|source_root| WarningRoots {
+            source_root: Some(source_root),
+            output_root: None,
+            doctree_root: None,
+            case_root: None,
+        }),
+    )
+}
+
+fn normalize_warning_bytes_with_roots(bytes: &[u8], roots: Option<WarningRoots<'_>>) -> String {
+    let mut normalized = normalize_crlf(bytes);
+    if let Some(roots) = roots {
+        let mut replacements = [
+            (roots.source_root, b"<SRCDIR>".as_slice()),
+            (roots.output_root, b"<OUTDIR>".as_slice()),
+            (roots.doctree_root, b"<DOCTREEDIR>".as_slice()),
+            (roots.case_root, b"<CASEDIR>".as_slice()),
+        ];
+        replacements
+            .sort_by_key(|(root, _)| root.map(|root| root.as_os_str().len()).unwrap_or_default());
+        for (root, token) in replacements.into_iter().rev() {
+            if let Some(root) = root {
+                normalized = replace_path_token(&normalized, root, token, true);
+            }
+        }
+    }
+    let normalized = replace_sphinx_error_logs(&normalized);
     String::from_utf8_lossy(&normalized).into_owned()
 }
 
@@ -991,19 +1051,69 @@ fn replace_source_root_token(
     let Some(source_root) = source_root else {
         return bytes.to_vec();
     };
-    let root = source_root.to_string_lossy();
+    replace_path_token(bytes, source_root, b"<SRCDIR>", json_escaped)
+}
+
+fn replace_path_token(bytes: &[u8], root: &Path, token: &[u8], json_escaped: bool) -> Vec<u8> {
+    let root = root.to_string_lossy();
     if root.is_empty() {
         return bytes.to_vec();
     }
-    let mut normalized = replace_token(bytes, root.as_bytes());
-    if json_escaped && root.contains('\\') {
-        let escaped = root.replace('\\', "\\\\");
-        normalized = replace_token(&normalized, escaped.as_bytes());
+    let mut spellings = vec![root.to_string()];
+    let slash = root.replace('\\', "/");
+    if slash != root {
+        spellings.push(slash);
     }
-    normalized
+    if json_escaped && root.contains('\\') {
+        spellings.push(root.replace('\\', "\\\\"));
+    }
+    spellings.sort_by_key(|spelling| spelling.len());
+    spellings
+        .into_iter()
+        .rev()
+        .fold(bytes.to_vec(), |bytes, spelling| {
+            replace_token(&bytes, spelling.as_bytes(), token)
+        })
 }
 
-fn replace_token(bytes: &[u8], token: &[u8]) -> Vec<u8> {
+fn replace_sphinx_error_logs(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let Some(relative) = bytes[cursor..]
+            .windows(b"sphinx-err-".len())
+            .position(|window| window == b"sphinx-err-")
+        else {
+            output.extend_from_slice(&bytes[cursor..]);
+            break;
+        };
+        let marker = cursor + relative;
+        let start = bytes[..marker]
+            .iter()
+            .rposition(|byte| byte.is_ascii_whitespace())
+            .map_or(0, |index| index + 1);
+        let end = bytes[marker..]
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace())
+            .map_or(bytes.len(), |index| marker + index);
+        let candidate = &bytes[start..end];
+        let absolute = candidate.starts_with(b"/")
+            || (candidate.len() >= 3
+                && candidate[1] == b':'
+                && matches!(candidate[2], b'/' | b'\\'));
+        if absolute && candidate.ends_with(b".log") {
+            output.extend_from_slice(&bytes[cursor..start]);
+            output.extend_from_slice(b"<SPHINX_ERR_LOG>");
+            cursor = end;
+        } else {
+            output.extend_from_slice(&bytes[cursor..marker + b"sphinx-err-".len()]);
+            cursor = marker + b"sphinx-err-".len();
+        }
+    }
+    output
+}
+
+fn replace_token(bytes: &[u8], token: &[u8], replacement: &[u8]) -> Vec<u8> {
     if token.is_empty() {
         return bytes.to_vec();
     }
@@ -1015,7 +1125,7 @@ fn replace_token(bytes: &[u8], token: &[u8]) -> Vec<u8> {
             .get(cursor + token.len())
             .is_none_or(|byte| *byte == b'/' || *byte == b'\\');
         if matches && boundary {
-            output.extend_from_slice(b"<SRCDIR>");
+            output.extend_from_slice(replacement);
             cursor += token.len();
         } else {
             output.push(bytes[cursor]);
@@ -2045,11 +2155,14 @@ fn render_report_markdown(
     }
     output.push_str("\n## Most common first-divergence\n\n");
     output.push_str(
-        "| expected first differing line | actual first differing line | count | sample files |\n| --- | --- | ---: | --- |\n",
+        "| expected line | expected first differing line | actual first differing line | count | sample files |\n| ---: | --- | --- | ---: | --- |\n",
     );
     for group in first_divergences {
         output.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} |\n",
+            group
+                .expected_line
+                .map_or_else(|| "-".to_string(), |line| line.to_string()),
             group.expected_text,
             group.actual_text,
             group.count,
@@ -2100,6 +2213,7 @@ fn render_report_markdown(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FirstDivergenceGroup {
+    pub expected_line: Option<usize>,
     pub expected_text: String,
     pub actual_text: String,
     pub count: usize,
@@ -2107,29 +2221,37 @@ pub struct FirstDivergenceGroup {
 }
 
 pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenceGroup> {
-    let mut grouped = BTreeMap::<(String, String), (usize, BTreeSet<String>)>::new();
+    let mut grouped = BTreeMap::<(String, String), (usize, BTreeSet<String>, Option<usize>)>::new();
     for diagnostic in diagnostics {
         if diagnostic.category.starts_with("html-") {
-            if let Some((expected, actual)) =
+            if let Some((computed_line, expected, actual)) =
                 first_difference_text(&diagnostic.expected, &diagnostic.actual)
             {
-                let (count, sample_files) = grouped.entry((expected, actual)).or_default();
+                let expected_line = diagnostic.first_expected_line.unwrap_or(computed_line);
+                let (count, sample_files, first_line) =
+                    grouped.entry((expected, actual)).or_default();
                 *count += 1;
                 sample_files.insert(diagnostic.logical_path.clone());
+                if first_line.is_none() {
+                    *first_line = Some(expected_line);
+                }
             }
         }
     }
     let mut groups = grouped
         .into_iter()
-        .map(|((expected_text, actual_text), (count, sample_files))| {
-            let sample_files = sample_files.into_iter().take(3).collect();
-            FirstDivergenceGroup {
-                expected_text,
-                actual_text,
-                count,
-                sample_files,
-            }
-        })
+        .map(
+            |((expected_text, actual_text), (count, sample_files, expected_line))| {
+                let sample_files = sample_files.into_iter().take(3).collect();
+                FirstDivergenceGroup {
+                    expected_line,
+                    expected_text,
+                    actual_text,
+                    count,
+                    sample_files,
+                }
+            },
+        )
         .collect::<Vec<_>>();
     groups.sort_by(|left, right| {
         right
@@ -2238,7 +2360,7 @@ fn split_element_region(
     })
 }
 
-fn first_difference_text(expected: &str, actual: &str) -> Option<(String, String)> {
+fn first_difference_text(expected: &str, actual: &str) -> Option<(usize, String, String)> {
     let expected = normalize_crlf(expected.as_bytes());
     let actual = normalize_crlf(actual.as_bytes());
     let expected = String::from_utf8_lossy(&expected);
@@ -2248,6 +2370,7 @@ fn first_difference_text(expected: &str, actual: &str) -> Option<(String, String
     let first = (0..expected_lines.len().max(actual_lines.len()))
         .find(|index| expected_lines.get(*index) != actual_lines.get(*index))?;
     Some((
+        first + 1,
         cap_text(expected_lines.get(first).copied().unwrap_or_default()),
         cap_text(actual_lines.get(first).copied().unwrap_or_default()),
     ))
@@ -2519,12 +2642,36 @@ pub fn warning_diagnostics(
     expected_source_root: Option<&Path>,
     actual_source_root: Option<&Path>,
 ) -> Vec<Diagnostic> {
-    if compare_warnings(expected, actual, expected_source_root, actual_source_root).is_empty() {
+    warning_diagnostics_with_roots(
+        expected,
+        actual,
+        expected_source_root.map(|source_root| WarningRoots {
+            source_root: Some(source_root),
+            output_root: None,
+            doctree_root: None,
+            case_root: None,
+        }),
+        actual_source_root.map(|source_root| WarningRoots {
+            source_root: Some(source_root),
+            output_root: None,
+            doctree_root: None,
+            case_root: None,
+        }),
+    )
+}
+
+pub fn warning_diagnostics_with_roots(
+    expected: &[u8],
+    actual: &[u8],
+    expected_roots: Option<WarningRoots<'_>>,
+    actual_roots: Option<WarningRoots<'_>>,
+) -> Vec<Diagnostic> {
+    if compare_warnings_with_roots(expected, actual, expected_roots, actual_roots).is_empty() {
         Vec::new()
     } else {
         diagnose_warnings(
-            &normalize_warning_bytes(expected, expected_source_root),
-            &normalize_warning_bytes(actual, actual_source_root),
+            &normalize_warning_bytes_with_roots(expected, expected_roots),
+            &normalize_warning_bytes_with_roots(actual, actual_roots),
         )
     }
 }

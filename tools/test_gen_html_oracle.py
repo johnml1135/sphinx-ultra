@@ -28,6 +28,8 @@ from tools.gen_html_oracle import (
     ensure_unique_case_keys,
     generate_profile,
     profile_record,
+    normalize_warnings,
+    verify_profile_lock,
     store_output_files,
     validate_needs_metadata,
     validate_index_document,
@@ -135,6 +137,49 @@ def test_rejects_hash_mismatch(tmp_path):
         validate_index_document(document, tmp_path)
 
 
+def test_normalize_warnings_replaces_all_runtime_roots_and_crash_log():
+    case_root = Path(r"C:\oracle\case-123")
+    source_root = case_root / "source"
+    output_root = case_root / "html" / "output"
+    doctree_root = case_root / "html" / "doctree"
+    raw = (
+        f"{source_root}\\index.rst:1: WARNING: source\n"
+        f"{output_root}\\index.html: output\n"
+        f"{doctree_root}\\index.doctree: doctree\n"
+        f"{case_root}\\warnings.txt: case\n"
+        "C:\\tmp\\sphinx-err-abc123.log: crash\n"
+    ).encode()
+
+    normalized = normalize_warnings(
+        raw,
+        source_root,
+        output_root=output_root,
+        doctree_root=doctree_root,
+        case_root=case_root,
+    )
+
+    assert b"<SRCDIR>\\index.rst" in normalized.encode()
+    assert b"<OUTDIR>\\index.html" in normalized.encode()
+    assert b"<DOCTREEDIR>\\index.doctree" in normalized.encode()
+    assert b"<CASEDIR>\\warnings.txt" in normalized.encode()
+    assert b"<SPHINX_ERR_LOG>" in normalized.encode()
+    assert str(case_root).encode() not in normalized.encode()
+
+
+def test_verify_profile_lock_checks_recorded_digest(tmp_path):
+    lock_path = tmp_path / "tools" / "oracle_profiles" / "core" / "uv.lock"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_bytes(b"lock contents")
+    record = {
+        "lock_path": "tools/oracle_profiles/core/uv.lock",
+        "lock_sha256": hashlib.sha256(b"lock contents").hexdigest(),
+    }
+    verify_profile_lock(tmp_path, record)
+    lock_path.write_bytes(b"tampered")
+    with pytest.raises(StorageError, match="lock_sha256"):
+        verify_profile_lock(tmp_path, record)
+
+
 def test_rejects_duplicate_case_key(tmp_path):
     document = _document(tmp_path)
     duplicate = copy.deepcopy(document["cases"][0])
@@ -205,12 +250,15 @@ def test_snippet_projects_disable_rendered_system_messages():
 
 
 def test_discovers_all_local_needs_projects():
+    needs_root_value = os.environ.get("SPHINX_NEEDS_ROOT")
+    if not needs_root_value:
+        pytest.skip("SPHINX_NEEDS_ROOT is unset; local sphinx-needs checkout is required")
     repo_root = Path(__file__).resolve().parents[1]
     cases = discover_cases(
         repo_root,
         repo_root / "tools" / "html_oracle_cases.toml",
         profile="local_needs",
-        needs_root=Path(r"C:\Users\johnm\Documents\repos\sphinx-needs"),
+        needs_root=Path(needs_root_value),
     )
     assert len(cases) == 142
     assert {case.source_set for case in cases} == {"sphinx_needs_doc_tests"}
@@ -423,6 +471,13 @@ def test_validator_rejects_exception_type_for_built_case(tmp_path):
         validate_index_document(document, tmp_path)
 
 
+def _fake_needs_root(tmp_path: Path) -> Path:
+    root = tmp_path / "sphinx-needs"
+    (root / "packages" / "sphinx-needs" / "src" / "sphinx_needs").mkdir(parents=True)
+    (root / "packages" / "sphinx-needs" / "tests" / "doc_test").mkdir(parents=True)
+    return root
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -433,8 +488,8 @@ def test_validator_rejects_exception_type_for_built_case(tmp_path):
         ("status", " M packages/sphinx-needs/src/sphinx_needs/__init__.py"),
     ],
 )
-def test_needs_provenance_rejects_wrong_observation(field, value):
-    root = Path(r"C:\Users\johnm\Documents\repos\sphinx-needs")
+def test_needs_provenance_rejects_wrong_observation(tmp_path, field, value):
+    root = _fake_needs_root(tmp_path)
     observations = {
         "module_file": root / "packages/sphinx-needs/src/sphinx_needs/__init__.py",
         "module_version": "8.5.0",
@@ -447,8 +502,8 @@ def test_needs_provenance_rejects_wrong_observation(field, value):
         validate_needs_metadata(root, **observations)
 
 
-def test_needs_provenance_ignores_dirt_outside_package_subtree():
-    root = Path(r"C:\Users\johnm\Documents\repos\sphinx-needs")
+def test_needs_provenance_ignores_dirt_outside_package_subtree(tmp_path):
+    root = _fake_needs_root(tmp_path)
     validate_needs_metadata(
         root,
         module_file=root / "packages/sphinx-needs/src/sphinx_needs/__init__.py",
@@ -753,7 +808,10 @@ def test_local_needs_built_case_requires_second_build_fields(tmp_path):
 
 @pytest.mark.skipif(docutils.__version__ != "0.21.2", reason="requires the local-needs profile environment")
 def test_local_needs_reference_case_captures_stable_needs_json():
-    needs_root = Path(r"C:\Users\johnm\Documents\repos\sphinx-needs")
+    needs_root_value = os.environ.get("SPHINX_NEEDS_ROOT")
+    if not needs_root_value:
+        pytest.skip("SPHINX_NEEDS_ROOT is unset; local sphinx-needs checkout is required")
+    needs_root = Path(needs_root_value)
     cases = discover_cases(
         REPO_ROOT,
         REPO_ROOT / "tools" / "html_oracle_cases.toml",
