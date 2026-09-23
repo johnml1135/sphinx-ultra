@@ -336,6 +336,50 @@ fn validate_case(case: &CaseRecord, local_needs: bool) -> Result<(), String> {
     {
         return Err(format!("core case {} has local-needs fields", case.case_id));
     }
+    if local_needs && case.status.is_runnable() {
+        if case.needs_status.is_none()
+            || case.needs_exit_code.is_none()
+            || case.needs_warnings.is_none()
+        {
+            return Err(format!(
+                "runnable local-needs case {} has incomplete second-build fields",
+                case.case_id
+            ));
+        }
+    }
+    if let Some(needs_status) = case.needs_status {
+        if !local_needs || !case.status.is_runnable() || needs_status.is_excluded() {
+            return Err(format!(
+                "needs status is not valid for case {}",
+                case.case_id
+            ));
+        }
+        match needs_status {
+            CaseStatus::Built if case.needs_exit_code != Some(0) => {
+                return Err(format!(
+                    "built needs run for {} must have exit_code 0",
+                    case.case_id
+                ));
+            }
+            CaseStatus::BuildError
+                if case.needs_exit_code.is_none() || case.needs_exit_code == Some(0) =>
+            {
+                return Err(format!(
+                    "build-error needs run for {} must have a nonzero exit_code",
+                    case.case_id
+                ));
+            }
+            _ => {}
+        }
+    } else if case.needs_json.is_some()
+        || case.needs_exit_code.is_some()
+        || case.needs_warnings.is_some()
+    {
+        return Err(format!(
+            "case {} has needs fields without needs_status",
+            case.case_id
+        ));
+    }
     if let Some(record) = &case.needs_json {
         if record.storage != FileStorage::Ref {
             return Err(format!(
@@ -343,6 +387,8 @@ fn validate_case(case: &CaseRecord, local_needs: bool) -> Result<(), String> {
                 case.case_id
             ));
         }
+        validate_relative_path(&record.logical_path, "needs_json.logical_path")?;
+        validate_relative_path(&record.storage_path, "needs_json.storage_path")?;
         if !record.logical_path.ends_with("needs.json") {
             return Err(format!(
                 "needs_json for {} has unexpected logical path",
@@ -1883,6 +1929,28 @@ pub fn warning_diagnostics(
             &normalize_warning_bytes(expected, expected_source_root),
             &normalize_warning_bytes(actual, actual_source_root),
         )
+    }
+}
+
+pub fn needs_builder_diagnostic(
+    expected_status: CaseStatus,
+    actual_status: CaseStatus,
+    actual_tree_empty: bool,
+) -> Option<Diagnostic> {
+    if expected_status == CaseStatus::Built
+        && actual_status == CaseStatus::BuildError
+        && actual_tree_empty
+    {
+        Some(Diagnostic {
+            category: "needs-builder".to_string(),
+            logical_path: "needs.json".to_string(),
+            first_expected_line: None,
+            expected: "built".to_string(),
+            actual: "build-error".to_string(),
+            detail: "Ultra rejected the needs builder before producing output".to_string(),
+        })
+    } else {
+        None
     }
 }
 

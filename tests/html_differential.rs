@@ -19,8 +19,8 @@ use support::html_oracle::{
     compare_trees, compare_warnings, diagnose_html, diagnose_inventory, diagnose_needs_json,
     diagnose_searchindex, diagnose_warnings, group_first_divergences, load_fixture_suite,
     materialize_case_expected, materialize_case_inputs, mismatch_diagnostics, parse_keep,
-    status_name, walk_tree, warning_diagnostics, CaseRecord, CaseResult, CaseStatus, IndexDocument,
-    InventoryRecord, Keep, Policy,
+    read_record, status_name, walk_tree, warning_diagnostics, write_logical_file, CaseRecord,
+    CaseResult, CaseStatus, IndexDocument, InventoryRecord, Keep, Policy,
 };
 
 fn minimal_case() -> serde_json::Value {
@@ -63,6 +63,26 @@ fn minimal_index(case_record: serde_json::Value) -> serde_json::Value {
                 "lock_path": "tools/oracle_profiles/core/uv.lock",
                 "lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
                 "determinism_shims": ["uuid.uuid4=counter"]
+            }
+        },
+        "cases": [case_record]
+    })
+}
+
+fn minimal_local_index(case_record: serde_json::Value) -> serde_json::Value {
+    json!({
+        "schema_version": 1,
+        "generator": "html-oracle/1",
+        "profiles": {
+            "local_needs": {
+                "sphinx": "9.1.0",
+                "docutils": "0.21.2",
+                "needs_version": "8.5.0",
+                "needs_commit": "58bcb59d861da95f2aca79f343e8bae6ec5c1250",
+                "needs_tree": "958172a89defcec69704f6b9d61e482e7c4e8409",
+                "lock_path": "tools/oracle_profiles/local_needs/uv.lock",
+                "lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                "determinism_shims": ["uuid.uuid4=counter", "needs_reproducible_json=1"]
             }
         },
         "cases": [case_record]
@@ -168,6 +188,56 @@ fn schema_rejects_files_on_excluded_case() {
         "size": 0
     }]);
     assert!(IndexDocument::from_value(minimal_index(case)).is_err());
+}
+
+#[test]
+fn schema_keeps_needs_fields_null_for_core_cases() {
+    let document = IndexDocument::from_value(minimal_index(minimal_case())).unwrap();
+    let case = &document.cases[0];
+    assert!(case.needs_json.is_none());
+    assert!(case.needs_status.is_none());
+    assert!(case.needs_exit_code.is_none());
+    assert!(case.needs_warnings.is_none());
+}
+
+#[test]
+fn schema_accepts_consistent_local_needs_second_build_fields() {
+    let mut case = minimal_case();
+    case["profile"] = json!("local_needs");
+    case["needs_json"] = json!({
+        "logical_path": "needs.json",
+        "storage": "ref",
+        "storage_path": "refs/sphinx_needs_doc_tests/case-1/needs/needs.json",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size": 2
+    });
+    case["needs_status"] = json!("built");
+    case["needs_exit_code"] = json!(0);
+    case["needs_warnings"] = json!("");
+    let document = IndexDocument::from_value(minimal_local_index(case))
+        .expect("local-needs second build fields should be accepted");
+    assert!(document.cases[0].needs_json.is_some());
+}
+
+#[test]
+fn schema_rejects_inconsistent_local_needs_second_build_fields() {
+    let mut case = minimal_case();
+    case["profile"] = json!("local_needs");
+    case["needs_exit_code"] = json!(0);
+    case["needs_warnings"] = json!("");
+    assert!(IndexDocument::from_value(minimal_local_index(case)).is_err());
+}
+
+#[test]
+fn needs_builder_failure_is_reported_as_its_own_category() {
+    let diagnostic = support::html_oracle::needs_builder_diagnostic(
+        CaseStatus::Built,
+        CaseStatus::BuildError,
+        true,
+    )
+    .expect("built-to-empty-build-error should be a builder mismatch");
+    assert_eq!(diagnostic.category, "needs-builder");
+    assert_eq!(diagnostic.logical_path, "needs.json");
 }
 
 #[test]
@@ -748,6 +818,19 @@ fn run_html_case(
         None,
         Some(&input_dir),
     ));
+    let (needs_status, needs_diagnostics) = if case.needs_status.is_some() {
+        run_needs_case(
+            case,
+            profile_root,
+            &input_dir,
+            &expected_dir,
+            &actual_needs_dir,
+            &run_dir,
+        )?
+    } else {
+        (None, Vec::new())
+    };
+    diagnostics.extend(needs_diagnostics);
     diagnostics.sort_by(|left, right| {
         left.logical_path
             .cmp(&right.logical_path)
@@ -764,7 +847,7 @@ fn run_html_case(
             .map(status_name)
             .unwrap_or("io-error")
             .to_string(),
-        needs_status: None,
+        needs_status: needs_status.map(status_name).map(str::to_string),
         passed,
         run_dir: run_dir.to_string_lossy().into_owned(),
         rerun_filter: case_key(case),
@@ -777,6 +860,68 @@ fn run_html_case(
     .map_err(|error| format!("write result.json: {error}"))?;
     apply_retention(&run_dir, passed, keep)?;
     Ok(result)
+}
+
+fn run_needs_case(
+    case: &CaseRecord,
+    profile_root: &Path,
+    input_dir: &Path,
+    expected_dir: &Path,
+    actual_needs_dir: &Path,
+    run_dir: &Path,
+) -> Result<(Option<CaseStatus>, Vec<support::html_oracle::Diagnostic>), String> {
+    let expected_status = case
+        .needs_status
+        .ok_or_else(|| format!("{} has no needs_status", case_key(case)))?;
+    let mut expected_tree = BTreeMap::new();
+    if let Some(record) = &case.needs_json {
+        let bytes = read_record(record, profile_root)?;
+        expected_tree.insert("needs.json".to_string(), bytes.clone());
+        write_logical_file(&expected_dir.join("needs"), "needs.json", &bytes)?;
+    }
+    let needs_cache = run_dir.join("needs-cache");
+    let needs_warnings = run_dir.join("actual-needs-warnings.txt");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sphinx-ultra"));
+    command
+        .arg(input_dir)
+        .arg(actual_needs_dir)
+        .args(["-b", "needs", "-D", "needs_reproducible_json=1", "-d"])
+        .arg(&needs_cache)
+        .arg("-q")
+        .args(["-w"])
+        .arg(&needs_warnings);
+    let process = run_bounded(command);
+    let actual_status = process_status(&process);
+    let mut diagnostics = if let Some(actual_status) = actual_status {
+        let actual_tree = walk_tree(actual_needs_dir)?;
+        if let Some(diagnostic) = support::html_oracle::needs_builder_diagnostic(
+            expected_status,
+            actual_status,
+            actual_tree.is_empty(),
+        ) {
+            vec![diagnostic]
+        } else {
+            compare_output_trees(
+                &expected_tree,
+                &actual_tree,
+                expected_status,
+                Some(actual_status),
+            )
+        }
+    } else {
+        vec![process_diagnostic(&process)]
+    };
+    let actual_warnings = fs::read(&needs_warnings).unwrap_or_default();
+    diagnostics.extend(warning_diagnostics(
+        case.needs_warnings
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes(),
+        &actual_warnings,
+        None,
+        Some(input_dir),
+    ));
+    Ok((actual_status, diagnostics))
 }
 
 fn process_status(process: &ProcessOutput) -> Option<CaseStatus> {
