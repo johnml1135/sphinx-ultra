@@ -572,11 +572,21 @@ fn diagnostic_synthetic_warnings_and_first_divergence_are_grouped() {
             detail: String::new(),
         })
         .collect::<Vec<_>>();
+    let mut diagnostics = diagnostics;
+    diagnostics.push(support::html_oracle::Diagnostic {
+        category: "html-body".to_string(),
+        logical_path: "page-0.html".to_string(),
+        first_expected_line: Some(7),
+        expected: "same expected\nrest".to_string(),
+        actual: "same actual\nrest".to_string(),
+        detail: String::new(),
+    });
     let groups = group_first_divergences(&diagnostics);
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].expected_text, "same expected");
     assert_eq!(groups[0].actual_text, "same actual");
-    assert_eq!(groups[0].count, 3);
+    assert_eq!(groups[0].count, 4);
+    assert_eq!(groups[0].sample_files.len(), 3);
 }
 
 #[test]

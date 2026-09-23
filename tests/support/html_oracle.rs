@@ -2107,26 +2107,22 @@ pub struct FirstDivergenceGroup {
 }
 
 pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenceGroup> {
-    let mut grouped = BTreeMap::<(String, String), Vec<String>>::new();
+    let mut grouped = BTreeMap::<(String, String), (usize, BTreeSet<String>)>::new();
     for diagnostic in diagnostics {
         if diagnostic.category.starts_with("html-") {
             if let Some((expected, actual)) =
                 first_difference_text(&diagnostic.expected, &diagnostic.actual)
             {
-                grouped
-                    .entry((expected, actual))
-                    .or_default()
-                    .push(diagnostic.logical_path.clone());
+                let (count, sample_files) = grouped.entry((expected, actual)).or_default();
+                *count += 1;
+                sample_files.insert(diagnostic.logical_path.clone());
             }
         }
     }
     let mut groups = grouped
         .into_iter()
-        .map(|((expected_text, actual_text), mut sample_files)| {
-            sample_files.sort();
-            sample_files.dedup();
-            let count = sample_files.len();
-            sample_files.truncate(3);
+        .map(|((expected_text, actual_text), (count, sample_files))| {
+            let sample_files = sample_files.into_iter().take(3).collect();
             FirstDivergenceGroup {
                 expected_text,
                 actual_text,
