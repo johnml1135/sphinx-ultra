@@ -1046,7 +1046,7 @@ fn normalize_warning_bytes_with_roots(bytes: &[u8], roots: Option<WarningRoots<'
 
 fn reduce_sphinx_error_report(warnings: &str) -> String {
     let lines = warnings.split_inclusive('\n').collect::<Vec<_>>();
-    let Some(header_index) = lines.iter().position(|line| {
+    let header_index = lines.iter().position(|line| {
         let line = line.trim_end_matches(['\r', '\n']);
         let Some(prefix) = line.strip_suffix(" error!") else {
             return false;
@@ -1055,14 +1055,24 @@ fn reduce_sphinx_error_report(warnings: &str) -> String {
             && prefix
                 .chars()
                 .all(|character| character.is_ascii_alphabetic() || character == ' ')
-    }) else {
+    });
+    let report_start = header_index.or_else(|| {
+        lines.iter().enumerate().find_map(|(index, line)| {
+            (line.trim_end_matches(['\r', '\n']) == "Versions"
+                && lines
+                    .get(index + 1)
+                    .is_some_and(|line| line.trim_end_matches(['\r', '\n']) == "========"))
+            .then_some(index)
+        })
+    });
+    let Some(report_start) = report_start else {
         return warnings.to_string();
     };
     let Some(traceback_index) =
         lines
             .iter()
             .enumerate()
-            .skip(header_index + 1)
+            .skip(report_start + 1)
             .find_map(|(index, line)| {
                 (line.trim_end_matches(['\r', '\n']) == "Traceback").then_some(index)
             })
@@ -1085,12 +1095,15 @@ fn reduce_sphinx_error_report(warnings: &str) -> String {
     {
         exception_end += 1;
     }
-    let prefix = lines[..header_index].concat();
-    let header = lines[header_index].trim_end_matches(['\r', '\n']);
+    let prefix = lines[..report_start].concat();
     let exception = lines[exception_index..exception_end]
         .concat()
         .trim_end_matches(['\r', '\n'])
         .to_string();
+    let Some(header_index) = header_index else {
+        return format!("{prefix}{exception}\n");
+    };
+    let header = lines[header_index].trim_end_matches(['\r', '\n']);
     format!("{prefix}{header}\n\n{exception}\n")
 }
 

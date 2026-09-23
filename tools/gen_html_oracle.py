@@ -640,6 +640,16 @@ class StorageError(ValueError):
 
 RootLeak = tuple[str, str, str, str]
 
+_RUNTIME_LEAK_PATTERNS = (
+    (re.compile(rb"(?i)(?:site-packages|\.venv)"), Path("<site-packages/.venv>")),
+    (re.compile(rb"(?i)[\\/]home[\\/]runner(?:[\\/]|$)"), Path("</home/runner>")),
+    (re.compile(rb"(?i)[\\/]tmp[\\/]sphinx-err-[^\\s/\\\\]+"), Path("</tmp/sphinx-err>")),
+    (
+        re.compile(rb"(?i)\b(?:linux|darwin|windows|macos)-[A-Za-z0-9_.-]+"),
+        Path("<platform>"),
+    ),
+)
+
 
 def _format_root_leaks(leaks: list[RootLeak]) -> str:
     lines = [
@@ -706,11 +716,17 @@ def _normalize_reference_bytes(
 
 
 def _find_root_leaks(data: bytes, roots: list[Path]) -> list[Path]:
-    return [
+    leaks = [
         root
         for root in roots
         if any(spelling in data for spelling in _root_spellings(root))
     ]
+    leaks.extend(
+        sentinel
+        for pattern, sentinel in _RUNTIME_LEAK_PATTERNS
+        if pattern.search(data)
+    )
+    return leaks
 
 
 def _check_root_leaks(data: bytes, roots: list[Path], logical_path: str) -> None:
@@ -1195,12 +1211,24 @@ def reduce_sphinx_error_report(warnings: str) -> str:
         ),
         None,
     )
-    if header_index is None:
+    report_start = header_index
+    if report_start is None:
+        report_start = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.rstrip("\r\n") == "Versions"
+                and index + 1 < len(lines)
+                and lines[index + 1].rstrip("\r\n") == "========"
+            ),
+            None,
+        )
+    if report_start is None:
         return warnings
     traceback_index = next(
         (
             index
-            for index in range(header_index + 1, len(lines))
+            for index in range(report_start + 1, len(lines))
             if lines[index].rstrip("\r\n") == "Traceback"
         ),
         None,
@@ -1222,9 +1250,11 @@ def reduce_sphinx_error_report(warnings: str) -> str:
         if not lines[exception_end].startswith("    "):
             break
         exception_end += 1
-    prefix = "".join(lines[:header_index])
-    header = lines[header_index].rstrip("\r\n")
+    prefix = "".join(lines[:report_start])
     exception = "".join(lines[exception_index:exception_end]).rstrip("\r\n")
+    if header_index is None:
+        return f"{prefix}{exception}\n"
+    header = lines[header_index].rstrip("\r\n")
     return f"{prefix}{header}\n\n{exception}\n"
 
 
@@ -1386,7 +1416,7 @@ def _run_reference_case(
                         path.read_bytes(),
                         source_root,
                     )
-                    leak_roots = [output_root, doctree_root]
+                    leak_roots = [output_root, doctree_root, repo_root]
                     if not _is_text_policy(logical_path):
                         leak_roots.insert(0, source_root)
                     if _find_root_leaks(data, leak_roots):
@@ -1404,7 +1434,7 @@ def _run_reference_case(
                 warnings = reduce_sphinx_error_report(warnings)
             warning_leaks = _find_root_leaks(
                 warnings.encode("utf-8"),
-                [source_root, output_root, doctree_root, temporary],
+                [source_root, output_root, doctree_root, temporary, repo_root],
             )
             if warning_leaks:
                 root_leaks.append((case.profile, case.source_set, case.case_id, "warnings"))

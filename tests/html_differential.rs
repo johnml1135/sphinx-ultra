@@ -440,6 +440,40 @@ To report this error to the developers, please open an issue.
 }
 
 #[test]
+fn comparator_reduces_real_crash_reports_on_ultra_side() {
+    let fixtures: &[(&[u8], &str)] = &[
+        (
+            include_bytes!("fixtures/html_oracle/error_reports/docutils-0500.txt").as_slice(),
+            "ValueError: list.remove(x): x not in list",
+        ),
+        (
+            include_bytes!("fixtures/html_oracle/error_reports/numfig_on.txt").as_slice(),
+            "TypeError: not all arguments converted during string formatting",
+        ),
+        (
+            include_bytes!("fixtures/html_oracle/error_reports/doc_service_github.txt").as_slice(),
+            "RuntimeError: network disabled by html oracle",
+        ),
+    ];
+    for (expected, exception_line) in fixtures {
+        let actual = String::from_utf8_lossy(expected)
+            .replace("Linux-6.17.0-1022-azure-x86_64-with-glibc2.39", "Windows-11")
+            .replace(
+                "/home/runner/work/sphinx-ultra/sphinx-ultra/tools/oracle_profiles/core/.venv/lib/python3.12/site-packages/",
+                r"C:\run\.venv\Lib\site-packages\\",
+            )
+            .replace(
+                "/home/runner/work/sphinx-ultra/sphinx-ultra/tools/html_oracle_runner.py",
+                r"C:\run\html_oracle_runner.py",
+            );
+        assert!(String::from_utf8_lossy(expected).contains(exception_line));
+        assert!(actual.contains(exception_line));
+        let diagnostics = compare_warnings_with_roots(expected, actual.as_bytes(), None, None);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+}
+
+#[test]
 fn comparator_parses_searchindex_and_needs_json_with_key_order_ignored() {
     let search_expected = br#"Search.setIndex({"docnames":["a"],"titles":["A"]});"#;
     let search_actual = br#"Search.setIndex({"titles":["A"],"docnames":["a"]});"#;
