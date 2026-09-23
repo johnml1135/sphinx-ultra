@@ -17,11 +17,12 @@ use support::diagnostics::{run_bounded, run_bounded_with_timeout, ExitStatusKind
 use support::html_oracle::{
     apply_retention, bounded_assertion_message,
     build_report_with_platforms_reference_cases_and_bin, case_key, compare_file, compare_trees,
-    compare_warnings, diagnose_html, diagnose_inventory, diagnose_needs_json, diagnose_searchindex,
-    diagnose_warnings, group_first_divergences, load_fixture_suite, materialize_case_expected,
-    materialize_case_inputs, mismatch_diagnostics_with_source_root, parse_keep, read_record,
-    resolve_ultra_binary, status_name, walk_tree, warning_diagnostics, write_logical_file,
-    CaseRecord, CaseResult, CaseStatus, IndexDocument, InventoryRecord, Keep, Policy,
+    compare_warnings, compare_warnings_with_roots, diagnose_html, diagnose_inventory,
+    diagnose_needs_json, diagnose_searchindex, diagnose_warnings, group_first_divergences,
+    load_fixture_suite, materialize_case_expected, materialize_case_inputs,
+    mismatch_diagnostics_with_source_root, parse_keep, read_record, resolve_ultra_binary,
+    status_name, walk_tree, warning_diagnostics_with_roots, write_logical_file, CaseRecord,
+    CaseResult, CaseStatus, IndexDocument, InventoryRecord, Keep, Policy,
 };
 
 fn minimal_case() -> serde_json::Value {
@@ -360,6 +361,31 @@ fn comparator_replaces_source_root_in_text_and_searchindex_only() {
         Some(windows_root)
     )
     .is_empty());
+
+    let windows_text_expected = br#"path=<SRCDIR>\\index.rst"#;
+    let windows_text_actual = br#"path=C:\\run\\source\\index.rst"#;
+    assert!(compare_file(
+        "index.html",
+        windows_text_expected,
+        windows_text_actual,
+        Some(windows_root)
+    )
+    .is_empty());
+}
+
+#[test]
+fn comparator_normalizes_all_runtime_tokens_in_warnings() {
+    let expected = b"<SRCDIR>/index.rst <OUTDIR>/index.html <DOCTREEDIR>/index.doctree <CASEDIR>\\warnings.txt <SPHINX_ERR_LOG>\n";
+    let actual = br#"C:\run\case\source/index.rst C:\run\case\output/index.html C:\run\case\doctree/index.doctree C:\run\case\warnings.txt C:\tmp\sphinx-err-abc.log
+"#;
+    let roots = support::html_oracle::WarningRoots {
+        source_root: Some(Path::new(r"C:\run\case\source")),
+        output_root: Some(Path::new(r"C:\run\case\output")),
+        doctree_root: Some(Path::new(r"C:\run\case\doctree")),
+        case_root: Some(Path::new(r"C:\run\case")),
+    };
+    let diagnostics = compare_warnings_with_roots(expected, actual, None, Some(roots));
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
 
 #[test]
@@ -585,6 +611,7 @@ fn diagnostic_synthetic_warnings_and_first_divergence_are_grouped() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].expected_text, "same expected");
     assert_eq!(groups[0].actual_text, "same actual");
+    assert_eq!(groups[0].expected_line, Some(7));
     assert_eq!(groups[0].count, 4);
     assert_eq!(groups[0].sample_files.len(), 3);
 }
@@ -944,7 +971,8 @@ fn report_synthetic_first_divergences_are_capped_at_twenty_five() {
         .collect::<Vec<_>>();
     let (report, markdown) = support::html_oracle::build_report(30, 0, 0, &results);
     assert_eq!(report["first_divergences"].as_array().unwrap().len(), 25);
-    assert!(markdown.contains("| expected-0 | actual-0 | 1 |"));
+    assert_eq!(report["first_divergences"][0]["expected_line"], 1);
+    assert!(markdown.contains("| 1 | expected-0 | actual-0 | 1 |"));
 }
 
 #[test]
@@ -1179,11 +1207,16 @@ fn run_html_case(
         vec![process_diagnostic(&process)]
     };
     let actual_warnings = fs::read(&warnings_path).unwrap_or_default();
-    diagnostics.extend(warning_diagnostics(
+    diagnostics.extend(warning_diagnostics_with_roots(
         case.warnings.as_bytes(),
         &actual_warnings,
         None,
-        Some(&input_dir),
+        Some(support::html_oracle::WarningRoots {
+            source_root: Some(&input_dir),
+            output_root: Some(&actual_dir),
+            doctree_root: Some(&cache_dir),
+            case_root: Some(&run_dir),
+        }),
     ));
     let (needs_status, needs_diagnostics) = if case.needs_status.is_some() {
         run_needs_case(
@@ -1282,14 +1315,19 @@ fn run_needs_case(
         vec![process_diagnostic(&process)]
     };
     let actual_warnings = fs::read(&needs_warnings).unwrap_or_default();
-    diagnostics.extend(warning_diagnostics(
+    diagnostics.extend(warning_diagnostics_with_roots(
         case.needs_warnings
             .as_deref()
             .unwrap_or_default()
             .as_bytes(),
         &actual_warnings,
         None,
-        Some(input_dir),
+        Some(support::html_oracle::WarningRoots {
+            source_root: Some(input_dir),
+            output_root: Some(actual_needs_dir),
+            doctree_root: Some(&needs_cache),
+            case_root: Some(run_dir),
+        }),
     ));
     Ok((actual_status, diagnostics))
 }
