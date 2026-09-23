@@ -1,4 +1,5 @@
 mod support {
+    pub mod diagnostics;
     pub mod html_oracle;
 }
 
@@ -8,6 +9,9 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+use support::diagnostics::{run_bounded_with_timeout, ExitStatusKind};
 use support::html_oracle::{
     compare_file, compare_trees, compare_warnings, diagnose_html, diagnose_inventory,
     diagnose_needs_json, diagnose_searchindex, diagnose_warnings, group_first_divergences,
@@ -403,4 +407,60 @@ fn diagnostic_synthetic_keep_and_filter_policy_defaults_and_rejects_invalid_valu
         support::html_oracle::rerun_filter("core/synthetic/case-1", Some("other")),
         None
     );
+}
+
+fn diagnostics_helper_command(mode: &str) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .arg("--exact")
+        .arg("diagnostics_helper")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env("HTML_ORACLE_DIAGNOSTICS_HELPER", mode);
+    command
+}
+
+#[test]
+#[ignore]
+fn diagnostics_helper() {
+    match std::env::var("HTML_ORACLE_DIAGNOSTICS_HELPER").as_deref() {
+        Ok("sleep") => std::thread::sleep(Duration::from_secs(5)),
+        Ok("flood") => {
+            let block = vec![b'x'; 8192];
+            let mut stdout = std::io::stdout().lock();
+            let mut stderr = std::io::stderr().lock();
+            for _ in 0..128 {
+                stdout.write_all(&block).unwrap();
+                stderr.write_all(&block).unwrap();
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn diagnostics_timeout_is_reported_without_hanging() {
+    let result = run_bounded_with_timeout(
+        diagnostics_helper_command("sleep"),
+        Duration::from_millis(100),
+    );
+    assert!(matches!(result.status, ExitStatusKind::Timeout));
+}
+
+#[test]
+fn diagnostics_caps_both_output_streams_after_draining_them() {
+    let result =
+        run_bounded_with_timeout(diagnostics_helper_command("flood"), Duration::from_secs(5));
+    assert!(matches!(result.status, ExitStatusKind::Success));
+    assert!(result.stdout.len() <= 256 * 1024 + 32);
+    assert!(result.stderr.len() <= 256 * 1024 + 32);
+    assert!(result.stdout.contains("[output truncated]"));
+    assert!(result.stderr.contains("[output truncated]"));
+}
+
+#[test]
+fn diagnostics_reports_spawn_errors() {
+    let command = Command::new("html-oracle-command-that-does-not-exist");
+    let result = run_bounded_with_timeout(command, Duration::from_millis(100));
+    assert!(matches!(result.status, ExitStatusKind::SpawnError(_)));
 }
