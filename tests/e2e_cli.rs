@@ -5,8 +5,11 @@
 //! ROADMAP M1 defect, the assertion documents it with a comment so the fix is
 //! a deliberate test change, not an accident.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use flate2::read::ZlibDecoder;
 
 fn bin() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sphinx-ultra"));
@@ -123,6 +126,42 @@ fn build_emits_sphinx_search_index() {
     assert_eq!(object["objnames"], serde_json::json!({}));
     assert_eq!(object["objtypes"], serde_json::json!({}));
     assert_eq!(object["indexentries"], serde_json::json!({}));
+}
+
+#[test]
+fn build_emits_sphinx_object_inventory() {
+    let out = out_dir("basic-object-inventory");
+    let result = build(&fixture("basic"), &out, &[]);
+
+    assert!(result.status.success(), "stderr: {}", stderr_of(&result));
+    let raw = std::fs::read(out.join("objects.inv")).unwrap();
+    let mut lines = raw.splitn(5, |byte| *byte == b'\n');
+    assert_eq!(
+        lines.next(),
+        Some(b"# Sphinx inventory version 2".as_slice())
+    );
+    assert_eq!(lines.next(), Some(b"# Project: Fixture".as_slice()));
+    assert_eq!(lines.next(), Some(b"# Version: ".as_slice()));
+    assert_eq!(
+        lines.next(),
+        Some(b"# The remainder of this file is compressed using zlib.".as_slice())
+    );
+
+    let mut body = String::new();
+    ZlibDecoder::new(lines.next().unwrap())
+        .read_to_string(&mut body)
+        .unwrap();
+    assert_eq!(
+        body,
+        concat!(
+            "genindex std:label -1 genindex.html Index\n",
+            "index std:doc -1 index.html Welcome\n",
+            "installation std:doc -1 installation.html Installation\n",
+            "modindex std:label -1 py-modindex.html Module Index\n",
+            "py-modindex std:label -1 py-modindex.html Python Module Index\n",
+            "search std:label -1 search.html Search Page\n",
+        )
+    );
 }
 
 #[test]

@@ -25,6 +25,7 @@ use crate::env::BuildEnvironment;
 use crate::error::{BuildErrorReport, BuildWarning, ErrorType, WarningType};
 use crate::extensions::{ExtensionLoader, SphinxApp};
 use crate::intersphinx::{self, HttpConfig, Intersphinx, LoadRequest, UreqFetcher};
+use crate::inventory::{InvObject, InventoryFile};
 use crate::matching;
 use crate::parser::Parser;
 use crate::utils;
@@ -65,6 +66,14 @@ const DOCTREE_FORMAT_VERSION: u32 = 2;
 
 /// Bytes of the [`DOCTREE_MAGIC`] + [`DOCTREE_FORMAT_VERSION`] header.
 const DOCTREE_HEADER_LEN: usize = DOCTREE_MAGIC.len() + std::mem::size_of::<u32>();
+
+fn std_object_priority(objtype: &str) -> i32 {
+    match objtype {
+        "term" | "token" | "label" | "doc" => -1,
+        "confval" | "envvar" | "cmdoption" => 1,
+        _ => 0,
+    }
+}
 
 /// Sphinx's `root_doc` default (`config.py`), used when the configuration
 /// leaves it unset.
@@ -1545,8 +1554,120 @@ impl SphinxBuilder {
 
     async fn generate_indices(&self, _documents: &[Document]) -> Result<()> {
         info!("Generating indices and cross-references");
-        // TODO: Implement index generation
-        Ok(())
+
+        let domains = [
+            ("std", self.inventory_std_objects()),
+            ("py", self.inventory_py_objects()),
+        ];
+        InventoryFile::dump(
+            self.output_dir.join("objects.inv"),
+            &self.config.project,
+            self.config.version.as_deref().unwrap_or(""),
+            &domains,
+            |docname| format!("{docname}.html"),
+        )
+        .await
+    }
+
+    fn inventory_std_objects(&self) -> Vec<InvObject> {
+        let mut objects = Vec::new();
+
+        for docname in self.env.all_docs.keys() {
+            let display_name = self
+                .env
+                .titles
+                .get(docname)
+                .map(env::numbers::clean_astext)
+                .unwrap_or_default();
+            objects.push(InvObject {
+                name: docname.clone(),
+                objtype: "doc".to_string(),
+                priority: -1,
+                docname: docname.clone(),
+                anchor: String::new(),
+                dispname: display_name,
+            });
+        }
+
+        for ((program, option), (docname, anchor)) in &self.env.std.progoptions {
+            let name = program
+                .as_deref()
+                .map(|program| format!("{program}.{option}"))
+                .unwrap_or_else(|| option.clone());
+            objects.push(InvObject {
+                name: name.clone(),
+                objtype: "cmdoption".to_string(),
+                priority: 1,
+                docname: docname.clone(),
+                anchor: anchor.clone(),
+                dispname: name,
+            });
+        }
+
+        for ((objtype, name), (docname, anchor)) in &self.env.std.objects {
+            objects.push(InvObject {
+                name: name.clone(),
+                objtype: objtype.clone(),
+                priority: std_object_priority(objtype),
+                docname: docname.clone(),
+                anchor: anchor.clone(),
+                dispname: name.clone(),
+            });
+        }
+
+        for (name, (docname, anchor, section_name)) in &self.env.std.labels {
+            objects.push(InvObject {
+                name: name.clone(),
+                objtype: "label".to_string(),
+                priority: -1,
+                docname: docname.clone(),
+                anchor: anchor.clone(),
+                dispname: section_name.clone(),
+            });
+        }
+
+        for (name, (docname, anchor)) in &self.env.std.anonlabels {
+            if !self.env.std.labels.contains_key(name) {
+                objects.push(InvObject {
+                    name: name.clone(),
+                    objtype: "label".to_string(),
+                    priority: -1,
+                    docname: docname.clone(),
+                    anchor: anchor.clone(),
+                    dispname: name.clone(),
+                });
+            }
+        }
+
+        objects
+    }
+
+    fn inventory_py_objects(&self) -> Vec<InvObject> {
+        let mut objects = Vec::new();
+        for (name, module) in &self.env.py.modules {
+            objects.push(InvObject {
+                name: name.clone(),
+                objtype: "module".to_string(),
+                priority: 0,
+                docname: module.docname.clone(),
+                anchor: module.node_id.clone(),
+                dispname: name.clone(),
+            });
+        }
+        for (name, object) in &self.env.py.objects {
+            if object.objtype == "module" {
+                continue;
+            }
+            objects.push(InvObject {
+                name: name.clone(),
+                objtype: object.objtype.clone(),
+                priority: if object.aliased { -1 } else { 1 },
+                docname: object.docname.clone(),
+                anchor: object.node_id.clone(),
+                dispname: name.clone(),
+            });
+        }
+        objects
     }
 
     async fn copy_static_assets(&self) -> Result<()> {
