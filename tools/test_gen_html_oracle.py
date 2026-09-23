@@ -27,6 +27,8 @@ from tools.gen_html_oracle import (
     discover_cases,
     ensure_unique_case_keys,
     generate_profile,
+    profile_record,
+    store_output_files,
     validate_needs_metadata,
     validate_index_document,
     store_blob,
@@ -58,6 +60,7 @@ def _document(tmp_path: Path) -> dict:
             "core": {
                 "sphinx": "9.1.0",
                 "docutils": "0.22.4",
+                "platform": "linux",
                 "needs_version": None,
                 "needs_commit": None,
                 "needs_tree": None,
@@ -410,6 +413,77 @@ def test_capture_rejects_absolute_root_leaks(tmp_path):
         )
 
 
+def test_text_policy_replaces_source_root_and_crlf(tmp_path):
+    source = tmp_path / "source"
+    profile_root = tmp_path / "profile"
+    source.mkdir()
+    records = store_output_files(
+        {
+            "index.html": (
+                f"before {source.as_posix()}/index.rst\r\n"
+                f"after {source.as_posix()}-suffix\r\n"
+            ).encode("utf-8")
+        },
+        profile_root,
+        "set",
+        "case",
+        root_paths=[source],
+        source_root=source,
+    )
+    stored = (profile_root / records[0]["storage_path"]).read_bytes()
+    assert stored == (
+        b"before <SRCDIR>/index.rst\n"
+        + f"after {source.as_posix()}-suffix\n".encode("utf-8")
+    )
+
+
+def test_searchindex_policy_replaces_source_root_and_crlf(tmp_path):
+    source = tmp_path / "source"
+    profile_root = tmp_path / "profile"
+    source.mkdir()
+    records = store_output_files(
+        {"searchindex.js": f"{source.as_posix()}\\index.html\r\n".encode("utf-8")},
+        profile_root,
+        "set",
+        "case",
+        root_paths=[source],
+        source_root=source,
+    )
+    stored = (profile_root / records[0]["storage_path"]).read_bytes()
+    assert stored == b"<SRCDIR>\\index.html\n"
+
+
+def test_searchindex_policy_replaces_json_escaped_windows_root(tmp_path):
+    source = tmp_path / "source"
+    profile_root = tmp_path / "profile"
+    source.mkdir()
+    escaped_root = str(source.resolve()).replace("\\", "\\\\")
+    records = store_output_files(
+        {"searchindex.js": f"{escaped_root}\\\\index.html\r\n".encode("utf-8")},
+        profile_root,
+        "set",
+        "case",
+        root_paths=[source],
+        source_root=source,
+    )
+    stored = (profile_root / records[0]["storage_path"]).read_bytes()
+    assert stored == b"<SRCDIR>\\\\index.html\n"
+
+
+def test_non_text_and_needs_json_source_root_leaks_are_still_rejected(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    for logical_path in ("image.png", "needs/needs.json"):
+        with pytest.raises(StorageError, match="root leak"):
+            store_output_files(
+                {logical_path: str(source).encode("utf-8")},
+                tmp_path / "profile",
+                "set",
+                "case",
+                root_paths=[source],
+            )
+
+
 def test_root_leak_report_lists_all_case_files_in_sorted_order():
     message = _format_root_leaks(
         [
@@ -424,6 +498,41 @@ def test_root_leak_report_lists_all_case_files_in_sorted_order():
         "core/docutils_snippets/docutils-0001: searchindex.js\n"
         "core/sphinx_read_snippets/sphinx-read-0002: index.html"
     )
+
+
+def test_profile_record_includes_generator_platform():
+    record = profile_record(REPO_ROOT, "core")
+    assert record["platform"] == sys.platform
+
+
+def test_rejects_profile_without_platform(tmp_path):
+    document = _document(tmp_path)
+    del document["profiles"]["core"]["platform"]
+    with pytest.raises(SchemaError, match="platform"):
+        validate_index_document(document, tmp_path)
+
+
+def test_verify_warns_for_non_linux_reference_platform(tmp_path, capsys):
+    config = tmp_path / "cases.toml"
+    config.write_text(
+        """[[source_sets]]
+name = "html_projects"
+profile = "core"
+kind = "html_projects"
+source = "tests/fixtures"
+projects = ["basic"]
+count = 1
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "oracle"
+    generate_profile(REPO_ROOT, config, output, profile="core", jobs=1)
+    from tools.gen_html_oracle import verify_profile
+
+    verify_profile(REPO_ROOT, config, output, profile="core")
+    output_text = capsys.readouterr().out
+    assert "WARNING" in output_text
+    assert "platform" in output_text
 
 
 def test_atomic_swap_failure_preserves_old_profile(tmp_path, monkeypatch):

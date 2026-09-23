@@ -28,10 +28,11 @@ same variables for every command and keep the invocations locked and offline:
 
 The source fixtures are read-only inputs.  The generated profile subtrees are
 replaced atomically and can be regenerated independently.  Snippet projects
-use Sphinx's default ``keep_warnings = False`` so rendered docutils system
-messages cannot embed temporary source paths; warnings remain captured from
-the dedicated ``-w`` warning file.  Root-leak validation scans every case and
-reports the complete sorted profile/source-set/case/file list in one failure.
+use Sphinx's default ``keep_warnings = False``; warnings remain captured from
+the dedicated ``-w`` warning file.  Text-policy output normalizes the complete
+source-root token to ``<SRCDIR>`` while non-text output remains subject to the
+root-leak check.  Root-leak validation scans every case and reports the
+complete sorted profile/source-set/case/file list in one failure.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ PROFILE_FIELDS = frozenset(
     {
         "sphinx",
         "docutils",
+        "platform",
         "needs_version",
         "needs_commit",
         "needs_tree",
@@ -115,6 +117,7 @@ HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 class ProfileRecord(TypedDict):
     sphinx: str
     docutils: str
+    platform: str
     needs_version: str | None
     needs_commit: str | None
     needs_tree: str | None
@@ -636,6 +639,42 @@ def _root_spellings(root: Path) -> tuple[bytes, ...]:
     return tuple(value.encode("utf-8") for value in {resolved, resolved.replace("\\", "/")})
 
 
+def _is_text_policy(logical_path: str) -> bool:
+    """Return whether a logical output path uses the TextCrlf policy."""
+    normalized = logical_path.replace("\\", "/")
+    if normalized == "searchindex.js":
+        return True
+    if normalized.endswith("/needs.json") or normalized == "needs.json":
+        return False
+    return (
+        normalized.startswith("_sources/")
+        or normalized.endswith((".html", ".css", ".js", ".json", ".xml", ".txt"))
+    )
+
+
+def _replace_source_root_tokens(data: bytes, source_root: Path) -> bytes:
+    spellings = set(_root_spellings(source_root))
+    native = str(Path(source_root).resolve()).encode("utf-8")
+    spellings.add(native.replace(b"\\", b"\\\\"))
+    for spelling in sorted(spellings, key=len, reverse=True):
+        data = re.sub(re.escape(spelling) + rb"(?=[\\/]|$)", b"<SRCDIR>", data)
+    return data
+
+
+def _normalize_reference_bytes(
+    logical_path: str,
+    data: bytes,
+    source_root: Path | None = None,
+) -> bytes:
+    """Apply the generation-time policy for text and search-index files."""
+    if not _is_text_policy(logical_path):
+        return data
+    normalized = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if source_root is not None:
+        normalized = _replace_source_root_tokens(normalized, source_root)
+    return normalized
+
+
 def _find_root_leaks(data: bytes, roots: list[Path]) -> list[Path]:
     return [
         root
@@ -657,6 +696,7 @@ def capture_output_tree(
     case_id: str,
     *,
     root_paths: list[Path] | None = None,
+    source_root: Path | None = None,
 ) -> list[FileRecord]:
     """Capture an output tree into refs/blobs and return logical file records."""
     output_root = Path(output_root)
@@ -680,6 +720,7 @@ def capture_output_tree(
         source_set,
         case_id,
         root_paths=roots,
+        source_root=source_root,
     )
 
 
@@ -690,12 +731,18 @@ def store_output_files(
     case_id: str,
     *,
     root_paths: list[Path] | None = None,
+    source_root: Path | None = None,
 ) -> list[FileRecord]:
     records: list[FileRecord] = []
     roots = root_paths or []
     for logical_path, data in sorted(output_files.items()):
         _safe_relative_path(logical_path, f"captured logical path {logical_path}")
-        _check_root_leaks(data, roots, logical_path)
+        data = _normalize_reference_bytes(logical_path, data, source_root)
+        leak_roots = roots
+        if source_root is not None and _is_text_policy(logical_path):
+            resolved_source_root = source_root.resolve()
+            leak_roots = [root for root in roots if root.resolve() != resolved_source_root]
+        _check_root_leaks(data, leak_roots, logical_path)
         digest = hashlib.sha256(data).hexdigest()
         if logical_path.startswith("_static/") or logical_path.startswith("_images/"):
             storage = "blob"
@@ -841,6 +888,7 @@ def _validate_profile_record(value: object, label: str) -> ProfileRecord:
     assert isinstance(value, dict)
     sphinx = _string(value["sphinx"], f"{label}.sphinx")
     docutils = _string(value["docutils"], f"{label}.docutils")
+    platform = _string(value["platform"], f"{label}.platform")
     _optional_string(value["needs_version"], f"{label}.needs_version")
     _optional_string(value["needs_commit"], f"{label}.needs_commit")
     _optional_string(value["needs_tree"], f"{label}.needs_tree")
@@ -851,6 +899,7 @@ def _validate_profile_record(value: object, label: str) -> ProfileRecord:
     return {
         "sphinx": sphinx,
         "docutils": docutils,
+        "platform": platform,
         "needs_version": value["needs_version"],
         "needs_commit": value["needs_commit"],
         "needs_tree": value["needs_tree"],
@@ -1044,8 +1093,12 @@ def validate_index_document(document: object, profile_root: Path) -> IndexDocume
 
 def normalize_warnings(raw: bytes, source_root: Path) -> str:
     text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    for spelling in (str(source_root.resolve()), str(source_root.resolve()).replace("\\", "/")):
-        text = text.replace(spelling, "<SRCDIR>")
+    for spelling in sorted(
+        (value.decode("utf-8") for value in _root_spellings(source_root)),
+        key=len,
+        reverse=True,
+    ):
+        text = re.sub(re.escape(spelling) + r"(?=[\\/]|$)", "<SRCDIR>", text)
     return text
 
 
@@ -1097,6 +1150,7 @@ def profile_record(repo_root: Path, profile: str) -> ProfileRecord:
     record: ProfileRecord = {
         "sphinx": sphinx_version,
         "docutils": docutils_version,
+        "platform": sys.platform,
         "needs_version": "8.5.0" if profile == "local_needs" else None,
         "needs_commit": NEEDS_COMMIT if profile == "local_needs" else None,
         "needs_tree": NEEDS_TREE if profile == "local_needs" else None,
@@ -1169,8 +1223,15 @@ def _run_reference_case(
                     if not path.is_file():
                         continue
                     logical_path = path.relative_to(output_root).as_posix()
-                    data = path.read_bytes()
-                    if _find_root_leaks(data, [source_root, output_root, doctree_root]):
+                    data = _normalize_reference_bytes(
+                        logical_path,
+                        path.read_bytes(),
+                        source_root,
+                    )
+                    leak_roots = [output_root, doctree_root]
+                    if not _is_text_policy(logical_path):
+                        leak_roots.insert(0, source_root)
+                    if _find_root_leaks(data, leak_roots):
                         root_leaks.append((case.profile, case.source_set, case.case_id, logical_path))
                     output_files[logical_path] = data
             raw_warnings = warnings_path.read_bytes() if warnings_path.is_file() else b""
@@ -1238,6 +1299,7 @@ def _case_record_from_result(
         profile_root,
         case.source_set,
         case.case_id,
+        root_paths=[profile_root],
     )
     warnings = result["warnings"]
     _write_warnings(profile_root, case, warnings)
@@ -1251,6 +1313,7 @@ def _case_record_from_result(
             profile_root,
             case.source_set,
             case.case_id,
+            root_paths=[profile_root],
         )
         needs_json = needs_records[0]
     return {
@@ -1385,6 +1448,12 @@ def verify_profile(
     document = json.loads(index_path.read_text(encoding="utf-8"))
     validated = validate_index_document(document, profile_root)
     validate_profile_tree(validated, profile_root)
+    reference_platform = validated["profiles"][profile]["platform"]
+    if reference_platform != "linux":
+        print(
+            f"WARNING: {profile} reference platform is {reference_platform!r}; "
+            "canonical references use 'linux'."
+        )
     discovered = discover_cases(repo_root, config_path, profile=profile, needs_root=needs_root)
     assert_discovery_keys_equal(discovered, validated["cases"])
     counts: dict[str, dict[str, int]] = {}
