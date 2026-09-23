@@ -36,6 +36,7 @@ pub struct CaseResult {
     pub source_set: String,
     pub case_id: String,
     pub html_status: String,
+    pub exception_type: Option<String>,
     pub needs_status: Option<String>,
     pub passed: bool,
     pub run_dir: String,
@@ -129,6 +130,7 @@ pub struct CaseRecord {
     pub source_set: String,
     pub case_id: String,
     pub status: CaseStatus,
+    pub exception_type: Option<String>,
     pub exit_code: Option<i32>,
     pub warnings: String,
     pub excluded_reason: Option<String>,
@@ -141,6 +143,15 @@ pub struct CaseRecord {
     pub needs_status: Option<CaseStatus>,
     pub needs_exit_code: Option<i32>,
     pub needs_warnings: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReferenceCase {
+    pub profile: String,
+    pub source_set: String,
+    pub case_id: String,
+    pub status: String,
+    pub exception_type: Option<String>,
 }
 
 impl IndexDocument {
@@ -406,18 +417,75 @@ fn validate_case(case: &CaseRecord, local_needs: bool) -> Result<(), String> {
 
 fn validate_status_fields(case: &CaseRecord) -> Result<(), String> {
     match case.status {
-        CaseStatus::Built if case.exit_code != Some(0) => {
-            Err(format!("built case {} must have exit_code 0", case.case_id))
+        CaseStatus::Built => {
+            if case.exit_code != Some(0) {
+                return Err(format!("built case {} must have exit_code 0", case.case_id));
+            }
+            if case.exception_type.is_some() {
+                return Err(format!(
+                    "built case {} must have a null exception_type",
+                    case.case_id
+                ));
+            }
+            if case.excluded_reason.is_some() {
+                return Err(format!(
+                    "built case {} has an excluded reason",
+                    case.case_id
+                ));
+            }
+            Ok(())
         }
-        CaseStatus::BuildError if case.exit_code.is_none() || case.exit_code == Some(0) => {
-            Err(format!(
-                "build-error case {} must have a nonzero exit_code",
-                case.case_id
-            ))
+        CaseStatus::BuildError => {
+            if case.exit_code.is_none() || case.exit_code == Some(0) {
+                return Err(format!(
+                    "build-error case {} must have a nonzero exit_code",
+                    case.case_id
+                ));
+            }
+            if case.exception_type.as_deref() == Some("") {
+                return Err(format!(
+                    "build-error case {} has an empty exception_type",
+                    case.case_id
+                ));
+            }
+            if case.excluded_reason.is_some() {
+                return Err(format!(
+                    "build-error case {} has an excluded reason",
+                    case.case_id
+                ));
+            }
+            Ok(())
+        }
+        CaseStatus::ReferenceCrash => {
+            if case.exit_code.is_none() || case.exit_code == Some(0) {
+                return Err(format!(
+                    "reference-crash case {} must have a nonzero exit_code",
+                    case.case_id
+                ));
+            }
+            if case.exception_type.as_deref().is_none_or(str::is_empty) {
+                return Err(format!(
+                    "reference-crash case {} must have a nonempty exception_type",
+                    case.case_id
+                ));
+            }
+            if case.excluded_reason.is_some() {
+                return Err(format!(
+                    "reference-crash case {} has an excluded reason",
+                    case.case_id
+                ));
+            }
+            Ok(())
         }
         status if status.is_excluded() => {
             if case.exit_code.is_some() {
                 return Err(format!("excluded case {} has an exit_code", case.case_id));
+            }
+            if case.exception_type.is_some() {
+                return Err(format!(
+                    "excluded case {} must have a null exception_type",
+                    case.case_id
+                ));
             }
             if case.excluded_reason.is_none() {
                 return Err(format!("excluded case {} has no reason", case.case_id));
@@ -1473,6 +1541,24 @@ pub fn build_report_with_platforms(
     results: &[CaseResult],
     reference_platforms: &BTreeMap<String, String>,
 ) -> (Value, String) {
+    build_report_with_platforms_and_reference_cases(
+        total_cases,
+        excluded_cases,
+        reference_crash_cases,
+        results,
+        reference_platforms,
+        &[],
+    )
+}
+
+pub fn build_report_with_platforms_and_reference_cases(
+    total_cases: usize,
+    excluded_cases: usize,
+    reference_crash_cases: usize,
+    results: &[CaseResult],
+    reference_platforms: &BTreeMap<String, String>,
+    reference_cases: &[ReferenceCase],
+) -> (Value, String) {
     let mut results = results.to_vec();
     results.sort_by(case_result_order);
     let passed_cases = results.iter().filter(|result| result.passed).count();
@@ -1549,6 +1635,7 @@ pub fn build_report_with_platforms(
         "first_divergences": first_divergences,
         "reference_platforms": reference_platforms,
         "host_platform": std::env::consts::OS,
+        "reference_cases": reference_cases,
         "cases": results,
     });
     let markdown = render_report_markdown(&report, &results, &first_divergences);
@@ -1647,6 +1734,25 @@ fn render_report_markdown(
             }
         }
     }
+    if let Some(reference_cases) = report["reference_cases"].as_array() {
+        if !reference_cases.is_empty() {
+            output.push_str("## Reference-only cases\n\n");
+            output.push_str(
+                "| profile | source_set | case_id | status | exception_type |\n| --- | --- | --- | --- | --- |\n",
+            );
+            for case in reference_cases {
+                output.push_str(&format!(
+                    "| {} | {} | {} | {} | {} |\n",
+                    case["profile"].as_str().unwrap_or_default(),
+                    case["source_set"].as_str().unwrap_or_default(),
+                    case["case_id"].as_str().unwrap_or_default(),
+                    case["status"].as_str().unwrap_or_default(),
+                    case["exception_type"].as_str().unwrap_or("null"),
+                ));
+            }
+            output.push('\n');
+        }
+    }
     output.push_str("## Category counts\n\n");
     output.push_str("| category | count |\n| --- | ---: |\n");
     if let Some(categories) = report["counts_by_category"].as_object() {
@@ -1670,8 +1776,20 @@ fn render_report_markdown(
             result.profile, result.source_set, result.case_id
         );
         output.push_str(&format!("\n## {key}\n\n"));
+        let status = if matches!(
+            result.html_status.as_str(),
+            "build-error" | "reference-crash"
+        ) {
+            format!(
+                "{} (exception_type: `{}`)",
+                result.html_status,
+                result.exception_type.as_deref().unwrap_or("null")
+            )
+        } else {
+            result.html_status.clone()
+        };
         output.push_str(&format!(
-            "- result: {}\n- run directory: {}\n- rerun: HTML_ORACLE_FILTER={} HTML_ORACLE_KEEP=all cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture\n",
+            "- result: {}\n- status: {status}\n- run directory: {}\n- rerun: HTML_ORACLE_FILTER={} HTML_ORACLE_KEEP=all cargo test --test html_differential html_oracle_exhaustive -- --ignored --nocapture\n",
             if result.passed { "passed" } else { "failed" },
             result.run_dir,
             result.rerun_filter

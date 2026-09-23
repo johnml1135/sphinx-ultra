@@ -15,8 +15,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use support::diagnostics::{run_bounded, run_bounded_with_timeout, ExitStatusKind, ProcessOutput};
 use support::html_oracle::{
-    apply_retention, bounded_assertion_message, build_report_with_platforms, case_key,
-    compare_file, compare_trees, compare_warnings, diagnose_html, diagnose_inventory,
+    apply_retention, bounded_assertion_message, build_report_with_platforms_and_reference_cases,
+    case_key, compare_file, compare_trees, compare_warnings, diagnose_html, diagnose_inventory,
     diagnose_needs_json, diagnose_searchindex, diagnose_warnings, group_first_divergences,
     load_fixture_suite, materialize_case_expected, materialize_case_inputs,
     mismatch_diagnostics_with_source_root, parse_keep, read_record, status_name, walk_tree,
@@ -30,6 +30,7 @@ fn minimal_case() -> serde_json::Value {
         "source_set": "synthetic",
         "case_id": "case-1",
         "status": "built",
+        "exception_type": null,
         "exit_code": 0,
         "warnings": "",
         "excluded_reason": null,
@@ -109,6 +110,50 @@ fn schema_rejects_missing_profile_platform() {
         .unwrap()
         .remove("platform");
     assert!(IndexDocument::from_value(index).is_err());
+}
+
+#[test]
+fn schema_keeps_exception_type_null_for_built_case() {
+    let document = IndexDocument::from_value(minimal_index(minimal_case())).unwrap();
+    assert!(document.cases[0].exception_type.is_none());
+}
+
+#[test]
+fn schema_rejects_exception_type_for_built_case() {
+    let mut case = minimal_case();
+    case["exception_type"] = json!("TypeError");
+    assert!(IndexDocument::from_value(minimal_index(case)).is_err());
+}
+
+#[test]
+fn schema_allows_nullable_build_error_exception_type() {
+    let mut case = minimal_case();
+    case["status"] = json!("build-error");
+    case["exit_code"] = json!(1);
+    assert!(IndexDocument::from_value(minimal_index(case)).is_ok());
+}
+
+#[test]
+fn schema_accepts_typed_build_error_and_reference_crash() {
+    let mut build_error = minimal_case();
+    build_error["status"] = json!("build-error");
+    build_error["exception_type"] = json!("sphinx.errors.ConfigError");
+    build_error["exit_code"] = json!(1);
+    assert!(IndexDocument::from_value(minimal_index(build_error)).is_ok());
+
+    let mut reference_crash = minimal_case();
+    reference_crash["status"] = json!("reference-crash");
+    reference_crash["exception_type"] = json!("TypeError");
+    reference_crash["exit_code"] = json!(1);
+    assert!(IndexDocument::from_value(minimal_index(reference_crash)).is_ok());
+}
+
+#[test]
+fn schema_rejects_reference_crash_without_exception_type() {
+    let mut case = minimal_case();
+    case["status"] = json!("reference-crash");
+    case["exit_code"] = json!(1);
+    assert!(IndexDocument::from_value(minimal_index(case)).is_err());
 }
 
 #[test]
@@ -596,6 +641,7 @@ fn report_case(
         source_set: source_set.to_string(),
         case_id: case_id.to_string(),
         html_status: "built".to_string(),
+        exception_type: None,
         needs_status: None,
         passed,
         run_dir: format!("target/html-oracle/runs/{profile}/{source_set}/{case_id}"),
@@ -655,6 +701,37 @@ fn report_prints_reference_platform_and_host_difference_note() {
     assert!(markdown.contains("| core | reference-test |"));
     assert!(markdown.contains("Reference platform: `reference-test`"));
     assert!(markdown.contains("Separator and path differences are expected when"));
+}
+
+#[test]
+fn report_places_exception_type_next_to_build_error_and_reference_crash_status() {
+    let mut build_error = report_case("core", "synthetic", "build-error", false, None, None);
+    build_error.html_status = "build-error".to_string();
+    build_error.exception_type = Some("sphinx.errors.ConfigError".to_string());
+    let reference_crash = support::html_oracle::ReferenceCase {
+        profile: "core".to_string(),
+        source_set: "synthetic".to_string(),
+        case_id: "reference-crash".to_string(),
+        status: "reference-crash".to_string(),
+        exception_type: Some("TypeError".to_string()),
+    };
+    let (report, markdown) = support::html_oracle::build_report_with_platforms_and_reference_cases(
+        2,
+        0,
+        1,
+        &[build_error],
+        &BTreeMap::new(),
+        &[reference_crash],
+    );
+    assert_eq!(report["cases"][0]["html_status"], "build-error");
+    assert_eq!(
+        report["cases"][0]["exception_type"],
+        "sphinx.errors.ConfigError"
+    );
+    assert_eq!(report["reference_cases"][0]["status"], "reference-crash");
+    assert_eq!(report["reference_cases"][0]["exception_type"], "TypeError");
+    assert!(markdown.contains("status: build-error (exception_type: `sphinx.errors.ConfigError`)"));
+    assert!(markdown.contains("| reference-crash | TypeError |"));
 }
 
 #[test]
@@ -731,6 +808,17 @@ fn html_oracle_exhaustive() {
         .values()
         .flat_map(|document| document.cases.iter().cloned())
         .collect::<Vec<_>>();
+    let reference_cases = all_cases
+        .iter()
+        .filter(|case| case.status == CaseStatus::ReferenceCrash)
+        .map(|case| support::html_oracle::ReferenceCase {
+            profile: case.profile.clone(),
+            source_set: case.source_set.clone(),
+            case_id: case.case_id.clone(),
+            status: status_name(case.status).to_string(),
+            exception_type: case.exception_type.clone(),
+        })
+        .collect::<Vec<_>>();
     let reference_platforms = suite
         .profiles
         .iter()
@@ -802,12 +890,13 @@ fn html_oracle_exhaustive() {
         worker.join().expect("HTML oracle worker should not panic");
     }
 
-    let (report, markdown) = build_report_with_platforms(
+    let (report, markdown) = build_report_with_platforms_and_reference_cases(
         total_cases,
         excluded_cases,
         reference_crash_cases,
         &results,
         &reference_platforms,
+        &reference_cases,
     );
     let report_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/html-oracle");
     let report_json = report_root.join("report.json");
@@ -920,6 +1009,7 @@ fn run_html_case(
             .map(status_name)
             .unwrap_or("io-error")
             .to_string(),
+        exception_type: case.exception_type.clone(),
         needs_status: needs_status.map(status_name).map(str::to_string),
         passed,
         run_dir: run_dir.to_string_lossy().into_owned(),
