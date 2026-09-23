@@ -66,3 +66,7 @@ jobs:
         with:
           name: html-oracle
           path: tests/fixtures/html_oracle
+          # Every reference tree contains a .buildinfo, which upload-artifact
+          # would otherwise drop as a hidden file.
+          include-hidden-files: true
+          if-no-files-found: error
