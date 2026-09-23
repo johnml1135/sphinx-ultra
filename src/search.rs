@@ -55,6 +55,7 @@ pub struct ObjectReference {
     pub anchor: Option<String>,
     pub name: String,
     pub description: Option<String>,
+    pub obj_type: String,
 }
 
 impl SearchIndex {
@@ -107,6 +108,7 @@ impl SearchIndex {
             anchor,
             name: name.clone(),
             description,
+            obj_type: obj_type.to_string(),
         };
 
         self.objects.insert(name, object_ref);
@@ -318,6 +320,7 @@ impl SearchIndex {
             }
         }
 
+        let (objects, objtypes, objnames) = direct_search_objects(self);
         freeze_search_value(FrozenSearchData {
             docnames: self.docnames.clone(),
             filenames: self.filenames.clone(),
@@ -330,9 +333,9 @@ impl SearchIndex {
                 .enumerate()
                 .map(|(index, title)| (title.clone(), vec![(index, None)]))
                 .collect(),
-            objects: BTreeMap::new(),
-            objtypes: BTreeMap::new(),
-            objnames: BTreeMap::new(),
+            objects,
+            objtypes,
+            objnames,
             indexentries: BTreeMap::new(),
         })
     }
@@ -372,12 +375,16 @@ pub fn build_sphinx_index(
                 .strip_prefix(source_dir)
                 .unwrap_or(&document.source_path)
                 .to_string_lossy()
-                .replace('\\', "/")
+                .to_string()
         })
         .collect();
     let titles: Vec<String> = records
         .iter()
         .map(|(document, _, _)| document.title.clone())
+        .collect();
+    let documents_by_docname: BTreeMap<String, &Document> = records
+        .iter()
+        .map(|(document, _, docname)| (docname.clone(), *document))
         .collect();
 
     let mut terms = BTreeMap::<String, BTreeSet<usize>>::new();
@@ -385,21 +392,47 @@ pub fn build_sphinx_index(
     let mut alltitles = BTreeMap::<String, Vec<(usize, Option<String>)>>::new();
 
     for (index, (document, doctree, docname)) in records.iter().enumerate() {
-        let mut body_text = search_text(&doctree.root);
-        for toctree in &document.toctrees {
-            for entry in &toctree.entries {
-                body_text.push(' ');
-                body_text.push_str(entry.title.as_deref().unwrap_or(&entry.target));
+        let body_text = search_text(&doctree.root);
+        let document_title_terms: BTreeSet<String> = search_words(&document.title)
+            .into_iter()
+            .filter_map(|word| search_term(&word))
+            .collect();
+        for word in search_words(&body_text) {
+            if let Some(term) = search_term(&word) {
+                // Sphinx's WordCollector does not add a body occurrence when
+                // the same stem is already indexed by this document's title.
+                if !document_title_terms.contains(&term) {
+                    terms.entry(term).or_default().insert(index);
+                }
             }
         }
-        for word in search_words(&body_text) {
+        let mut toctree_text = String::new();
+        collect_toctree_search_text(
+            docname,
+            &documents_by_docname,
+            env,
+            &mut BTreeSet::new(),
+            &mut toctree_text,
+        );
+        for word in search_words(&toctree_text) {
             if let Some(term) = search_term(&word) {
                 terms.entry(term).or_default().insert(index);
             }
         }
-        for word in search_words(&document.title) {
-            if let Some(term) = search_term(&word) {
-                titleterms.entry(term).or_default().insert(index);
+        for term in document_title_terms {
+            titleterms.entry(term).or_default().insert(index);
+        }
+        for toctree in &document.toctrees {
+            if let Some(caption) = &toctree.caption {
+                alltitles
+                    .entry(caption.clone())
+                    .or_default()
+                    .push((index, None));
+                for word in search_words(caption) {
+                    if let Some(term) = search_term(&word) {
+                        titleterms.entry(term).or_default().insert(index);
+                    }
+                }
             }
         }
 
@@ -443,6 +476,42 @@ pub fn build_sphinx_index(
         objnames,
         indexentries,
     })
+}
+
+fn collect_toctree_search_text(
+    docname: &str,
+    documents: &BTreeMap<String, &Document>,
+    env: &BuildEnvironment,
+    seen: &mut BTreeSet<String>,
+    out: &mut String,
+) {
+    if !seen.insert(docname.to_string()) {
+        return;
+    }
+    let Some(document) = documents.get(docname) else {
+        return;
+    };
+    for toctree in &document.toctrees {
+        // Glob entries are expanded by the environment for navigation, but
+        // their raw pattern is not doctree text and must not become a term.
+        if toctree.glob {
+            continue;
+        }
+        for entry in &toctree.entries {
+            let joined = crate::env::toctree::docname_join(docname, &entry.target);
+            let target = joined.strip_suffix(".rst").unwrap_or(&joined).to_string();
+            let title = entry.title.clone().or_else(|| {
+                env.titles
+                    .get(&target)
+                    .map(crate::env::numbers::clean_astext)
+            });
+            if let Some(title) = title {
+                out.push(' ');
+                out.push_str(&title);
+            }
+            collect_toctree_search_text(&target, documents, env, seen, out);
+        }
+    }
 }
 
 /// Render the JavaScript wrapper used by `sphinx.search.js_index`.
@@ -641,7 +710,9 @@ fn search_text(node: &Node) -> String {
 fn collect_titles(node: &Node, depth: usize, out: &mut Vec<(String, Option<String>)>) {
     for child in &node.children {
         if child.kind == crate::doctree::kinds::TITLE {
-            let id = if depth > 1 {
+            // The first title is the document title. Sphinx omits only that
+            // title's ID; section titles retain their first-level anchors.
+            let id = if !out.is_empty() && depth > 0 {
                 node.attrs.ids.first().cloned()
             } else {
                 None
@@ -657,6 +728,65 @@ type SearchObjects = (
     BTreeMap<String, String>,
     BTreeMap<String, [String; 3]>,
 );
+
+fn direct_search_objects(index: &SearchIndex) -> SearchObjects {
+    let mut references: Vec<&ObjectReference> = index.objects.values().collect();
+    references.sort_by(|left, right| {
+        left.obj_type
+            .cmp(&right.obj_type)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let mut type_indices = BTreeMap::<String, usize>::new();
+    let mut objects = BTreeMap::<String, Vec<[Value; 5]>>::new();
+    let mut objtypes = BTreeMap::new();
+    let mut objnames = BTreeMap::new();
+
+    for object in references {
+        let (domain, objtype) = object
+            .obj_type
+            .split_once(':')
+            .unwrap_or(("std", object.obj_type.as_str()));
+        let type_index = if let Some(index) = type_indices.get(&object.obj_type) {
+            *index
+        } else {
+            let index = type_indices.len();
+            type_indices.insert(object.obj_type.clone(), index);
+            objtypes.insert(index.to_string(), object.obj_type.clone());
+            objnames.insert(
+                index.to_string(),
+                [
+                    domain.to_string(),
+                    objtype.to_string(),
+                    object_type_label(domain, objtype),
+                ],
+            );
+            index
+        };
+
+        let (prefix, name) = object
+            .name
+            .rsplit_once('.')
+            .map(|(prefix, name)| (prefix.to_string(), name.to_string()))
+            .unwrap_or_else(|| (String::new(), object.name.clone()));
+        let anchor = object.anchor.as_deref().unwrap_or_default();
+        let shortanchor = if anchor == object.name {
+            String::new()
+        } else if anchor == format!("{objtype}-{}", object.name) {
+            "-".to_string()
+        } else {
+            anchor.to_string()
+        };
+        objects.entry(prefix).or_default().push([
+            Value::from(object.docname_idx),
+            Value::from(type_index),
+            Value::from(1),
+            Value::String(shortanchor),
+            Value::String(name),
+        ]);
+    }
+    (objects, objtypes, objnames)
+}
 
 fn search_objects(env: &BuildEnvironment, doc_indices: &BTreeMap<String, usize>) -> SearchObjects {
     let mut rows = Vec::new();
@@ -974,5 +1104,38 @@ mod tests {
 
         let index = builder.build();
         assert_eq!(index.docnames.len(), 1);
+    }
+
+    #[test]
+    fn direct_search_freeze_preserves_domain_objects() {
+        let mut index = SearchIndex::new("en".to_string());
+        index
+            .add_document(
+                "index".to_string(),
+                "index.rst".to_string(),
+                "Welcome".to_string(),
+                "Body",
+            )
+            .unwrap();
+        index
+            .add_object(
+                "Thing".to_string(),
+                "index",
+                Some("thing".to_string()),
+                "py:function",
+                Some("Thing".to_string()),
+            )
+            .unwrap();
+
+        let value = index.to_sphinx_value();
+        assert_eq!(value["objtypes"]["0"], "py:function");
+        assert_eq!(
+            value["objnames"]["0"],
+            serde_json::json!(["py", "function", "function"])
+        );
+        assert_eq!(
+            value["objects"][""],
+            serde_json::json!([[0, 0, 1, "thing", "Thing"]])
+        );
     }
 }
