@@ -237,27 +237,18 @@ fn config_fingerprint(config: &BuildConfig) -> Result<String> {
 
 /// Render the Sphinx 9.1 `.buildinfo` file.
 pub(crate) fn sphinx_build_info_contents(config: &BuildConfig, tags: &[String]) -> Result<String> {
-    // Sphinx hashes Config.filter({'html'}) with Python's stable_hash. Ultra
-    // does not retain Sphinx's per-setting rebuild categories and cannot
-    // reproduce Python's repr-based MD5 input byte-for-byte, so this keeps
-    // the format and hash width while using the existing deterministic
-    // configuration fingerprint. The resulting hash is intentionally not
-    // presented as a byte-exact Sphinx config hash.
-    let config_hash = config_fingerprint(config)?[..32].to_string();
-
-    // The empty tag set is the common HTML build case and this is Sphinx's
-    // stable_hash(sorted([])) value. Non-empty tags use the same deterministic
-    // width but remain subject to the same Python stable_hash gap.
-    let tags_hash = if tags.is_empty() {
-        "645f666f9bcd5a90fca523b33c5a78b7".to_string()
-    } else {
-        let mut sorted_tags = tags.to_vec();
-        sorted_tags.sort();
-        blake3::hash(serde_json::to_string(&sorted_tags)?.as_bytes())
-            .to_hex()
-            .to_string()[..32]
-            .to_string()
-    };
+    let config_value = sphinx_html_config(config);
+    let config_hash = stable_hash(&config_value);
+    let mut sphinx_tags = ["builder_html", "format_html", "html"]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    sphinx_tags.extend(tags.iter().cloned());
+    sphinx_tags.sort();
+    sphinx_tags.dedup();
+    let tags_hash = stable_hash(&StableValue::List(
+        sphinx_tags.into_iter().map(StableValue::String).collect(),
+    ));
 
     Ok(format!(
         "# Sphinx build info version 1\n\
@@ -265,6 +256,402 @@ pub(crate) fn sphinx_build_info_contents(config: &BuildConfig, tags: &[String]) 
          config: {config_hash}\n\
          tags: {tags_hash}\n"
     ))
+}
+
+/// A small value model for Sphinx's `stable_hash`. Its collection branches
+/// deliberately hash child values first, sort those hashes, then hash the
+/// Python-style list representation — this is the algorithm in
+/// `sphinx.util._serialise`, not a JSON or Rust-debug serialization.
+#[derive(Clone)]
+enum StableValue {
+    None,
+    Bool(bool),
+    String(String),
+    List(Vec<StableValue>),
+    Dict(BTreeMap<String, StableValue>),
+    Tuple(Vec<StableValue>),
+    Raw(String),
+}
+
+fn stable_hash(value: &StableValue) -> String {
+    match value {
+        // Sphinx first replaces a dict with the sorted hashes of its items,
+        // then runs the list branch over that result once more. The second
+        // pass is easy to miss because lists and tuples only have one pass.
+        StableValue::Dict(values) => stable_collection(values.iter().map(|(key, value)| {
+            StableValue::String(stable_hash(&StableValue::Tuple(vec![
+                StableValue::String(key.clone()),
+                value.clone(),
+            ])))
+        })),
+        StableValue::List(values) | StableValue::Tuple(values) => {
+            stable_collection(values.iter().cloned())
+        }
+        StableValue::None => md5_hex("None"),
+        StableValue::Bool(value) => md5_hex(if *value { "True" } else { "False" }),
+        StableValue::String(value) | StableValue::Raw(value) => md5_hex(value),
+    }
+}
+
+fn stable_collection(values: impl Iterator<Item = StableValue>) -> String {
+    let mut hashes: Vec<String> = values.map(|value| stable_hash(&value)).collect();
+    hashes.sort();
+    let repr = hashes
+        .iter()
+        .map(|hash| format!("'{hash}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    md5_hex(&format!("[{repr}]"))
+}
+
+fn stable_hash_json(value: &serde_json::Value) -> StableValue {
+    match value {
+        serde_json::Value::Null => StableValue::None,
+        serde_json::Value::Bool(value) => StableValue::Bool(*value),
+        serde_json::Value::Number(value) => StableValue::Raw(value.to_string()),
+        serde_json::Value::String(value) => StableValue::String(value.clone()),
+        serde_json::Value::Array(values) => {
+            StableValue::List(values.iter().map(stable_hash_json).collect())
+        }
+        serde_json::Value::Object(values) => StableValue::Dict(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), stable_hash_json(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn stable_strings(values: impl IntoIterator<Item = String>) -> StableValue {
+    StableValue::List(values.into_iter().map(StableValue::String).collect())
+}
+
+fn stable_dict(entries: impl IntoIterator<Item = (String, StableValue)>) -> StableValue {
+    StableValue::Dict(entries.into_iter().collect())
+}
+
+fn sphinx_html_config(config: &BuildConfig) -> StableValue {
+    // BuildConfig models the HTML settings that affect Ultra's output, and
+    // those values are represented below with Sphinx's defaults. Sphinx also
+    // hashes HTML-category settings that Ultra does not model yet (for
+    // example html_extra_path, html_sidebars, html_file_suffix,
+    // html_link_suffix, html_search_options, html_baseurl,
+    // html_codeblock_linenos_style, and the mathjax/qthelp option families).
+    // They intentionally remain at their Sphinx defaults here; a conf.py
+    // value for one of those settings is a documented buildinfo hash gap.
+    let default_style = ["sphinx_rtd_theme.css".to_string()];
+    let default_static_path = [std::path::PathBuf::from("_static")];
+    let default_templates_path = [std::path::PathBuf::from("_templates")];
+    let html_title = config.html_title.clone().unwrap_or_else(|| {
+        format!(
+            "{} {} documentation",
+            config.project,
+            config.release.as_deref().unwrap_or("")
+        )
+    });
+    let html_short_title = config
+        .html_short_title
+        .clone()
+        .unwrap_or_else(|| html_title.clone());
+    let copyright = match config.copyright.as_deref() {
+        // This is Ultra's compatibility default, not a value a Sphinx conf.py
+        // supplied. Sphinx's default is the empty string.
+        None | Some("2024, Sphinx Ultra") => String::new(),
+        Some(value) => value.to_string(),
+    };
+    let theme = if config.output.html_theme == "sphinx_rtd_theme"
+        && config.theme.name == "sphinx_rtd_theme"
+    {
+        // Ultra's rendering default is RTD, while Sphinx's HTML config default
+        // is alabaster. A configured non-default theme is represented exactly.
+        "alabaster".to_string()
+    } else {
+        config.output.html_theme.clone()
+    };
+    let style = if config.html_style == default_style {
+        StableValue::None
+    } else {
+        stable_strings(config.html_style.clone())
+    };
+    let static_path = if config.html_static_path == default_static_path {
+        stable_strings(Vec::<String>::new())
+    } else {
+        stable_strings(
+            config
+                .html_static_path
+                .iter()
+                .map(|path| path.to_string_lossy().to_string()),
+        )
+    };
+    let templates_path = if config.templates_path == default_templates_path {
+        stable_strings(Vec::<String>::new())
+    } else {
+        stable_strings(
+            config
+                .templates_path
+                .iter()
+                .map(|path| path.to_string_lossy().to_string()),
+        )
+    };
+    let last_updated = if config.html_last_updated_fmt.as_deref() == Some("%b %d, %Y") {
+        StableValue::None
+    } else {
+        config
+            .html_last_updated_fmt
+            .clone()
+            .map_or(StableValue::None, StableValue::String)
+    };
+    let html_use_opensearch = match config.html_use_opensearch {
+        Some(true) => StableValue::Bool(true),
+        Some(false) | None => StableValue::String(String::new()),
+    };
+
+    let mut values = BTreeMap::new();
+    values.insert(
+        "project_copyright".to_string(),
+        StableValue::String(copyright.clone()),
+    );
+    values.insert("copyright".to_string(), StableValue::String(copyright));
+    values.insert("pygments_style".to_string(), StableValue::None);
+    values.insert("templates_path".to_string(), templates_path);
+    values.insert("template_bridge".to_string(), StableValue::None);
+    values.insert(
+        "modindex_common_prefix".to_string(),
+        stable_strings(Vec::<String>::new()),
+    );
+    values.insert("html_theme".to_string(), StableValue::String(theme));
+    values.insert(
+        "html_theme_path".to_string(),
+        stable_strings(Vec::<String>::new()),
+    );
+    values.insert(
+        "html_theme_options".to_string(),
+        stable_hash_json(&config.theme.options),
+    );
+    values.insert("html_title".to_string(), StableValue::String(html_title));
+    values.insert(
+        "html_short_title".to_string(),
+        StableValue::String(html_short_title),
+    );
+    values.insert("html_style".to_string(), style);
+    values.insert(
+        "html_logo".to_string(),
+        config
+            .html_logo
+            .clone()
+            .map_or(StableValue::None, StableValue::String),
+    );
+    values.insert(
+        "html_favicon".to_string(),
+        config
+            .html_favicon
+            .clone()
+            .map_or(StableValue::None, StableValue::String),
+    );
+    values.insert(
+        "html_css_files".to_string(),
+        stable_strings(config.html_css_files.clone()),
+    );
+    values.insert(
+        "html_js_files".to_string(),
+        stable_strings(config.html_js_files.clone()),
+    );
+    values.insert("html_static_path".to_string(), static_path);
+    values.insert(
+        "html_extra_path".to_string(),
+        stable_strings(Vec::<String>::new()),
+    );
+    values.insert("html_last_updated_fmt".to_string(), last_updated);
+    values.insert(
+        "html_last_updated_use_utc".to_string(),
+        StableValue::Bool(false),
+    );
+    values.insert("html_sidebars".to_string(), stable_dict([]));
+    values.insert("html_additional_pages".to_string(), stable_dict([]));
+    values.insert("html_domain_indices".to_string(), StableValue::Bool(true));
+    values.insert("html_permalinks".to_string(), StableValue::Bool(true));
+    values.insert(
+        "html_permalinks_icon".to_string(),
+        StableValue::String("¶".to_string()),
+    );
+    values.insert(
+        "html_use_index".to_string(),
+        StableValue::Bool(config.html_use_index.unwrap_or(true)),
+    );
+    values.insert("html_split_index".to_string(), StableValue::Bool(false));
+    values.insert(
+        "html_copy_source".to_string(),
+        StableValue::Bool(config.html_copy_source.unwrap_or(true)),
+    );
+    values.insert(
+        "html_show_sourcelink".to_string(),
+        StableValue::Bool(config.html_show_sourcelink.unwrap_or(true)),
+    );
+    values.insert(
+        "html_sourcelink_suffix".to_string(),
+        StableValue::String(
+            config
+                .html_sourcelink_suffix
+                .clone()
+                .unwrap_or_else(|| ".txt".to_string()),
+        ),
+    );
+    values.insert("html_use_opensearch".to_string(), html_use_opensearch);
+    values.insert("html_file_suffix".to_string(), StableValue::None);
+    values.insert("html_link_suffix".to_string(), StableValue::None);
+    values.insert(
+        "html_show_copyright".to_string(),
+        StableValue::Bool(config.html_show_copyright.unwrap_or(true)),
+    );
+    values.insert(
+        "html_show_search_summary".to_string(),
+        StableValue::Bool(true),
+    );
+    values.insert(
+        "html_show_sphinx".to_string(),
+        StableValue::Bool(config.html_show_sphinx.unwrap_or(true)),
+    );
+    values.insert(
+        "html_context".to_string(),
+        StableValue::Dict(
+            config
+                .html_context
+                .iter()
+                .map(|(key, value)| (key.clone(), stable_hash_json(value)))
+                .collect(),
+        ),
+    );
+    values.insert(
+        "html_output_encoding".to_string(),
+        StableValue::String("utf-8".to_string()),
+    );
+    values.insert("html_compact_lists".to_string(), StableValue::Bool(true));
+    values.insert(
+        "html_secnumber_suffix".to_string(),
+        StableValue::String(". ".to_string()),
+    );
+    values.insert("html_search_language".to_string(), StableValue::None);
+    values.insert("html_search_options".to_string(), stable_dict([]));
+    values.insert(
+        "html_scaled_image_link".to_string(),
+        StableValue::Bool(true),
+    );
+    values.insert(
+        "html_baseurl".to_string(),
+        StableValue::String(String::new()),
+    );
+    values.insert(
+        "html_codeblock_linenos_style".to_string(),
+        StableValue::String("inline".to_string()),
+    );
+    values.insert("html4_writer".to_string(), StableValue::Bool(false));
+    values.insert(
+        "mathjax_path".to_string(),
+        StableValue::String("https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js".to_string()),
+    );
+    values.insert("mathjax_options".to_string(), stable_dict([]));
+    values.insert(
+        "mathjax_inline".to_string(),
+        stable_strings(["\\(".to_string(), "\\)".to_string()]),
+    );
+    values.insert(
+        "mathjax_display".to_string(),
+        stable_strings(["\\[".to_string(), "\\]".to_string()]),
+    );
+    values.insert("mathjax_config".to_string(), StableValue::None);
+    values.insert("mathjax2_config".to_string(), StableValue::None);
+    values.insert("mathjax3_config".to_string(), StableValue::None);
+    values.insert("mathjax4_config".to_string(), StableValue::None);
+    values.insert(
+        "mathjax_config_path".to_string(),
+        StableValue::String(String::new()),
+    );
+    values.insert("singlehtml_sidebars".to_string(), stable_dict([]));
+    values.insert("htmlhelp_file_suffix".to_string(), StableValue::None);
+    values.insert("htmlhelp_link_suffix".to_string(), StableValue::None);
+    values.insert(
+        "qthelp_basename".to_string(),
+        // Sphinx's default strips spaces from the project name.
+        StableValue::String(config.project.replace(' ', "")),
+    );
+    values.insert("qthelp_namespace".to_string(), StableValue::None);
+    values.insert(
+        "qthelp_theme".to_string(),
+        StableValue::String("nonav".to_string()),
+    );
+    values.insert("qthelp_theme_options".to_string(), stable_dict([]));
+    StableValue::Dict(values)
+}
+
+fn md5_hex(input: &str) -> String {
+    let mut message = input.as_bytes().to_vec();
+    let bit_len = (message.len() as u64) * 8;
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_le_bytes());
+
+    let mut state = [
+        0x67452301_u32,
+        0xefcdab89_u32,
+        0x98badcfe_u32,
+        0x10325476_u32,
+    ];
+    let shifts = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    let constants: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
+    ];
+    for chunk in message.chunks_exact(64) {
+        let mut words = [0_u32; 16];
+        for (index, word) in words.iter_mut().enumerate() {
+            let start = index * 4;
+            *word = u32::from_le_bytes(chunk[start..start + 4].try_into().unwrap());
+        }
+        let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
+        for i in 0..64 {
+            let (f, g) = if i < 16 {
+                ((b & c) | ((!b) & d), i)
+            } else if i < 32 {
+                ((d & b) | ((!d) & c), (5 * i + 1) % 16)
+            } else if i < 48 {
+                (b ^ c ^ d, (3 * i + 5) % 16)
+            } else {
+                (c ^ (b | !d), (7 * i) % 16)
+            };
+            let next = a
+                .wrapping_add(f)
+                .wrapping_add(constants[i])
+                .wrapping_add(words[g])
+                .rotate_left(shifts[i]);
+            a = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(next);
+        }
+        state[0] = state[0].wrapping_add(a);
+        state[1] = state[1].wrapping_add(b);
+        state[2] = state[2].wrapping_add(c);
+        state[3] = state[3].wrapping_add(d);
+    }
+    state
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 impl SphinxBuilder {
