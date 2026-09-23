@@ -304,3 +304,23 @@ Decisions:
 3. **Line endings.** Add `tests/fixtures/html_oracle/** -text` to
    `.gitattributes` with a one-line rationale, matching the existing `*.inv`
    note, so Windows checkouts keep the hashed bytes exact.
+
+## Round 6: status classification from the core smoke run
+
+1. **Intersphinx with a local inventory is allowed** (as already decided).
+   The generator excluded `html_projects/intersphinx` because it matched any
+   `https?://` literal. Fix the classifier: an intersphinx mapping whose
+   inventory operand names a file in the input tree doesn't trigger
+   `excluded-network`.
+2. **Crash vs build-error by exception type, not by a traceback marker.**
+   Sphinx prints crash tracebacks only with `-T`, so the marker rule
+   misclassifies. The runner wraps `sphinx.cmd.build.handle_exception` to write
+   the exception's qualified class name to a sidecar before delegating.
+   Classification: exit 0 → `built`; an exception that is a `SphinxError`
+   subclass (e.g. `ConfigError`), or a nonzero exit with no exception →
+   `build-error`; any other exception (`TypeError`, `RecursionError`,
+   `ValueError`, ...) → `reference-crash`. Record `exception_type` in the case
+   record (both schemas; null when none). From the smoke run:
+   `html_projects/literalinclude` (`ConfigError`: no conf.py) is a
+   `build-error`, the "can't generate" path Ultra must reproduce;
+   `numfig_on`, `toctree_circular` and `docutils-0500` are `reference-crash`.
