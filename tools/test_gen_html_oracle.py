@@ -1,6 +1,9 @@
 import copy
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,7 @@ from tools.gen_html_oracle import (
     classify_project,
     discover_cases,
     ensure_unique_case_keys,
+    validate_needs_metadata,
     validate_index_document,
 )
 
@@ -230,3 +234,96 @@ def test_plantuml_app_extension_is_excluded_and_network_wins():
         "index.rst": b"index\n=====\n",
     }
     assert classify_project(both)[0] == "excluded-network"
+
+
+def _run_runner(tmp_path: Path, *, conf: str, index: str = "Title\n=====\n"):
+    source = tmp_path / "src"
+    output = tmp_path / "out"
+    doctree = tmp_path / "doctree"
+    warnings = tmp_path / "warnings.txt"
+    source.mkdir()
+    (source / "conf.py").write_text(conf, encoding="utf-8")
+    (source / "index.rst").write_text(index, encoding="utf-8")
+    command = [
+        sys.executable,
+        str(Path(__file__).with_name("html_oracle_runner.py")),
+        "--profile",
+        "core",
+        "--sourcedir",
+        str(source),
+        "--outputdir",
+        str(output),
+        "--doctree-dir",
+        str(doctree),
+        "--builder",
+        "html",
+        "--warnings-file",
+        str(warnings),
+    ]
+    return subprocess.run(command, capture_output=True, text=True), output, warnings
+
+
+def test_child_runner_denies_network_before_sphinx(tmp_path):
+    result, output, _warnings = _run_runner(
+        tmp_path,
+        conf=(
+            "project = 'network-test'\n"
+            "extensions = []\n"
+            "master_doc = 'index'\n"
+            "import socket\n"
+            "socket.create_connection(('example.invalid', 80))\n"
+        ),
+    )
+    assert result.returncode != 0
+    assert "network disabled by html oracle" in result.stderr
+    assert not (output / "index.html").exists()
+
+
+def test_child_runner_uses_pinned_core_versions(tmp_path):
+    result, output, warnings = _run_runner(
+        tmp_path,
+        conf=(
+            "project = 'version-test'\n"
+            "extensions = []\n"
+            "master_doc = 'index'\n"
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert (output / "index.html").is_file()
+    assert warnings.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("module_file", Path("C:/wrong/sphinx_needs/__init__.py")),
+        ("module_version", "0.0.0"),
+        ("commit", "0" * 40),
+        ("tree", "0" * 40),
+        ("status", " M packages/sphinx-needs/src/sphinx_needs/__init__.py"),
+    ],
+)
+def test_needs_provenance_rejects_wrong_observation(field, value):
+    root = Path(r"C:\Users\johnm\Documents\repos\sphinx-needs")
+    observations = {
+        "module_file": root / "packages/sphinx-needs/src/sphinx_needs/__init__.py",
+        "module_version": "8.5.0",
+        "commit": "58bcb59d861da95f2aca79f343e8bae6ec5c1250",
+        "tree": "958172a89defcec69704f6b9d61e482e7c4e8409",
+        "status": "",
+    }
+    observations[field] = value
+    with pytest.raises(RuntimeError, match="needs provenance"):
+        validate_needs_metadata(root, **observations)
+
+
+def test_needs_provenance_ignores_dirt_outside_package_subtree():
+    root = Path(r"C:\Users\johnm\Documents\repos\sphinx-needs")
+    validate_needs_metadata(
+        root,
+        module_file=root / "packages/sphinx-needs/src/sphinx_needs/__init__.py",
+        module_version="8.5.0",
+        commit="58bcb59d861da95f2aca79f343e8bae6ec5c1250",
+        tree="958172a89defcec69704f6b9d61e482e7c4e8409",
+        status="",
+    )

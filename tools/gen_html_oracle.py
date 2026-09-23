@@ -557,6 +557,40 @@ def assert_discovery_keys_equal(
         raise DiscoveryError("discovery and ledger key sets mismatch")
 
 
+NEEDS_VERSION = "8.5.0"
+NEEDS_COMMIT = "58bcb59d861da95f2aca79f343e8bae6ec5c1250"
+NEEDS_TREE = "958172a89defcec69704f6b9d61e482e7c4e8409"
+
+
+def validate_needs_metadata(
+    needs_root: Path,
+    *,
+    module_file: Path,
+    module_version: str,
+    commit: str,
+    tree: str,
+    status: str,
+) -> None:
+    """Validate the pinned local sphinx-needs checkout observations."""
+    root, _doc_test_root = _needs_root_paths(needs_root)
+    source_root = (root / "packages" / "sphinx-needs" / "src").resolve()
+    try:
+        module_path = Path(module_file).resolve()
+        inside_source = module_path.is_relative_to(source_root)
+    except OSError:
+        inside_source = False
+    if not inside_source:
+        raise RuntimeError("needs provenance: sphinx_needs imported outside pinned source")
+    if module_version != NEEDS_VERSION:
+        raise RuntimeError(f"needs provenance: version {module_version!r} != {NEEDS_VERSION!r}")
+    if commit != NEEDS_COMMIT:
+        raise RuntimeError("needs provenance: git commit does not match pinned commit")
+    if tree != NEEDS_TREE:
+        raise RuntimeError("needs provenance: sphinx-needs tree does not match pinned tree")
+    if status:
+        raise RuntimeError("needs provenance: packages/sphinx-needs subtree is dirty")
+
+
 def canonical_hash(entries: list[tuple[str, str]]) -> str:
     payload = "".join(
         f"{path}\0{digest}\n" for path, digest in sorted(entries)
