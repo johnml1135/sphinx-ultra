@@ -323,7 +323,16 @@ fn search_index_matches_sphinx_fixture_shapes() {
         }),
         serde_json::json!({"alpha": 1, "beta": 2, "welcom": 0}),
     );
-    assert_eq!(glob["terms"]["page"], serde_json::json!([1, 2]));
+    assert_eq!(
+        glob["terms"],
+        serde_json::json!({
+            "alpha": 0,
+            "beta": 0,
+            "first": 1,
+            "page": [1, 2],
+            "second": 2,
+        })
+    );
     assert!(glob["terms"].get("miss").is_none());
 }
 

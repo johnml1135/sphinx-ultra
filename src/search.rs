@@ -492,9 +492,21 @@ fn collect_toctree_search_text(
         return;
     };
     for toctree in &document.toctrees {
-        // Glob entries are expanded by the environment for navigation, but
-        // their raw pattern is not doctree text and must not become a term.
+        // Glob entries are expanded by the environment for navigation. Their
+        // raw patterns are not doctree text, but Sphinx does index the
+        // resolved child titles; use the expanded include list so a dead
+        // pattern contributes nothing while `pages/*` contributes Alpha and
+        // Beta rather than the literal pattern or `missing`.
         if toctree.glob {
+            if let Some(includes) = env.toctree_includes.get(docname) {
+                for target in includes {
+                    if let Some(title) = env.titles.get(target) {
+                        out.push(' ');
+                        out.push_str(&crate::env::numbers::clean_astext(title));
+                    }
+                    collect_toctree_search_text(target, documents, env, seen, out);
+                }
+            }
             continue;
         }
         for entry in &toctree.entries {
