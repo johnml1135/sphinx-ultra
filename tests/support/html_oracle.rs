@@ -41,6 +41,7 @@ pub struct CaseResult {
     pub passed: bool,
     pub run_dir: String,
     pub rerun_filter: String,
+    pub common_mismatch_count: usize,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -1107,7 +1108,7 @@ pub fn diagnose_html(expected: &str, actual: &str) -> Diagnostic {
     let expected = String::from_utf8_lossy(&normalize_crlf(expected.as_bytes())).into_owned();
     let actual = String::from_utf8_lossy(&normalize_crlf(actual.as_bytes())).into_owned();
     let expected_regions = split_html_regions(&expected);
-    let actual_regions = split_html_regions(&actual);
+    let actual_regions = split_actual_html_regions(&actual);
     let (expected_regions, actual_regions) = match (expected_regions, actual_regions) {
         (Some(expected), Some(actual)) => (expected, actual),
         _ => {
@@ -1123,17 +1124,21 @@ pub fn diagnose_html(expected: &str, actual: &str) -> Diagnostic {
     };
     let body_differs = expected_regions.body != actual_regions.body;
     let chrome_differs = expected_regions.chrome != actual_regions.chrome;
-    let category = match (body_differs, chrome_differs) {
-        (true, false) => "html-body",
-        (false, true) => "html-chrome",
-        (true, true) => "html-both",
-        (false, false) => "html-body",
+    let category = if body_differs && actual_regions.fallback {
+        "html-body-fallback"
+    } else {
+        match (body_differs, chrome_differs) {
+            (true, false) => "html-body",
+            (false, true) => "html-chrome",
+            (true, true) => "html-both",
+            (false, false) => "html-body",
+        }
     };
     let mut detail = String::new();
     if body_differs {
         detail.push_str(&unified_diff(&expected_regions.body, &actual_regions.body));
     }
-    if chrome_differs {
+    if chrome_differs && !actual_regions.fallback {
         if !detail.is_empty() {
             detail.push('\n');
         }
@@ -1473,6 +1478,13 @@ pub fn parse_keep(value: Option<&str>) -> Result<Keep, String> {
     }
 }
 
+pub fn resolve_ultra_binary(override_value: Option<&str>, default: &str) -> String {
+    override_value
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
 pub fn rerun_filter(case_key: &str, filter: Option<&str>) -> Option<String> {
     match filter {
         Some(filter) if !case_key.contains(filter) => None,
@@ -1519,6 +1531,199 @@ pub fn load_fixture_suite(root: &Path) -> Result<FixtureSuite, String> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct MismatchKey {
+    category: String,
+    logical_path: String,
+    expected_sha256: String,
+    actual_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ReportDiagnostic {
+    category: String,
+    logical_path: String,
+    first_expected_line: Option<usize>,
+    expected_sha256: String,
+    expected_size: usize,
+    actual_sha256: String,
+    actual_size: usize,
+    diff: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommonMismatch {
+    category: String,
+    logical_path: String,
+    expected_sha256: String,
+    expected_size: usize,
+    actual_sha256: String,
+    actual_size: usize,
+    count: usize,
+    source_set_count: usize,
+    sample_cases: Vec<String>,
+    diff: String,
+    detail: String,
+}
+
+struct CommonMismatchAggregate {
+    case_keys: BTreeSet<String>,
+    source_sets: BTreeSet<String>,
+    diagnostic: ReportDiagnostic,
+}
+
+fn report_diagnostic(diagnostic: &Diagnostic) -> ReportDiagnostic {
+    let diff = if diagnostic.detail.starts_with("--- expected") {
+        diagnostic.detail.clone()
+    } else {
+        unified_diff(&diagnostic.expected, &diagnostic.actual)
+    };
+    ReportDiagnostic {
+        category: diagnostic.category.clone(),
+        logical_path: diagnostic.logical_path.clone(),
+        first_expected_line: diagnostic.first_expected_line,
+        expected_sha256: sha256_hex(diagnostic.expected.as_bytes()),
+        expected_size: diagnostic.expected.len(),
+        actual_sha256: sha256_hex(diagnostic.actual.as_bytes()),
+        actual_size: diagnostic.actual.len(),
+        diff: cap_text(&diff),
+        detail: cap_text(&diagnostic.detail),
+    }
+}
+
+fn mismatch_key(diagnostic: &Diagnostic) -> MismatchKey {
+    let report = report_diagnostic(diagnostic);
+    MismatchKey {
+        category: report.category,
+        logical_path: report.logical_path,
+        expected_sha256: report.expected_sha256,
+        actual_sha256: report.actual_sha256,
+    }
+}
+
+fn report_case_value(result: &CaseResult) -> Value {
+    serde_json::json!({
+        "profile": result.profile,
+        "source_set": result.source_set,
+        "case_id": result.case_id,
+        "html_status": result.html_status,
+        "exception_type": result.exception_type,
+        "needs_status": result.needs_status,
+        "passed": result.passed,
+        "run_dir": result.run_dir,
+        "rerun_filter": result.rerun_filter,
+        "common_mismatch_count": result.common_mismatch_count,
+        "diagnostics": result.diagnostics.iter().map(report_diagnostic).collect::<Vec<_>>(),
+    })
+}
+
+fn common_mismatches(results: &[CaseResult]) -> (Vec<CommonMismatch>, BTreeSet<MismatchKey>) {
+    let mut grouped = BTreeMap::<MismatchKey, CommonMismatchAggregate>::new();
+    for result in results {
+        let case_key = format!(
+            "{}/{}/{}",
+            result.profile, result.source_set, result.case_id
+        );
+        for diagnostic in &result.diagnostics {
+            let key = mismatch_key(diagnostic);
+            let entry = grouped
+                .entry(key.clone())
+                .or_insert_with(|| CommonMismatchAggregate {
+                    case_keys: BTreeSet::new(),
+                    source_sets: BTreeSet::new(),
+                    diagnostic: report_diagnostic(diagnostic),
+                });
+            entry.case_keys.insert(case_key.clone());
+            entry.source_sets.insert(result.source_set.clone());
+        }
+    }
+    let mut common = Vec::new();
+    let mut common_keys = BTreeSet::new();
+    for (key, aggregate) in grouped {
+        if aggregate.case_keys.len() < 2 {
+            continue;
+        }
+        common_keys.insert(key.clone());
+        let sample_cases = aggregate.case_keys.iter().take(3).cloned().collect();
+        common.push(CommonMismatch {
+            category: key.category,
+            logical_path: key.logical_path,
+            expected_sha256: key.expected_sha256,
+            expected_size: aggregate.diagnostic.expected_size,
+            actual_sha256: key.actual_sha256,
+            actual_size: aggregate.diagnostic.actual_size,
+            count: aggregate.case_keys.len(),
+            source_set_count: aggregate.source_sets.len(),
+            sample_cases,
+            diff: aggregate.diagnostic.diff,
+            detail: aggregate.diagnostic.detail,
+        });
+    }
+    common.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.category.cmp(&right.category))
+            .then_with(|| left.logical_path.cmp(&right.logical_path))
+            .then_with(|| left.expected_sha256.cmp(&right.expected_sha256))
+            .then_with(|| left.actual_sha256.cmp(&right.actual_sha256))
+    });
+    (common, common_keys)
+}
+
+fn file_kind(diagnostic: &Diagnostic) -> Option<&'static str> {
+    let path = diagnostic.logical_path.as_str();
+    if diagnostic.category.starts_with("warning") || path == "warnings" {
+        Some("warnings")
+    } else if path.ends_with("needs.json") {
+        Some("needs.json")
+    } else if path == "searchindex.js" {
+        Some("searchindex")
+    } else if path == "objects.inv" {
+        Some("objects.inv")
+    } else if path.ends_with(".buildinfo") {
+        Some("buildinfo")
+    } else if path.starts_with("_static/") {
+        Some("static")
+    } else if path.starts_with("_sources/") {
+        Some("sources")
+    } else if path.ends_with(".html") {
+        Some("html")
+    } else {
+        None
+    }
+}
+
+fn failing_cases_by_file_kind(results: &[CaseResult]) -> BTreeMap<String, usize> {
+    let kinds = [
+        "html",
+        "searchindex",
+        "objects.inv",
+        "buildinfo",
+        "static",
+        "sources",
+        "warnings",
+        "needs.json",
+    ];
+    let mut counts = kinds
+        .into_iter()
+        .map(|kind| (kind.to_string(), 0usize))
+        .collect::<BTreeMap<_, _>>();
+    for result in results.iter().filter(|result| !result.passed) {
+        let mut seen = BTreeSet::new();
+        for diagnostic in &result.diagnostics {
+            if let Some(kind) = file_kind(diagnostic) {
+                seen.insert(kind);
+            }
+        }
+        for kind in seen {
+            *counts.get_mut(kind).expect("file kind is initialized") += 1;
+        }
+    }
+    counts
+}
+
 pub fn build_report(
     total_cases: usize,
     excluded_cases: usize,
@@ -1559,6 +1764,26 @@ pub fn build_report_with_platforms_and_reference_cases(
     reference_platforms: &BTreeMap<String, String>,
     reference_cases: &[ReferenceCase],
 ) -> (Value, String) {
+    build_report_with_platforms_reference_cases_and_bin(
+        total_cases,
+        excluded_cases,
+        reference_crash_cases,
+        results,
+        reference_platforms,
+        reference_cases,
+        None,
+    )
+}
+
+pub fn build_report_with_platforms_reference_cases_and_bin(
+    total_cases: usize,
+    excluded_cases: usize,
+    reference_crash_cases: usize,
+    results: &[CaseResult],
+    reference_platforms: &BTreeMap<String, String>,
+    reference_cases: &[ReferenceCase],
+    ultra_bin: Option<&str>,
+) -> (Value, String) {
     let mut results = results.to_vec();
     results.sort_by(case_result_order);
     let passed_cases = results.iter().filter(|result| result.passed).count();
@@ -1596,6 +1821,18 @@ pub fn build_report_with_platforms_and_reference_cases(
     }
     all_diagnostics.sort_by(diagnostic_order);
     let first_divergences = group_first_divergences(&all_diagnostics);
+    let failing_cases_by_file_kind = failing_cases_by_file_kind(&results);
+    let (common_mismatches, common_keys) = common_mismatches(&results);
+    for result in &mut results {
+        result.common_mismatch_count = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| common_keys.contains(&mismatch_key(diagnostic)))
+            .count();
+        result
+            .diagnostics
+            .retain(|diagnostic| !common_keys.contains(&mismatch_key(diagnostic)));
+    }
     let summary_json = summary
         .iter()
         .map(|((profile, source_set), (scheduled, passed, failed))| {
@@ -1633,10 +1870,13 @@ pub fn build_report_with_platforms_and_reference_cases(
         "summary_by_profile_source_set": summary_json,
         "categories": counts_by_category,
         "first_divergences": first_divergences,
+        "common_mismatches": common_mismatches,
+        "failing_cases_by_file_kind": failing_cases_by_file_kind,
         "reference_platforms": reference_platforms,
         "host_platform": std::env::consts::OS,
         "reference_cases": reference_cases,
-        "cases": results,
+        "ultra_bin": ultra_bin,
+        "cases": results.iter().map(report_case_value).collect::<Vec<_>>(),
     });
     let markdown = render_report_markdown(&report, &results, &first_divergences);
     (report, markdown)
@@ -1677,6 +1917,9 @@ fn render_report_markdown(
 ) -> String {
     let mut output = String::new();
     output.push_str("# HTML Oracle Report\n\n");
+    if let Some(ultra_bin) = report["ultra_bin"].as_str() {
+        output.push_str(&format!("Ultra binary: `{ultra_bin}`.\n\n"));
+    }
     output.push_str("## Summary\n\n");
     output.push_str("| profile | source_set | scheduled | passed | failed |\n");
     output.push_str("| --- | --- | ---: | ---: | ---: |\n");
@@ -1753,6 +1996,46 @@ fn render_report_markdown(
             output.push('\n');
         }
     }
+    output.push_str("## Common mismatches\n\n");
+    output.push_str(
+        "| category | logical path | count | source sets | sample cases |\n| --- | --- | ---: | ---: | --- |\n",
+    );
+    if let Some(common) = report["common_mismatches"].as_array() {
+        for mismatch in common {
+            let sample_cases = mismatch["sample_cases"]
+                .as_array()
+                .map(|cases| {
+                    cases
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            output.push_str(&format!(
+                "| {} | {} | {} | {} | {sample_cases} |\n",
+                mismatch["category"].as_str().unwrap_or_default(),
+                mismatch["logical_path"].as_str().unwrap_or_default(),
+                mismatch["count"],
+                mismatch["source_set_count"],
+            ));
+        }
+    }
+    if report["common_mismatches"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+    {
+        output.push_str("| none | | 0 | 0 | |\n");
+    }
+    output.push('\n');
+    output.push_str("## Failing cases by file kind\n\n");
+    output.push_str("| file kind | failing cases |\n| --- | ---: |\n");
+    if let Some(kinds) = report["failing_cases_by_file_kind"].as_object() {
+        for (kind, count) in kinds {
+            output.push_str(&format!("| {kind} | {count} |\n"));
+        }
+    }
+    output.push('\n');
     output.push_str("## Category counts\n\n");
     output.push_str("| category | count |\n| --- | ---: |\n");
     if let Some(categories) = report["counts_by_category"].as_object() {
@@ -1761,11 +2044,14 @@ fn render_report_markdown(
         }
     }
     output.push_str("\n## Most common first-divergence\n\n");
-    output.push_str("| expected line | count | sample files |\n| ---: | ---: | --- |\n");
+    output.push_str(
+        "| expected first differing line | actual first differing line | count | sample files |\n| --- | --- | ---: | --- |\n",
+    );
     for group in first_divergences {
         output.push_str(&format!(
-            "| {} | {} | {} |\n",
-            group.expected_line,
+            "| {} | {} | {} | {} |\n",
+            group.expected_text,
+            group.actual_text,
             group.count,
             group.sample_files.join(", ")
         ));
@@ -1794,6 +2080,12 @@ fn render_report_markdown(
             result.run_dir,
             result.rerun_filter
         ));
+        if result.common_mismatch_count > 0 {
+            output.push_str(&format!(
+                "+{} common mismatches (see Common mismatches)\n",
+                result.common_mismatch_count
+            ));
+        }
         for diagnostic in &result.diagnostics {
             output.push_str(&format!(
                 "\n### {} — {}\n\n{}\n",
@@ -1808,18 +2100,21 @@ fn render_report_markdown(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FirstDivergenceGroup {
-    pub expected_line: usize,
+    pub expected_text: String,
+    pub actual_text: String,
     pub count: usize,
     pub sample_files: Vec<String>,
 }
 
 pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenceGroup> {
-    let mut grouped = BTreeMap::<usize, Vec<String>>::new();
+    let mut grouped = BTreeMap::<(String, String), Vec<String>>::new();
     for diagnostic in diagnostics {
         if diagnostic.category.starts_with("html-") {
-            if let Some(line) = diagnostic.first_expected_line {
+            if let Some((expected, actual)) =
+                first_difference_text(&diagnostic.expected, &diagnostic.actual)
+            {
                 grouped
-                    .entry(line)
+                    .entry((expected, actual))
                     .or_default()
                     .push(diagnostic.logical_path.clone());
             }
@@ -1827,13 +2122,14 @@ pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenc
     }
     let mut groups = grouped
         .into_iter()
-        .map(|(expected_line, mut sample_files)| {
+        .map(|((expected_text, actual_text), mut sample_files)| {
             sample_files.sort();
             sample_files.dedup();
             let count = sample_files.len();
             sample_files.truncate(3);
             FirstDivergenceGroup {
-                expected_line,
+                expected_text,
+                actual_text,
                 count,
                 sample_files,
             }
@@ -1843,7 +2139,8 @@ pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenc
         right
             .count
             .cmp(&left.count)
-            .then_with(|| left.expected_line.cmp(&right.expected_line))
+            .then_with(|| left.expected_text.cmp(&right.expected_text))
+            .then_with(|| left.actual_text.cmp(&right.actual_text))
     });
     groups.truncate(25);
     groups
@@ -1852,11 +2149,72 @@ pub fn group_first_divergences(diagnostics: &[Diagnostic]) -> Vec<FirstDivergenc
 struct HtmlRegions {
     body: String,
     chrome: String,
+    fallback: bool,
 }
 
 fn split_html_regions(value: &str) -> Option<HtmlRegions> {
     const MARKER: &str = "<div class=\"body\" role=\"main\">";
     let body_start = value.find(MARKER)?;
+    split_element_region(value, body_start, "div", false)
+}
+
+fn split_actual_html_regions(value: &str) -> Option<HtmlRegions> {
+    if let Some(regions) = split_html_regions(value) {
+        return Some(regions);
+    }
+    let candidates = [
+        find_opening_tag(value, |tag| {
+            tag.contains("role=\"main\"") || tag.contains("role='main'")
+        }),
+        find_opening_tag(value, |tag| opening_tag_name(tag) == Some("main")),
+        find_opening_tag(value, |tag| opening_tag_name(tag) == Some("body")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        let (start, tag_name) = candidate;
+        if let Some(regions) = split_element_region(value, start, &tag_name, true) {
+            return Some(regions);
+        }
+    }
+    None
+}
+
+fn find_opening_tag<F>(value: &str, predicate: F) -> Option<(usize, String)>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut cursor = 0;
+    while let Some(relative_start) = value[cursor..].find('<') {
+        let start = cursor + relative_start;
+        let end = start + value[start..].find('>')? + 1;
+        let tag = &value[start..end];
+        if !tag.starts_with("</") && !tag.starts_with("<!") && predicate(tag) {
+            return Some((start, opening_tag_name(tag)?.to_string()));
+        }
+        cursor = end;
+    }
+    None
+}
+
+fn opening_tag_name(tag: &str) -> Option<&str> {
+    let tag = tag.strip_prefix('<')?;
+    let tag = tag.trim_start();
+    if tag.starts_with('/') || tag.starts_with('!') {
+        return None;
+    }
+    let end = tag
+        .find(|character: char| {
+            character.is_ascii_whitespace() || character == '>' || character == '/'
+        })
+        .unwrap_or(tag.len());
+    Some(&tag[..end])
+}
+
+fn split_element_region(
+    value: &str,
+    body_start: usize,
+    tag_name: &str,
+    fallback: bool,
+) -> Option<HtmlRegions> {
     let mut depth = 0usize;
     let mut cursor = body_start;
     let mut body_end = None;
@@ -1865,20 +2223,13 @@ fn split_html_regions(value: &str) -> Option<HtmlRegions> {
         let relative_end = value[tag_start..].find('>')?;
         let tag_end = tag_start + relative_end + 1;
         let tag = &value[tag_start..tag_end];
-        if tag.starts_with("</div") {
+        if tag.starts_with(&format!("</{tag_name}")) {
             depth = depth.checked_sub(1)?;
             if depth == 0 {
                 body_end = Some(tag_end);
                 break;
             }
-        } else if tag.starts_with("<div")
-            && tag
-                .as_bytes()
-                .get(4)
-                .map(|byte| byte.is_ascii_whitespace() || *byte == b'>' || *byte == b'/')
-                .unwrap_or(false)
-            && !tag.trim_end().ends_with("/>")
-        {
+        } else if opening_tag_name(tag) == Some(tag_name) && !tag.trim_end().ends_with("/>") {
             depth += 1;
         }
         cursor = tag_end;
@@ -1887,7 +2238,23 @@ fn split_html_regions(value: &str) -> Option<HtmlRegions> {
     Some(HtmlRegions {
         body: value[body_start..body_end].to_string(),
         chrome: format!("{}{}", &value[..body_start], &value[body_end..]),
+        fallback,
     })
+}
+
+fn first_difference_text(expected: &str, actual: &str) -> Option<(String, String)> {
+    let expected = normalize_crlf(expected.as_bytes());
+    let actual = normalize_crlf(actual.as_bytes());
+    let expected = String::from_utf8_lossy(&expected);
+    let actual = String::from_utf8_lossy(&actual);
+    let expected_lines = expected.lines().collect::<Vec<_>>();
+    let actual_lines = actual.lines().collect::<Vec<_>>();
+    let first = (0..expected_lines.len().max(actual_lines.len()))
+        .find(|index| expected_lines.get(*index) != actual_lines.get(*index))?;
+    Some((
+        cap_text(expected_lines.get(first).copied().unwrap_or_default()),
+        cap_text(actual_lines.get(first).copied().unwrap_or_default()),
+    ))
 }
 
 fn diagnose_object_keys(
@@ -1988,8 +2355,10 @@ fn cap_text(value: &str) -> String {
     if value.len() <= MAX_DIAGNOSTIC_BYTES {
         value.to_string()
     } else {
-        let mut capped = value.as_bytes()[..MAX_DIAGNOSTIC_BYTES].to_vec();
-        capped.extend_from_slice(b"\n[output truncated]\n");
+        const MARKER: &[u8] = b"\n[output truncated]\n";
+        let prefix_len = MAX_DIAGNOSTIC_BYTES.saturating_sub(MARKER.len());
+        let mut capped = value.as_bytes()[..prefix_len].to_vec();
+        capped.extend_from_slice(MARKER);
         String::from_utf8_lossy(&capped).into_owned()
     }
 }

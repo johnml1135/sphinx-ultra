@@ -15,13 +15,13 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use support::diagnostics::{run_bounded, run_bounded_with_timeout, ExitStatusKind, ProcessOutput};
 use support::html_oracle::{
-    apply_retention, bounded_assertion_message, build_report_with_platforms_and_reference_cases,
-    case_key, compare_file, compare_trees, compare_warnings, diagnose_html, diagnose_inventory,
-    diagnose_needs_json, diagnose_searchindex, diagnose_warnings, group_first_divergences,
-    load_fixture_suite, materialize_case_expected, materialize_case_inputs,
-    mismatch_diagnostics_with_source_root, parse_keep, read_record, status_name, walk_tree,
-    warning_diagnostics, write_logical_file, CaseRecord, CaseResult, CaseStatus, IndexDocument,
-    InventoryRecord, Keep, Policy,
+    apply_retention, bounded_assertion_message,
+    build_report_with_platforms_reference_cases_and_bin, case_key, compare_file, compare_trees,
+    compare_warnings, diagnose_html, diagnose_inventory, diagnose_needs_json, diagnose_searchindex,
+    diagnose_warnings, group_first_divergences, load_fixture_suite, materialize_case_expected,
+    materialize_case_inputs, mismatch_diagnostics_with_source_root, parse_keep, read_record,
+    resolve_ultra_binary, status_name, walk_tree, warning_diagnostics, write_logical_file,
+    CaseRecord, CaseResult, CaseStatus, IndexDocument, InventoryRecord, Keep, Policy,
 };
 
 fn minimal_case() -> serde_json::Value {
@@ -443,8 +443,29 @@ fn diagnostic_synthetic_html_localization_classifies_body_and_chrome() {
     assert_eq!(diagnose_html(expected, both_changed).category, "html-both");
     assert_eq!(
         diagnose_html(expected, unstructured).category,
-        "html-unstructured"
+        "html-body-fallback"
     );
+}
+
+#[test]
+fn diagnostic_synthetic_html_falls_back_to_actual_main_region() {
+    let expected = "<html><div class=\"body\" role=\"main\">\nA\n</div><footer>ok</footer></html>";
+    let actual = "<html><header>different</header><main>\nB\n</main><footer>ok</footer></html>";
+    let diagnostic = diagnose_html(expected, actual);
+    assert_eq!(diagnostic.category, "html-body-fallback");
+    assert!(diagnostic.detail.contains("-A"));
+    assert!(diagnostic.detail.contains("+B"));
+}
+
+#[test]
+fn diagnostic_html_fallback_prefers_role_main_before_main_and_body() {
+    let expected = "<html><div class=\"body\" role=\"main\">\nA\n</div></html>";
+    let actual =
+        "<html><aside role=\"main\">\nROLE\n</aside><main>\nMAIN\n</main><body>BODY</body></html>";
+    let diagnostic = diagnose_html(expected, actual);
+    assert_eq!(diagnostic.category, "html-body-fallback");
+    assert!(diagnostic.detail.contains("+ROLE"));
+    assert!(!diagnostic.detail.contains("+MAIN"));
 }
 
 #[test]
@@ -546,15 +567,51 @@ fn diagnostic_synthetic_warnings_and_first_divergence_are_grouped() {
             category: "html-body".to_string(),
             logical_path: format!("page-{index}.html"),
             first_expected_line: Some(7),
-            expected: String::new(),
-            actual: String::new(),
+            expected: "same expected\nrest".to_string(),
+            actual: "same actual\nrest".to_string(),
             detail: String::new(),
         })
         .collect::<Vec<_>>();
     let groups = group_first_divergences(&diagnostics);
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].expected_line, 7);
+    assert_eq!(groups[0].expected_text, "same expected");
+    assert_eq!(groups[0].actual_text, "same actual");
     assert_eq!(groups[0].count, 3);
+}
+
+#[test]
+fn diagnostic_first_divergence_groups_by_content_not_line_number() {
+    let diagnostics = vec![
+        support::html_oracle::Diagnostic {
+            category: "html-body".to_string(),
+            logical_path: "one.html".to_string(),
+            first_expected_line: Some(1),
+            expected: "one\nrest".to_string(),
+            actual: "uno\nrest".to_string(),
+            detail: String::new(),
+        },
+        support::html_oracle::Diagnostic {
+            category: "html-body".to_string(),
+            logical_path: "two.html".to_string(),
+            first_expected_line: Some(9),
+            expected: "one\nother".to_string(),
+            actual: "uno\nother".to_string(),
+            detail: String::new(),
+        },
+        support::html_oracle::Diagnostic {
+            category: "html-body".to_string(),
+            logical_path: "three.html".to_string(),
+            first_expected_line: Some(9),
+            expected: "two\nrest".to_string(),
+            actual: "dos\nrest".to_string(),
+            detail: String::new(),
+        },
+    ];
+    let groups = group_first_divergences(&diagnostics);
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].count, 2);
+    assert_eq!(groups[0].expected_text, "one");
+    assert_eq!(groups[0].actual_text, "uno");
 }
 
 #[test]
@@ -570,6 +627,11 @@ fn diagnostic_synthetic_keep_and_filter_policy_defaults_and_rejects_invalid_valu
         support::html_oracle::rerun_filter("core/synthetic/case-1", Some("other")),
         None
     );
+    assert_eq!(
+        resolve_ultra_binary(Some("C:/fix/sphinx-ultra.exe"), "built-in"),
+        "C:/fix/sphinx-ultra.exe"
+    );
+    assert_eq!(resolve_ultra_binary(Some(""), "built-in"), "built-in");
 }
 
 fn diagnostics_helper_command(mode: &str) -> Command {
@@ -646,6 +708,7 @@ fn report_case(
         passed,
         run_dir: format!("target/html-oracle/runs/{profile}/{source_set}/{case_id}"),
         rerun_filter: format!("{profile}/{source_set}/{case_id}"),
+        common_mismatch_count: 0,
         diagnostics: category
             .map(|category| {
                 vec![support::html_oracle::Diagnostic {
@@ -659,6 +722,118 @@ fn report_case(
             })
             .unwrap_or_default(),
     }
+}
+
+fn report_case_with_diagnostic(
+    profile: &str,
+    source_set: &str,
+    case_id: &str,
+    logical_path: &str,
+    category: &str,
+    expected: &str,
+    actual: &str,
+) -> CaseResult {
+    let mut result = report_case(profile, source_set, case_id, false, None, None);
+    result.diagnostics = vec![support::html_oracle::Diagnostic {
+        category: category.to_string(),
+        logical_path: logical_path.to_string(),
+        first_expected_line: Some(1),
+        expected: expected.to_string(),
+        actual: actual.to_string(),
+        detail: "synthetic".to_string(),
+    }];
+    result
+}
+
+#[test]
+fn report_compacts_diagnostics_and_aggregates_common_mismatches() {
+    let expected = "expected text\n".repeat(100_000);
+    let actual = "actual text\n".repeat(100_000);
+    let results = vec![
+        report_case_with_diagnostic(
+            "core",
+            "set-a",
+            "case-1",
+            "_static/alabaster.css",
+            "text-value",
+            &expected,
+            &actual,
+        ),
+        report_case_with_diagnostic(
+            "core",
+            "set-b",
+            "case-2",
+            "_static/alabaster.css",
+            "text-value",
+            &expected,
+            &actual,
+        ),
+    ];
+    let (report, markdown) = build_report_with_platforms_reference_cases_and_bin(
+        2,
+        0,
+        0,
+        &results,
+        &BTreeMap::new(),
+        &[],
+        Some("C:/ultra/sphinx-ultra.exe"),
+    );
+    let serialized = serde_json::to_vec(&report).unwrap();
+    assert!(serialized.len() < 1_000_000);
+    let common = &report["common_mismatches"][0];
+    assert_eq!(common["count"], 2);
+    assert_eq!(common["source_set_count"], 2);
+    assert!(report["cases"][0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(report["cases"][0]["common_mismatch_count"], 1);
+    assert!(common["diff"].as_str().unwrap().len() <= 64 * 1024);
+    assert!(common["expected_sha256"].as_str().unwrap().len() == 64);
+    assert!(common["actual_sha256"].as_str().unwrap().len() == 64);
+    assert_eq!(common["expected_size"], expected.len());
+    assert_eq!(common["actual_size"], actual.len());
+    assert!(markdown.contains("## Common mismatches"));
+    assert!(markdown.contains("+1 common mismatches (see Common mismatches)"));
+    assert!(markdown.contains("Ultra binary: `C:/ultra/sphinx-ultra.exe`"));
+}
+
+#[test]
+fn report_counts_failing_cases_by_file_kind() {
+    let results = vec![
+        report_case_with_diagnostic(
+            "core",
+            "synthetic",
+            "html",
+            "index.html",
+            "html-body",
+            "a",
+            "b",
+        ),
+        report_case_with_diagnostic(
+            "core",
+            "synthetic",
+            "static",
+            "_static/app.css",
+            "text-value",
+            "a",
+            "b",
+        ),
+        report_case_with_diagnostic(
+            "core",
+            "synthetic",
+            "needs",
+            "needs.json",
+            "needs-top-level",
+            "a",
+            "b",
+        ),
+    ];
+    let (report, _) = support::html_oracle::build_report(3, 0, 0, &results);
+    assert_eq!(report["failing_cases_by_file_kind"]["html"], 1);
+    assert_eq!(report["failing_cases_by_file_kind"]["static"], 1);
+    assert_eq!(report["failing_cases_by_file_kind"]["needs.json"], 1);
+    assert_eq!(report["failing_cases_by_file_kind"]["searchindex"], 0);
 }
 
 #[test]
@@ -686,6 +861,14 @@ fn report_synthetic_data_is_sorted_and_contains_summary_counts() {
     assert_eq!(report["cases"][1]["rerun_filter"], "core/a-set/b-case");
     assert_eq!(report["counts_by_category"]["html-body"], 1);
     assert_eq!(report["counts_by_category"]["warning"], 1);
+    assert!(report["cases"][1]["diagnostics"][0]["expected"].is_null());
+    assert_eq!(
+        report["cases"][1]["diagnostics"][0]["expected_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
     assert!(markdown.contains("## Summary"));
     assert!(markdown.contains("## Category counts"));
     assert!(markdown.contains("## Most common first-divergence"));
@@ -738,20 +921,20 @@ fn report_places_exception_type_next_to_build_error_and_reference_crash_status()
 fn report_synthetic_first_divergences_are_capped_at_twenty_five() {
     let results = (0..30)
         .map(|index| {
-            report_case(
+            report_case_with_diagnostic(
                 "core",
                 "synthetic",
                 &format!("case-{index:02}"),
-                false,
-                Some("html-body"),
-                Some(index + 1),
+                &format!("page-{index:02}.html"),
+                "html-body",
+                &format!("expected-{index}"),
+                &format!("actual-{index}"),
             )
         })
         .collect::<Vec<_>>();
     let (report, markdown) = support::html_oracle::build_report(30, 0, 0, &results);
     assert_eq!(report["first_divergences"].as_array().unwrap().len(), 25);
-    assert!(markdown.contains("| 1 | 1 |"));
-    assert!(!markdown.contains("| 30 | 1 |"));
+    assert!(markdown.contains("| expected-0 | actual-0 | 1 |"));
 }
 
 #[test]
@@ -796,6 +979,9 @@ fn missing_fixture_corpus_has_a_clear_error() {
 
 #[test]
 #[ignore]
+/// Runs all committed HTML oracle cases.
+///
+/// Set `HTML_ORACLE_ULTRA_BIN` to an alternate Ultra executable for fix branches.
 fn html_oracle_exhaustive() {
     let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/html_oracle");
     let suite = load_fixture_suite(&fixture_root)
@@ -803,6 +989,7 @@ fn html_oracle_exhaustive() {
     let keep = parse_keep(std::env::var("HTML_ORACLE_KEEP").ok().as_deref())
         .unwrap_or_else(|error| panic!("{error}"));
     let filter = std::env::var("HTML_ORACLE_FILTER").ok();
+    let ultra_bin = selected_ultra_binary();
     let all_cases = suite
         .profiles
         .values()
@@ -890,13 +1077,14 @@ fn html_oracle_exhaustive() {
         worker.join().expect("HTML oracle worker should not panic");
     }
 
-    let (report, markdown) = build_report_with_platforms_and_reference_cases(
+    let (report, markdown) = build_report_with_platforms_reference_cases_and_bin(
         total_cases,
         excluded_cases,
         reference_crash_cases,
         &results,
         &reference_platforms,
         &reference_cases,
+        Some(&ultra_bin),
     );
     let report_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/html-oracle");
     let report_json = report_root.join("report.json");
@@ -914,6 +1102,13 @@ fn html_oracle_exhaustive() {
             bounded_assertion_message(&report_markdown, &report_json, &details)
         );
     }
+}
+
+fn selected_ultra_binary() -> String {
+    resolve_ultra_binary(
+        std::env::var("HTML_ORACLE_ULTRA_BIN").ok().as_deref(),
+        env!("CARGO_BIN_EXE_sphinx-ultra"),
+    )
 }
 
 fn run_html_case(
@@ -951,7 +1146,7 @@ fn run_html_case(
     fs::write(expected_dir.join("warnings.txt"), case.warnings.as_bytes())
         .map_err(|error| format!("write expected warnings: {error}"))?;
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sphinx-ultra"));
+    let mut command = Command::new(selected_ultra_binary());
     command
         .arg(&input_dir)
         .arg(&actual_dir)
@@ -1014,6 +1209,7 @@ fn run_html_case(
         passed,
         run_dir: run_dir.to_string_lossy().into_owned(),
         rerun_filter: case_key(case),
+        common_mismatch_count: 0,
         diagnostics,
     };
     fs::write(
@@ -1044,7 +1240,7 @@ fn run_needs_case(
     }
     let needs_cache = run_dir.join("needs-cache");
     let needs_warnings = run_dir.join("actual-needs-warnings.txt");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sphinx-ultra"));
+    let mut command = Command::new(selected_ultra_binary());
     command
         .arg(input_dir)
         .arg(actual_needs_dir)
