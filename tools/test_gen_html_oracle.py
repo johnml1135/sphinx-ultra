@@ -430,3 +430,34 @@ count = 1
     assert document["cases"][0]["status"] == "built"
     assert (output / "core" / "index.json").is_file()
     assert not (output / "core.staging").exists()
+
+
+def test_generate_profile_is_identical_under_two_output_roots(tmp_path):
+    config = tmp_path / "cases.toml"
+    config.write_text(
+        """[[source_sets]]
+name = \"html_projects\"
+profile = \"core\"
+kind = \"html_projects\"
+source = \"tests/fixtures\"
+projects = [\"basic\"]
+count = 1
+""",
+        encoding="utf-8",
+    )
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    generate_profile(REPO_ROOT, config, first_root, profile="core", jobs=1)
+    generate_profile(REPO_ROOT, config, second_root, profile="core", jobs=1)
+
+    first_files = {
+        path.relative_to(first_root / "core").as_posix(): path.read_bytes()
+        for path in (first_root / "core").rglob("*")
+        if path.is_file()
+    }
+    second_files = {
+        path.relative_to(second_root / "core").as_posix(): path.read_bytes()
+        for path in (second_root / "core").rglob("*")
+        if path.is_file()
+    }
+    assert first_files == second_files
